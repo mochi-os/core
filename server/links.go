@@ -54,12 +54,12 @@ var (
 	xmpp_link_backoff = time.Hour
 )
 
-// xmpp_tables lays the server-wide XMPP database, for db_create and
-// db_upgrade_18: the secret dialback keys are made with, the files hosted
-// accounts' clients upload, which anyone fetches by their address, and the
-// room service's rooms, their affiliations and their history. A change here
-// is also a new db_upgrade_N step, and db_upgrade_18 keeps a copy of this as
-// it was.
+// xmpp_tables lays the server-wide XMPP database, for db_create: the secret
+// dialback keys are made with, the files hosted accounts' clients upload,
+// which anyone fetches by their address, and the room service's rooms, their
+// affiliations, their history and who from other servers is in them. A
+// change here is also a new db_upgrade_N step; db_upgrade_18 keeps a copy of
+// this as it was.
 func xmpp_tables(db *DB) {
 	db.exec("create table if not exists secrets (name text not null primary key, value text not null)")
 	db.exec("create table if not exists uploads (id text not null primary key, user text not null, account text not null default '', domain text not null, name text not null, type text not null, size integer not null, token text not null default '', created integer not null, stored integer not null default 0)")
@@ -68,6 +68,7 @@ func xmpp_tables(db *DB) {
 	db.exec("create table if not exists chatlog (id integer primary key autoincrement, room text not null, archive text not null, nick text not null, sender text not null default '', stanza text not null, created integer not null)")
 	db.exec("create index if not exists chatlog_room on chatlog(room, id)")
 	db.exec("create unique index if not exists chatlog_archive on chatlog(room, archive)")
+	db.exec("create table if not exists occupants (room text not null, address text not null, nick text not null, bare text not null, role text not null, presence text not null default '', primary key (room, address))")
 }
 
 // xmpp_hosted is every hosted XMPP account on this server, of the users with

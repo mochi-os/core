@@ -265,6 +265,107 @@ func TestXMPPRoomsFederated(t *testing.T) {
 	}
 }
 
+// TestXMPPRoomSeatsKept: someone from another server stays in a room across a
+// restart, which their server never hears of, so its messages still reach
+// them; this server's own sessions are not kept, since they join again; one
+// who left is not brought back; a session the room holds joining again is
+// given the room afresh; one whose server answers with an error leaves, and
+// is not brought back either; and a room that goes takes its seats with it.
+func TestXMPPRoomSeatsKept(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	remote := env.remote(t, "remote.test")
+	alice := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "phone")
+	room := "kept@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + room + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "the room made", `code="201"`)
+	xmpp_configure(t, alice, room, "c1", "muc#roomconfig_persistentroom", "1")
+	link, valid := remote.link_to(t, "rooms.example.com", false)
+	if valid != "valid" {
+		t.Fatalf("the link to the room service: %s", valid)
+	}
+	join := func(session string, nick string) {
+		link.write(`<presence xmlns="jabber:server" from="` + session + `" to="` + room + `/` + nick + `"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	}
+	joined := func(session string) int {
+		return len(remote.heard(`to="`+session+`"`, `code="110"`, `<presence`))
+	}
+	join("carol@remote.test/laptop", "Carol")
+	wait(t, "carol in the room", func() bool { return joined("carol@remote.test/laptop") > 0 })
+	join("dave@remote.test/desk", "Dave")
+	wait(t, "dave in the room", func() bool { return joined("dave@remote.test/desk") > 0 })
+	link.write(`<presence xmlns="jabber:server" from="dave@remote.test/desk" to="` + room + `/Dave" type="unavailable"/>`)
+	in := func(nick string) bool {
+		c := conference_of(room)
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		return c.occupants[nick] != nil
+	}
+	wait(t, "dave gone", func() bool { return !in("Dave") })
+	if n := networks_database().integer("select count(*) from occupants where room=? and bare='alice@example.com'", room); n != 0 {
+		t.Errorf("THE POINT: %d seats kept for alice, whose session is this server's and joins again itself", n)
+	}
+	// A seat kept for a session of this server's, as though its domain
+	// were another's when it was kept.
+	networks_database().exec("insert into occupants (room, address, nick, bare, role, presence) values (?, 'eve@example.com/tablet', 'Eve', 'eve@example.com', 'participant', '')", room)
+	restart := func() {
+		conferences_lock.Lock()
+		delete(conferences, room)
+		conferences_lock.Unlock()
+	}
+
+	restart()
+	c := conference_of(room)
+	c.lock.Lock()
+	var nicks []string
+	for nick := range c.occupants {
+		nicks = append(nicks, nick)
+	}
+	c.lock.Unlock()
+	if len(nicks) != 1 || nicks[0] != "Carol" {
+		t.Errorf("THE POINT: after a restart the room holds %v, want carol alone: alice and eve are this server's, who join again themselves, and dave had left", nicks)
+	}
+	alice.received = nil
+	alice.send(`<presence xmlns="jabber:client" to="` + room + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "alice back in the room", `code="110"`)
+	if n := networks_database().integer("select count(*) from occupants where room=? and nick='Eve'", room); n != 0 {
+		t.Error("THE POINT: eve's seat, not brought back, is still kept after the room next changed")
+	}
+	alice.send(`<message xmlns="jabber:client" to="` + room + `" type="groupchat" id="k1"><body>After the restart</body></message>`)
+	wait(t, "THE POINT: a message after the restart reaches carol, never told she was out", func() bool {
+		return len(remote.heard(`to="carol@remote.test/laptop"`, "After the restart")) > 0
+	})
+	link.write(`<presence xmlns="jabber:server" from="carol@remote.test/laptop" to="` + room + `/Carol"><show>away</show></presence>`)
+	wait(t, "THE POINT: carol's presence changing is kept, to show her as she was after a restart", func() bool {
+		row, _ := networks_database().row("select presence from occupants where room=? and nick='Carol'", room)
+		return strings.Contains(row_string(row, "presence"), "away")
+	})
+
+	// The subject ends a join (XEP-0045): a session joining again that is
+	// only shown its own presence waits for the rest in vain.
+	subjects := func() int {
+		return len(remote.heard(`to="carol@remote.test/laptop"`, `<subject`))
+	}
+	before := subjects()
+	join("carol@remote.test/laptop", "Carol")
+	wait(t, "THE POINT: carol's session joining again is given the room afresh, to its subject", func() bool {
+		return subjects() > before
+	})
+
+	link.write(`<message xmlns="jabber:server" from="carol@remote.test/laptop" to="` + room + `" type="error" id="k1"><error type="cancel"><service-unavailable xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></message>`)
+	wait(t, "carol gone once her server answers with an error", func() bool { return !in("Carol") })
+	restart()
+	if in("Carol") {
+		t.Error("THE POINT: carol, gone, was brought back by a restart")
+	}
+
+	networks_database().exec("insert into occupants (room, address, nick, bare, role, presence) values (?, 'carol@remote.test/laptop', 'Carol', 'carol@remote.test', 'participant', '')", room)
+	conference_of(room).forget()
+	if n := networks_database().integer("select count(*) from occupants where room=?", room); n != 0 {
+		t.Errorf("THE POINT: a room gone keeps %d seats, which a room made again at its address would bring back", n)
+	}
+}
+
 // TestXMPPRoomsReached: the Status page shows each XMPP domain's room service
 // working where its host leads where the domain does - by its own address or
 // its server's SRV record - and unavailable where it does not.

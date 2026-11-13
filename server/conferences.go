@@ -13,7 +13,8 @@
 // with several people and for a group with people from XMPP (relays.go). Its
 // owners, admins, members and outcasts, its configuration and its history are
 // kept in networks.db; who is in it is kept in memory, each occupant by their
-// nick with their sessions and their role.
+// nick with their sessions and their role, and those on other servers in
+// networks.db too, so a restart leaves them in it.
 //
 // A room is persistent or goes once empty, open or members only, moderated or
 // not, shows its occupants' addresses to everyone or to moderators alone, and
@@ -28,6 +29,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net"
 	"slices"
@@ -199,6 +201,9 @@ type conference struct {
 	occupants    map[string]*conference_occupant
 	relay        string
 	created      bool
+	// kept is the seats saved, by session, so a stanza writes only the
+	// seats it changes.
+	kept map[string]conference_seat
 }
 
 // A conference_occupant is someone in a room: their nick, their address
@@ -259,6 +264,29 @@ func conference_of(address string) *conference {
 		if member, found := strings.CutPrefix(who, "mochi:"); found {
 			c.occupants[row_string(r, "nick")] = &conference_occupant{nick: row_string(r, "nick"), member: member, sessions: map[string]string{}, role: "participant"}
 		}
+	}
+	// Those from other servers are in the room as they were before a
+	// restart, which their servers never hear of; a session gone meanwhile
+	// leaves when its server answers the room's first stanza with an error.
+	// What is saved is what the next change is made against, so a seat not
+	// restored goes from the table then.
+	c.kept = map[string]conference_seat{}
+	seated, _ := db.rows("select address, nick, bare, role, presence from occupants where room=?", address)
+	for _, r := range seated {
+		session, nick, bare := row_string(r, "address"), row_string(r, "nick"), row_string(r, "bare")
+		c.kept[session] = conference_seat{address: session, nick: nick, bare: bare, role: row_string(r, "role"), presence: row_string(r, "presence")}
+		if from, err := jid.Parse(session); err != nil || xmpp_local(from.Domainpart()) {
+			continue
+		}
+		o := c.occupants[nick]
+		if o == nil {
+			o = &conference_occupant{nick: nick, bare: bare, sessions: map[string]string{}, role: row_string(r, "role")}
+			c.occupants[nick] = o
+		} else if o.bare != bare {
+			continue
+		}
+		o.sessions[session] = row_string(r, "presence")
+		o.latest = session
 	}
 	if b := bridge_of("xmpp:" + address); b != nil {
 		c.relay = b.user
@@ -399,11 +427,100 @@ func (c *conference) forget() {
 	db.exec("delete from conferences where address=?", c.address)
 	db.exec("delete from affiliations where room=?", c.address)
 	db.exec("delete from chatlog where room=?", c.address)
+	db.exec("delete from occupants where room=?", c.address)
 	conferences_lock.Lock()
 	if conferences[c.address] == c {
 		delete(conferences, c.address)
 	}
 	conferences_lock.Unlock()
+}
+
+// A conference_seat is a session from another server in a room, as kept.
+type conference_seat struct {
+	address  string
+	nick     string
+	bare     string
+	role     string
+	presence string
+}
+
+// seats are the room's sessions from other servers, by session. This
+// server's own are not among them: they join again at start.
+func (c *conference) seats() map[string]conference_seat {
+	seats := map[string]conference_seat{}
+	local := map[string]bool{}
+	for _, o := range c.occupants {
+		if o.bare == "" {
+			continue
+		}
+		for session, presence := range o.sessions {
+			from, err := jid.Parse(session)
+			if err != nil {
+				continue
+			}
+			domain := from.Domainpart()
+			mine, found := local[domain]
+			if !found {
+				mine = xmpp_local(domain)
+				local[domain] = mine
+			}
+			if !mine {
+				seats[session] = conference_seat{address: session, nick: o.nick, bare: o.bare, role: o.role, presence: presence}
+			}
+		}
+	}
+	return seats
+}
+
+// keep saves the seats from other servers that have changed since they were
+// last saved, together, so a restart cannot put anyone out unseen: their
+// servers are never told, so their clients would think themselves still in
+// the room and hear nothing more until they joined again.
+func (c *conference) keep() {
+	seats := c.seats()
+	var gone []string
+	var changed []conference_seat
+	for session := range c.kept {
+		if _, found := seats[session]; !found {
+			gone = append(gone, session)
+		}
+	}
+	for session, seat := range seats {
+		if c.kept[session] != seat {
+			changed = append(changed, seat)
+		}
+	}
+	if len(gone) == 0 && len(changed) == 0 {
+		return
+	}
+	failed := func(tx *sql.Tx, err error) {
+		if tx != nil {
+			tx.Rollback()
+		}
+		debug("XMPP room %s: occupants not kept: %v", c.address, err)
+	}
+	tx, err := networks_database().internal.Begin()
+	if err != nil {
+		failed(nil, err)
+		return
+	}
+	for _, session := range gone {
+		if _, err := tx.Exec("delete from occupants where room=? and address=?", c.address, session); err != nil {
+			failed(tx, err)
+			return
+		}
+	}
+	for _, s := range changed {
+		if _, err := tx.Exec("insert or replace into occupants (room, address, nick, bare, role, presence) values (?, ?, ?, ?, ?, ?)", c.address, s.address, s.nick, s.bare, s.role, s.presence); err != nil {
+			failed(tx, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		failed(nil, err)
+		return
+	}
+	c.kept = seats
 }
 
 // === What a room sends ===
@@ -552,6 +669,7 @@ func xmpp_conference_deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
 	case "iq":
 		c.iq_in(s, from, to, out)
 	}
+	c.keep()
 	// A room that does not persist goes once the last has left.
 	gone := !c.config.persistent && len(c.occupants) == 0 && !c.created
 	c.created = false
@@ -583,6 +701,11 @@ func (c *conference) presence_in(s *xmpp_stanza, from jid.JID, to jid.JID, out *
 			c.join(s, from, nick, out)
 		case o.nick != nick:
 			c.rename(o, from, nick, out)
+		case conference_joining(s):
+			// A session the room holds joining again, as a client does
+			// after its connection drops, or one kept across a restart:
+			// it is given the room afresh, or it waits for it in vain.
+			c.join(s, from, nick, out)
 		default:
 			o.sessions[from.String()] = conference_shown(s)
 			o.latest = from.String()
@@ -597,6 +720,15 @@ func (c *conference) presence_in(s *xmpp_stanza, from jid.JID, to jid.JID, out *
 			c.depart(o, from.String(), out)
 		}
 	}
+}
+
+// conference_joining reports whether a presence asks to join the room.
+func conference_joining(s *xmpp_stanza) bool {
+	var request struct {
+		Join *struct{} `xml:"http://jabber.org/protocol/muc x"`
+	}
+	s.decode(&request)
+	return request.Join != nil
 }
 
 // conference_shown is what a presence shows, without what it says to the
@@ -658,15 +790,17 @@ func (c *conference) join(s *xmpp_stanza, from jid.JID, nick string, out *confer
 	if c.config.locked {
 		codes = append(codes, "201")
 	}
+	// Everyone else sees them as this session shows them, whether they are
+	// new to the room or a session of theirs joins again.
 	if existing == nil {
 		c.occupants[nick] = o
-		for _, other := range c.occupants {
-			if other == o {
-				continue
-			}
-			for session := range other.sessions {
-				out.add(c.presence(o, other, ""), c.occupant_address(nick), session)
-			}
+	}
+	for _, other := range c.occupants {
+		if other == o {
+			continue
+		}
+		for session := range other.sessions {
+			out.add(c.presence(o, other, ""), c.occupant_address(nick), session)
 		}
 	}
 	out.add(c.presence(o, o, "", append(codes, "110")...), c.occupant_address(nick), from.String())

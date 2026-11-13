@@ -99,7 +99,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 25
+	schema_version = 26
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1814,6 +1814,8 @@ func db_upgrade() {
 			db_upgrade_24()
 		case 25:
 			db_upgrade_25()
+		case 26:
+			db_upgrade_26()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -3225,7 +3227,7 @@ func db_upgrade_18() {
 	networks.exec("insert or ignore into settings (user, room, type, content) select user, '', type, content from data")
 
 	// The XMPP engine's tables.
-	xmpp_tables(networks)
+	db_upgrade_18_xmpp(networks)
 	world_create(db_open("db/world.db"))
 
 	dropped := 0
@@ -3333,6 +3335,18 @@ func db_upgrade_21() {
 	}
 	queue.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
 	queue.exec("drop index if exists queue_target_priority_retry")
+}
+
+// db_upgrade_18_xmpp is xmpp_tables as it was at schema 18, for
+// db_upgrade_18: the rooms' occupants were kept from schema 26.
+func db_upgrade_18_xmpp(db *DB) {
+	db.exec("create table if not exists secrets (name text not null primary key, value text not null)")
+	db.exec("create table if not exists uploads (id text not null primary key, user text not null, account text not null default '', domain text not null, name text not null, type text not null, size integer not null, token text not null default '', created integer not null, stored integer not null default 0)")
+	db.exec("create table if not exists conferences (address text not null primary key, name text not null default '', description text not null default '', subject text not null default '', subjector text not null default '', persistent integer not null default 0, members integer not null default 0, public integer not null default 0, moderated integer not null default 0, open integer not null default 0, invite integer not null default 0, whois text not null default 'moderators', history integer not null default 20, locked integer not null default 0, created integer not null, updated integer not null)")
+	db.exec("create table if not exists affiliations (room text not null, address text not null, affiliation text not null, nick text not null default '', primary key (room, address))")
+	db.exec("create table if not exists chatlog (id integer primary key autoincrement, room text not null, archive text not null, nick text not null, sender text not null default '', stanza text not null, created integer not null)")
+	db.exec("create index if not exists chatlog_room on chatlog(room, id)")
+	db.exec("create unique index if not exists chatlog_archive on chatlog(room, archive)")
 }
 
 // db_upgrade_18_federation is federation_create as it was at schema 18, for
@@ -3778,6 +3792,14 @@ func db_upgrade_25() {
 	if moved > 0 {
 		info("Schema 25: moved %d Matrix client row(s) into their owners' networks.db", moved)
 	}
+}
+
+// db_upgrade_26 keeps who from other servers is in each XMPP room, so a
+// restart does not put them out unseen; links.go's xmpp_tables carries the
+// table for new installs.
+func db_upgrade_26() {
+	networks := db_open("db/networks.db")
+	networks.exec("create table if not exists occupants (room text not null, address text not null, nick text not null, bare text not null, role text not null, presence text not null default '', primary key (room, address))")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

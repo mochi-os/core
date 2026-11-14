@@ -1,0 +1,3691 @@
+{
+ "aliases": {
+  "ActivityId": "Long",
+  "CommentId": "Long",
+  "CommentReplyId": "Long",
+  "CommentReportId": "Long",
+  "CommunityId": "Long",
+  "CustomEmojiId": "Long",
+  "InstanceId": "Long",
+  "LanguageId": "Long",
+  "LocalSiteId": "Long",
+  "LocalUserId": "Long",
+  "PaginationCursor": "String",
+  "PersonId": "Long",
+  "PersonMentionId": "Long",
+  "PostId": "Long",
+  "PostReportId": "Long",
+  "PrivateMessageId": "Long",
+  "PrivateMessageReportId": "Long",
+  "SiteId": "Long"
+ },
+ "enums": {
+  "CommunityVisibility": [
+   "Public",
+   "LocalOnly"
+  ],
+  "ListingType": [
+   "All",
+   "Local",
+   "Subscribed",
+   "ModeratorView"
+  ],
+  "PostListingMode": [
+   "List",
+   "Card",
+   "SmallCard"
+  ],
+  "RegistrationMode": [
+   "Closed",
+   "RequireApplication",
+   "Open"
+  ],
+  "SearchType": [
+   "All",
+   "Comments",
+   "Posts",
+   "Communities",
+   "Users",
+   "Url"
+  ],
+  "SortType": [
+   "Active",
+   "Hot",
+   "New",
+   "Old",
+   "TopDay",
+   "TopWeek",
+   "TopMonth",
+   "TopYear",
+   "TopAll",
+   "MostComments",
+   "NewComments",
+   "TopHour",
+   "TopSixHour",
+   "TopTwelveHour",
+   "TopThreeMonths",
+   "TopSixMonths",
+   "TopNineMonths",
+   "Controversial",
+   "Scaled"
+  ],
+  "SubscribedType": [
+   "Subscribed",
+   "NotSubscribed",
+   "Pending"
+  ]
+ },
+ "routes": {
+  "GET comment": "CommentResponse",
+  "GET comment/list": "GetCommentsResponse",
+  "GET comment/report/list": "ListCommentReportsResponse",
+  "GET community": "GetCommunityResponse",
+  "GET community/list": "ListCommunitiesResponse",
+  "GET federated_instances": "GetFederatedInstancesResponse",
+  "GET modlog": "GetModlogResponse",
+  "GET post": "GetPostResponse",
+  "GET post/list": "GetPostsResponse",
+  "GET post/report/list": "ListPostReportsResponse",
+  "GET post/site_metadata": "GetSiteMetadataResponse",
+  "GET private_message/list": "PrivateMessagesResponse",
+  "GET private_message/report/list": "ListPrivateMessageReportsResponse",
+  "GET resolve_object": "ResolveObjectResponse",
+  "GET search": "SearchResponse",
+  "GET site": "GetSiteResponse",
+  "GET user": "GetPersonDetailsResponse",
+  "GET user/get_captcha": "GetCaptchaResponse",
+  "GET user/mention": "GetPersonMentionsResponse",
+  "GET user/replies": "GetRepliesResponse",
+  "GET user/report_count": "GetReportCountResponse",
+  "GET user/unread_count": "GetUnreadCountResponse",
+  "GET user/validate_auth": "Unit",
+  "POST comment": "CommentResponse",
+  "POST comment/delete": "CommentResponse",
+  "POST comment/distinguish": "CommentResponse",
+  "POST comment/like": "CommentResponse",
+  "POST comment/mark_as_read": "CommentReplyResponse",
+  "POST comment/remove": "CommentResponse",
+  "POST comment/report": "CommentReportResponse",
+  "POST community": "CommunityResponse",
+  "POST community/ban_user": "BanFromCommunityResponse",
+  "POST community/block": "BlockCommunityResponse",
+  "POST community/delete": "CommunityResponse",
+  "POST community/follow": "CommunityResponse",
+  "POST community/mod": "AddModToCommunityResponse",
+  "POST community/remove": "CommunityResponse",
+  "POST community/transfer": "CommunityResponse",
+  "POST post": "PostResponse",
+  "POST post/delete": "PostResponse",
+  "POST post/feature": "PostResponse",
+  "POST post/hide": "Unit",
+  "POST post/like": "PostResponse",
+  "POST post/lock": "PostResponse",
+  "POST post/mark_as_read": "Unit",
+  "POST post/remove": "PostResponse",
+  "POST post/report": "PostReportResponse",
+  "POST private_message": "PrivateMessageResponse",
+  "POST private_message/delete": "PrivateMessageResponse",
+  "POST private_message/mark_as_read": "PrivateMessageResponse",
+  "POST private_message/report": "PrivateMessageReportResponse",
+  "POST site": "SiteResponse",
+  "POST user/block": "BlockPersonResponse",
+  "POST user/delete_account": "Unit",
+  "POST user/import_settings": "Unit",
+  "POST user/login": "LoginResponse",
+  "POST user/logout": "Unit",
+  "POST user/mark_all_as_read": "GetRepliesResponse",
+  "POST user/mention/mark_as_read": "PersonMentionResponse",
+  "POST user/password_change": "Unit",
+  "POST user/password_reset": "Unit",
+  "POST user/register": "LoginResponse",
+  "POST user/totp/generate": "GenerateTotpSecretResponse",
+  "POST user/totp/update": "UpdateTotpResponse",
+  "POST user/verify_email": "Unit",
+  "PUT comment": "CommentResponse",
+  "PUT comment/report/resolve": "CommentReportResponse",
+  "PUT comment/save": "CommentResponse",
+  "PUT community": "CommunityResponse",
+  "PUT post": "PostResponse",
+  "PUT post/report/resolve": "PostReportResponse",
+  "PUT post/save": "PostResponse",
+  "PUT private_message": "PrivateMessageResponse",
+  "PUT site": "SiteResponse",
+  "PUT user/change_password": "LoginResponse",
+  "PUT user/save_user_settings": "Unit"
+ },
+ "types": {
+  "AddModToCommunityResponse": {
+   "moderators": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityModeratorView>"
+   }
+  },
+  "AdminPurgeComment": {
+   "admin_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "AdminPurgeCommentView": {
+   "admin": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "admin_purge_comment": {
+    "nullable": false,
+    "required": true,
+    "type": "AdminPurgeComment"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   }
+  },
+  "AdminPurgeCommunity": {
+   "admin_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "AdminPurgeCommunityView": {
+   "admin": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "admin_purge_community": {
+    "nullable": false,
+    "required": true,
+    "type": "AdminPurgeCommunity"
+   }
+  },
+  "AdminPurgePerson": {
+   "admin_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "AdminPurgePersonView": {
+   "admin": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "admin_purge_person": {
+    "nullable": false,
+    "required": true,
+    "type": "AdminPurgePerson"
+   }
+  },
+  "AdminPurgePost": {
+   "admin_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "AdminPurgePostView": {
+   "admin": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "admin_purge_post": {
+    "nullable": false,
+    "required": true,
+    "type": "AdminPurgePost"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   }
+  },
+  "BanFromCommunityResponse": {
+   "banned": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "person_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonView"
+   }
+  },
+  "BlockCommunityResponse": {
+   "blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "community_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityView"
+   }
+  },
+  "BlockPersonResponse": {
+   "blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "person_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonView"
+   }
+  },
+  "CaptchaResponse": {
+   "png": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "uuid": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "wav": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "Comment": {
+   "ap_id": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "content": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "creator_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "deleted": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "distinguished": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentId"
+   },
+   "language_id": {
+    "nullable": false,
+    "required": true,
+    "type": "LanguageId"
+   },
+   "local": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "path": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "CommentAggregates": {
+   "child_count": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "comment_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentId"
+   },
+   "downvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "score": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "upvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "CommentReply": {
+   "comment_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentReplyId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "read": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "recipient_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   }
+  },
+  "CommentReplyResponse": {
+   "comment_reply_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentReplyView"
+   }
+  },
+  "CommentReplyView": {
+   "banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "comment": {
+    "nullable": false,
+    "required": true,
+    "type": "Comment"
+   },
+   "comment_reply": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentReply"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentAggregates"
+   },
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "creator_banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "my_vote": {
+    "nullable": false,
+    "required": false,
+    "type": "Int"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   },
+   "recipient": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "saved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   }
+  },
+  "CommentReport": {
+   "comment_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentId"
+   },
+   "creator_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentReportId"
+   },
+   "original_comment_text": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "reason": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "resolved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "resolver_id": {
+    "nullable": true,
+    "required": false,
+    "type": "PersonId"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "CommentReportResponse": {
+   "comment_report_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentReportView"
+   }
+  },
+  "CommentReportView": {
+   "comment": {
+    "nullable": false,
+    "required": true,
+    "type": "Comment"
+   },
+   "comment_creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "comment_report": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentReport"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentAggregates"
+   },
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "creator_banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "my_vote": {
+    "nullable": false,
+    "required": false,
+    "type": "Int"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   },
+   "resolver": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "saved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   }
+  },
+  "CommentResponse": {
+   "comment_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentView"
+   },
+   "recipient_ids": {
+    "nullable": false,
+    "required": true,
+    "type": "List<LocalUserId>"
+   }
+  },
+  "CommentView": {
+   "banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "comment": {
+    "nullable": false,
+    "required": true,
+    "type": "Comment"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentAggregates"
+   },
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "creator_banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "my_vote": {
+    "nullable": false,
+    "required": false,
+    "type": "Int"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   },
+   "saved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   }
+  },
+  "Community": {
+   "actor_id": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "banner": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "deleted": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "description": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "hidden": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "icon": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "instance_id": {
+    "nullable": false,
+    "required": true,
+    "type": "InstanceId"
+   },
+   "local": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "name": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "nsfw": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "posting_restricted_to_mods": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "title": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "visibility": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityVisibility"
+   }
+  },
+  "CommunityAggregates": {
+   "comments": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "posts": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "subscribers": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "subscribers_local": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_day": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_half_year": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_month": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_week": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "CommunityBlockView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "CommunityFollowerView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "follower": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "CommunityModeratorView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "CommunityResponse": {
+   "community_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityView"
+   },
+   "discussion_languages": {
+    "nullable": false,
+    "required": true,
+    "type": "List<LanguageId>"
+   }
+  },
+  "CommunityView": {
+   "banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityAggregates"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   }
+  },
+  "CustomEmoji": {
+   "alt_text": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "category": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "CustomEmojiId"
+   },
+   "image_url": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "local_site_id": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalSiteId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "shortcode": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "CustomEmojiKeyword": {
+   "custom_emoji_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CustomEmojiId"
+   },
+   "keyword": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "CustomEmojiView": {
+   "custom_emoji": {
+    "nullable": false,
+    "required": true,
+    "type": "CustomEmoji"
+   },
+   "keywords": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CustomEmojiKeyword>"
+   }
+  },
+  "FederatedInstances": {
+   "allowed": {
+    "nullable": false,
+    "required": true,
+    "type": "List<InstanceWithFederationState>"
+   },
+   "blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "List<InstanceWithFederationState>"
+   },
+   "linked": {
+    "nullable": false,
+    "required": true,
+    "type": "List<InstanceWithFederationState>"
+   }
+  },
+  "GenerateTotpSecretResponse": {
+   "totp_secret_url": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "GetCaptchaResponse": {
+   "ok": {
+    "nullable": true,
+    "required": false,
+    "type": "CaptchaResponse"
+   }
+  },
+  "GetCommentsResponse": {
+   "comments": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommentView>"
+   }
+  },
+  "GetCommunityResponse": {
+   "community_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityView"
+   },
+   "discussion_languages": {
+    "nullable": false,
+    "required": true,
+    "type": "List<LanguageId>"
+   },
+   "moderators": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityModeratorView>"
+   },
+   "site": {
+    "nullable": true,
+    "required": false,
+    "type": "Site"
+   }
+  },
+  "GetFederatedInstancesResponse": {
+   "federated_instances": {
+    "nullable": true,
+    "required": false,
+    "type": "FederatedInstances"
+   }
+  },
+  "GetModlogResponse": {
+   "added": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModAddView>"
+   },
+   "added_to_community": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModAddCommunityView>"
+   },
+   "admin_purged_comments": {
+    "nullable": false,
+    "required": true,
+    "type": "List<AdminPurgeCommentView>"
+   },
+   "admin_purged_communities": {
+    "nullable": false,
+    "required": true,
+    "type": "List<AdminPurgeCommunityView>"
+   },
+   "admin_purged_persons": {
+    "nullable": false,
+    "required": true,
+    "type": "List<AdminPurgePersonView>"
+   },
+   "admin_purged_posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<AdminPurgePostView>"
+   },
+   "banned": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModBanView>"
+   },
+   "banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModBanFromCommunityView>"
+   },
+   "featured_posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModFeaturePostView>"
+   },
+   "hidden_communities": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModHideCommunityView>"
+   },
+   "locked_posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModLockPostView>"
+   },
+   "removed_comments": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModRemoveCommentView>"
+   },
+   "removed_communities": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModRemoveCommunityView>"
+   },
+   "removed_posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModRemovePostView>"
+   },
+   "transferred_to_community": {
+    "nullable": false,
+    "required": true,
+    "type": "List<ModTransferCommunityView>"
+   }
+  },
+  "GetPersonDetailsResponse": {
+   "comments": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommentView>"
+   },
+   "moderates": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityModeratorView>"
+   },
+   "person_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonView"
+   },
+   "posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PostView>"
+   },
+   "site": {
+    "nullable": true,
+    "required": false,
+    "type": "Site"
+   }
+  },
+  "GetPersonMentionsResponse": {
+   "mentions": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PersonMentionView>"
+   }
+  },
+  "GetPostResponse": {
+   "community_view": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityView"
+   },
+   "cross_posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PostView>"
+   },
+   "moderators": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityModeratorView>"
+   },
+   "post_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PostView"
+   }
+  },
+  "GetPostsResponse": {
+   "next_page": {
+    "nullable": true,
+    "required": false,
+    "type": "PaginationCursor"
+   },
+   "posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PostView>"
+   }
+  },
+  "GetRepliesResponse": {
+   "replies": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommentReplyView>"
+   }
+  },
+  "GetReportCountResponse": {
+   "comment_reports": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "community_id": {
+    "nullable": true,
+    "required": false,
+    "type": "CommunityId"
+   },
+   "post_reports": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "private_message_reports": {
+    "nullable": true,
+    "required": false,
+    "type": "Long"
+   }
+  },
+  "GetSiteMetadataResponse": {
+   "metadata": {
+    "nullable": false,
+    "required": true,
+    "type": "LinkMetadata"
+   }
+  },
+  "GetSiteResponse": {
+   "admins": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PersonView>"
+   },
+   "all_languages": {
+    "nullable": false,
+    "required": true,
+    "type": "List<Language>"
+   },
+   "blocked_urls": {
+    "nullable": false,
+    "required": true,
+    "type": "List<LocalSiteUrlBlocklist>"
+   },
+   "custom_emojis": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CustomEmojiView>"
+   },
+   "discussion_languages": {
+    "nullable": false,
+    "required": true,
+    "type": "List<LanguageId>"
+   },
+   "my_user": {
+    "nullable": true,
+    "required": false,
+    "type": "MyUserInfo"
+   },
+   "site_view": {
+    "nullable": false,
+    "required": true,
+    "type": "SiteView"
+   },
+   "taglines": {
+    "nullable": false,
+    "required": true,
+    "type": "List<Tagline>"
+   },
+   "version": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "GetUnreadCountResponse": {
+   "mentions": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "private_messages": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "replies": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "ImageDetails": {
+   "content_type": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "height": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "link": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "width": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "Instance": {
+   "domain": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "InstanceId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "software": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "version": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "InstanceBlockView": {
+   "instance": {
+    "nullable": false,
+    "required": true,
+    "type": "Instance"
+   },
+   "person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "site": {
+    "nullable": true,
+    "required": false,
+    "type": "Site"
+   }
+  },
+  "InstanceWithFederationState": {
+   "domain": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "federation_state": {
+    "nullable": true,
+    "required": false,
+    "type": "ReadableFederationState"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "InstanceId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "software": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "version": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "Language": {
+   "code": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "LanguageId"
+   },
+   "name": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "LinkMetadata": {
+   "content_type": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "description": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "embed_video_url": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "image": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "title": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "ListCommentReportsResponse": {
+   "comment_reports": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommentReportView>"
+   }
+  },
+  "ListCommunitiesResponse": {
+   "communities": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityView>"
+   }
+  },
+  "ListPostReportsResponse": {
+   "post_reports": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PostReportView>"
+   }
+  },
+  "ListPrivateMessageReportsResponse": {
+   "private_message_reports": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PrivateMessageReportView>"
+   }
+  },
+  "LocalSite": {
+   "actor_name_max_length": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "application_email_admins": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "application_question": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "captcha_difficulty": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "captcha_enabled": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "community_creation_admin_only": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "default_post_listing_mode": {
+    "nullable": false,
+    "required": true,
+    "type": "PostListingMode"
+   },
+   "default_post_listing_type": {
+    "nullable": false,
+    "required": true,
+    "type": "ListingType"
+   },
+   "default_sort_type": {
+    "nullable": false,
+    "required": true,
+    "type": "SortType"
+   },
+   "default_theme": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "enable_downvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "enable_nsfw": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "federation_enabled": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "federation_signed_fetch": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "hide_modlog_mod_names": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalSiteId"
+   },
+   "legal_information": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "private_instance": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "registration_mode": {
+    "nullable": false,
+    "required": true,
+    "type": "RegistrationMode"
+   },
+   "reports_email_admins": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "require_email_verification": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "site_id": {
+    "nullable": false,
+    "required": true,
+    "type": "SiteId"
+   },
+   "site_setup": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "slur_filter_regex": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "LocalSiteRateLimit": {
+   "comment": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "comment_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "image": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "image_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "import_user_settings": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "import_user_settings_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "local_site_id": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalSiteId"
+   },
+   "message": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "message_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "post_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "register": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "register_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "search": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "search_per_second": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "LocalSiteUrlBlocklist": {
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "url": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "LocalUser": {
+   "accepted_application": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "auto_expand": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "blur_nsfw": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "collapse_bot_comments": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "default_listing_type": {
+    "nullable": false,
+    "required": true,
+    "type": "ListingType"
+   },
+   "default_sort_type": {
+    "nullable": false,
+    "required": true,
+    "type": "SortType"
+   },
+   "email": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "email_verified": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "enable_animated_images": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "enable_keyboard_navigation": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalUserId"
+   },
+   "infinite_scroll_enabled": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "interface_language": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "last_donation_notification": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "open_links_in_new_tab": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "post_listing_mode": {
+    "nullable": false,
+    "required": true,
+    "type": "PostListingMode"
+   },
+   "send_notifications_to_email": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "show_avatars": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "show_bot_accounts": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "show_nsfw": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "show_read_posts": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "show_scores": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "theme": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "totp_2fa_enabled": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   }
+  },
+  "LocalUserView": {
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonAggregates"
+   },
+   "local_user": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalUser"
+   },
+   "local_user_vote_display_mode": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalUserVoteDisplayMode"
+   },
+   "person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "LocalUserVoteDisplayMode": {
+   "downvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "local_user_id": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalUserId"
+   },
+   "score": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "upvote_percentage": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "upvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   }
+  },
+  "LoginResponse": {
+   "jwt": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "registration_created": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "verify_email_sent": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   }
+  },
+  "ModAdd": {
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "other_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModAddCommunity": {
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "other_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModAddCommunityView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_add_community": {
+    "nullable": false,
+    "required": true,
+    "type": "ModAddCommunity"
+   },
+   "modded_person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "ModAddView": {
+   "mod_add": {
+    "nullable": false,
+    "required": true,
+    "type": "ModAdd"
+   },
+   "modded_person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "ModBan": {
+   "banned": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "expires": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "other_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModBanFromCommunity": {
+   "banned": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "expires": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "other_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModBanFromCommunityView": {
+   "banned_person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_ban_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "ModBanFromCommunity"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "ModBanView": {
+   "banned_person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "mod_ban": {
+    "nullable": false,
+    "required": true,
+    "type": "ModBan"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "ModFeaturePost": {
+   "featured": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "is_featured_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModFeaturePostView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_feature_post": {
+    "nullable": false,
+    "required": true,
+    "type": "ModFeaturePost"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   }
+  },
+  "ModHideCommunity": {
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "hidden": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModHideCommunityView": {
+   "admin": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_hide_community": {
+    "nullable": false,
+    "required": true,
+    "type": "ModHideCommunity"
+   }
+  },
+  "ModLockPost": {
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "locked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModLockPostView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_lock_post": {
+    "nullable": false,
+    "required": true,
+    "type": "ModLockPost"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   }
+  },
+  "ModRemoveComment": {
+   "comment_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModRemoveCommentView": {
+   "comment": {
+    "nullable": false,
+    "required": true,
+    "type": "Comment"
+   },
+   "commenter": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_remove_comment": {
+    "nullable": false,
+    "required": true,
+    "type": "ModRemoveComment"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   }
+  },
+  "ModRemoveCommunity": {
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModRemoveCommunityView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_remove_community": {
+    "nullable": false,
+    "required": true,
+    "type": "ModRemoveCommunity"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "ModRemovePost": {
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "reason": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModRemovePostView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_remove_post": {
+    "nullable": false,
+    "required": true,
+    "type": "ModRemovePost"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   }
+  },
+  "ModTransferCommunity": {
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "mod_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "other_person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "when_": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   }
+  },
+  "ModTransferCommunityView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "mod_transfer_community": {
+    "nullable": false,
+    "required": true,
+    "type": "ModTransferCommunity"
+   },
+   "modded_person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "moderator": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "MyUserInfo": {
+   "community_blocks": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityBlockView>"
+   },
+   "discussion_languages": {
+    "nullable": false,
+    "required": true,
+    "type": "List<LanguageId>"
+   },
+   "follows": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityFollowerView>"
+   },
+   "instance_blocks": {
+    "nullable": false,
+    "required": true,
+    "type": "List<InstanceBlockView>"
+   },
+   "local_user_view": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalUserView"
+   },
+   "moderates": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityModeratorView>"
+   },
+   "person_blocks": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PersonBlockView>"
+   }
+  },
+  "Person": {
+   "actor_id": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "avatar": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "ban_expires": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "banned": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "banner": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "bio": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "bot_account": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "deleted": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "display_name": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "instance_id": {
+    "nullable": false,
+    "required": true,
+    "type": "InstanceId"
+   },
+   "local": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "matrix_user_id": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "name": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "PersonAggregates": {
+   "comment_count": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "person_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "post_count": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "PersonBlockView": {
+   "person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "target": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "PersonMention": {
+   "comment_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonMentionId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "read": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "recipient_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   }
+  },
+  "PersonMentionResponse": {
+   "person_mention_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonMentionView"
+   }
+  },
+  "PersonMentionView": {
+   "banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "comment": {
+    "nullable": false,
+    "required": true,
+    "type": "Comment"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "CommentAggregates"
+   },
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "creator_banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "my_vote": {
+    "nullable": false,
+    "required": false,
+    "type": "Int"
+   },
+   "person_mention": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonMention"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   },
+   "recipient": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "saved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   }
+  },
+  "PersonView": {
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonAggregates"
+   },
+   "is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "person": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "Post": {
+   "alt_text": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "ap_id": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "body": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "community_id": {
+    "nullable": false,
+    "required": true,
+    "type": "CommunityId"
+   },
+   "creator_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "deleted": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "embed_description": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "embed_title": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "embed_video_url": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "featured_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "featured_local": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "language_id": {
+    "nullable": false,
+    "required": true,
+    "type": "LanguageId"
+   },
+   "local": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "locked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "name": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "nsfw": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "removed": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "thumbnail_url": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "url": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "url_content_type": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "PostAggregates": {
+   "comments": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "downvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "newest_comment_time": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "score": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "upvotes": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "PostReport": {
+   "creator_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostReportId"
+   },
+   "original_post_body": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "original_post_name": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "original_post_url": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "post_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PostId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "reason": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "resolved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "resolver_id": {
+    "nullable": true,
+    "required": false,
+    "type": "PersonId"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "PostReportResponse": {
+   "post_report_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PostReportView"
+   }
+  },
+  "PostReportView": {
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "PostAggregates"
+   },
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "creator_banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "hidden": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "my_vote": {
+    "nullable": false,
+    "required": false,
+    "type": "Int"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   },
+   "post_creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "post_report": {
+    "nullable": false,
+    "required": true,
+    "type": "PostReport"
+   },
+   "read": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "resolver": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   },
+   "saved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   },
+   "unread_comments": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "PostResponse": {
+   "post_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PostView"
+   }
+  },
+  "PostView": {
+   "banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "community": {
+    "nullable": false,
+    "required": true,
+    "type": "Community"
+   },
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "PostAggregates"
+   },
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "creator_banned_from_community": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_blocked": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_admin": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "creator_is_moderator": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "hidden": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "image_details": {
+    "nullable": true,
+    "required": false,
+    "type": "ImageDetails"
+   },
+   "my_vote": {
+    "nullable": false,
+    "required": false,
+    "type": "Int"
+   },
+   "post": {
+    "nullable": false,
+    "required": true,
+    "type": "Post"
+   },
+   "read": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "saved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "subscribed": {
+    "nullable": false,
+    "required": true,
+    "type": "SubscribedType"
+   },
+   "unread_comments": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "PrivateMessage": {
+   "ap_id": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "content": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "creator_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "deleted": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessageId"
+   },
+   "local": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "read": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "recipient_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "PrivateMessageReport": {
+   "creator_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PersonId"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessageReportId"
+   },
+   "original_pm_text": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "private_message_id": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessageId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "reason": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "resolved": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   },
+   "resolver_id": {
+    "nullable": true,
+    "required": false,
+    "type": "PersonId"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "PrivateMessageReportResponse": {
+   "private_message_report_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessageReportView"
+   }
+  },
+  "PrivateMessageReportView": {
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "private_message": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessage"
+   },
+   "private_message_creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "private_message_report": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessageReport"
+   },
+   "resolver": {
+    "nullable": true,
+    "required": false,
+    "type": "Person"
+   }
+  },
+  "PrivateMessageResponse": {
+   "private_message_view": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessageView"
+   }
+  },
+  "PrivateMessageView": {
+   "creator": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   },
+   "private_message": {
+    "nullable": false,
+    "required": true,
+    "type": "PrivateMessage"
+   },
+   "recipient": {
+    "nullable": false,
+    "required": true,
+    "type": "Person"
+   }
+  },
+  "PrivateMessagesResponse": {
+   "private_messages": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PrivateMessageView>"
+   }
+  },
+  "ReadableFederationState": {
+   "fail_count": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "instance_id": {
+    "nullable": false,
+    "required": true,
+    "type": "InstanceId"
+   },
+   "last_retry": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "last_successful_id": {
+    "nullable": true,
+    "required": false,
+    "type": "ActivityId"
+   },
+   "last_successful_published_time": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "next_retry": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "ResolveObjectResponse": {
+   "comment": {
+    "nullable": true,
+    "required": false,
+    "type": "CommentView"
+   },
+   "community": {
+    "nullable": true,
+    "required": false,
+    "type": "CommunityView"
+   },
+   "person": {
+    "nullable": true,
+    "required": false,
+    "type": "PersonView"
+   },
+   "post": {
+    "nullable": true,
+    "required": false,
+    "type": "PostView"
+   }
+  },
+  "SearchResponse": {
+   "comments": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommentView>"
+   },
+   "communities": {
+    "nullable": false,
+    "required": true,
+    "type": "List<CommunityView>"
+   },
+   "posts": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PostView>"
+   },
+   "type_": {
+    "nullable": false,
+    "required": true,
+    "type": "SearchType"
+   },
+   "users": {
+    "nullable": false,
+    "required": true,
+    "type": "List<PersonView>"
+   }
+  },
+  "Site": {
+   "actor_id": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "banner": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "content_warning": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "description": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "icon": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "SiteId"
+   },
+   "inbox_url": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "instance_id": {
+    "nullable": false,
+    "required": true,
+    "type": "InstanceId"
+   },
+   "last_refreshed_at": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "name": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "public_key": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "sidebar": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "SiteAggregates": {
+   "comments": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "communities": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "posts": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "site_id": {
+    "nullable": false,
+    "required": true,
+    "type": "SiteId"
+   },
+   "users": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_day": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_half_year": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_month": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "users_active_week": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   }
+  },
+  "SiteResponse": {
+   "site_view": {
+    "nullable": false,
+    "required": true,
+    "type": "SiteView"
+   },
+   "taglines": {
+    "nullable": false,
+    "required": true,
+    "type": "List<Tagline>"
+   }
+  },
+  "SiteView": {
+   "counts": {
+    "nullable": false,
+    "required": true,
+    "type": "SiteAggregates"
+   },
+   "local_site": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalSite"
+   },
+   "local_site_rate_limit": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalSiteRateLimit"
+   },
+   "site": {
+    "nullable": false,
+    "required": true,
+    "type": "Site"
+   }
+  },
+  "Tagline": {
+   "content": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "id": {
+    "nullable": false,
+    "required": true,
+    "type": "Long"
+   },
+   "local_site_id": {
+    "nullable": false,
+    "required": true,
+    "type": "LocalSiteId"
+   },
+   "published": {
+    "nullable": false,
+    "required": true,
+    "type": "String"
+   },
+   "updated": {
+    "nullable": true,
+    "required": false,
+    "type": "String"
+   }
+  },
+  "UpdateTotpResponse": {
+   "enabled": {
+    "nullable": false,
+    "required": true,
+    "type": "Boolean"
+   }
+  }
+ }
+}

@@ -694,6 +694,9 @@ func lemmy_my_user(s *lemmy_session) map[string]any {
 		"show_read_posts": true, "email_verified": true, "accepted_application": true, "open_links_in_new_tab": false, "blur_nsfw": true, "auto_expand": false,
 		"infinite_scroll_enabled": true, "admin": false, "post_listing_mode": "List", "totp_2fa_enabled": false, "enable_keyboard_navigation": false,
 		"enable_animated_images": true, "collapse_bot_comments": false,
+		// Lemmy asks for a donation when this is more than a year past: it
+		// is always now, so an app never asks for one for Mochi.
+		"last_donation_notification": lemmy_time(now()),
 	}
 	return map[string]any{
 		"local_user_view": map[string]any{"local_user": local, "local_user_vote_display_mode": map[string]any{"local_user_id": self["id"], "score": true, "upvotes": true, "downvotes": true, "upvote_percentage": false},
@@ -1195,6 +1198,7 @@ func lemmy_report_view(s *lemmy_session, report map[string]any) (string, map[str
 	common["original_post_body"] = lemmy_optional(mastodon_string(post, "body"))
 	view["post_report"], view["post"], view["community"] = common, pv["post"], pv["community"]
 	view["post_creator"], view["counts"] = pv["creator"], pv["counts"]
+	view["hidden"], view["read"], view["unread_comments"] = pv["hidden"], pv["read"], pv["unread_comments"]
 	view["creator_banned_from_community"] = false
 	return "post_report_view", view
 }

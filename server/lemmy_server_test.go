@@ -34,6 +34,8 @@ type lemmy_forums struct {
 	posts    []map[string]any
 	comments []map[string]any
 	replies  []string
+	mentions []string
+	reports  map[string]map[string]any
 }
 
 func lemmy_fake_community() map[string]any {
@@ -82,7 +84,7 @@ func (f *lemmy_forums) call(s *lemmy_session, a *App, function string, args Map)
 			out = append(out, p)
 		}
 		return out, nil
-	case "lemmy/post", "lemmy/post/vote", "lemmy/post/save", "lemmy/post/edit", "lemmy/post/lock":
+	case "lemmy/post", "lemmy/post/vote", "lemmy/post/save", "lemmy/post/edit", "lemmy/post/lock", "lemmy/post/delete", "lemmy/post/remove", "lemmy/post/feature":
 		p := post(text("post"))
 		if p == nil {
 			return map[string]any{"error": "couldnt_find_post"}, nil
@@ -111,12 +113,29 @@ func (f *lemmy_forums) call(s *lemmy_session, a *App, function string, args Map)
 			}
 		}
 		return out, nil
-	case "lemmy/comment", "lemmy/comment/vote":
+	case "lemmy/comment", "lemmy/comment/vote", "lemmy/comment/edit", "lemmy/comment/delete", "lemmy/comment/remove", "lemmy/comment/save":
 		c := comment(text("comment"))
 		if c == nil {
 			return map[string]any{"error": "couldnt_find_comment"}, nil
 		}
+		if function == "lemmy/comment/edit" {
+			c["body"] = text("content")
+		}
 		return c, nil
+	case "lemmy/block":
+		return lemmy_fake_community(), nil
+	case "lemmy/ban":
+		return map[string]any{"person": map[string]any{"id": text("person"), "url": text("person"), "name": "bob"}}, nil
+	case "lemmy/person":
+		return map[string]any{"person": map[string]any{"id": text("person"), "url": text("person"), "name": "bob", "display": "Bob"},
+			"posts": []any{f.posts[0]}, "comments": []any{f.comments[0]}, "moderates": []any{lemmy_fake_community()}, "post_count": int64(1), "comment_count": int64(1)}, nil
+	case "lemmy/report/resolve":
+		r := f.reports[text("report")]
+		if r == nil {
+			return map[string]any{"error": "couldnt_find_object"}, nil
+		}
+		r["resolved"], r["resolver"] = args["resolved"], map[string]any{"id": "e-alice", "mine": true}
+		return r, nil
 	case "lemmy/comment/create":
 		p := post(text("post"))
 		c := map[string]any{"id": "c" + strconv.Itoa(len(f.comments)+1), "post": p, "creator": map[string]any{"id": "e-alice", "mine": true}, "body": text("content"), "parent": text("parent"), "created": now()}
@@ -133,10 +152,32 @@ func (f *lemmy_forums) call(s *lemmy_session, a *App, function string, args Map)
 			out = append(out, comment(id))
 		}
 		return out, nil
-	case "lemmy/mentions", "lemmy/reports", "lemmy/modlog":
+	case "lemmy/mentions":
+		out := []any{}
+		for _, id := range f.mentions {
+			out = append(out, comment(id))
+		}
+		return out, nil
+	case "lemmy/reports":
+		out := []any{}
+		for _, r := range f.reports {
+			if r["kind"] == text("kind") {
+				out = append(out, r)
+			}
+		}
+		return out, nil
+	case "lemmy/modlog":
 		return []any{}, nil
-	case "lemmy/post/report":
-		return map[string]any{"id": "r1", "kind": "post", "reason": text("reason"), "post": post(text("post")), "reporter": map[string]any{"id": "e-alice", "mine": true}, "created": now()}, nil
+	case "lemmy/post/report", "lemmy/comment/report":
+		r := map[string]any{"id": "r" + strconv.Itoa(len(f.reports)+1), "kind": "post", "reason": text("reason"), "post": post(text("post")), "reporter": map[string]any{"id": "e-alice", "mine": true}, "created": now()}
+		if function == "lemmy/comment/report" {
+			r["kind"], r["comment"], r["post"] = "comment", comment(text("comment")), nil
+		}
+		if f.reports == nil {
+			f.reports = map[string]map[string]any{}
+		}
+		f.reports[mastodon_string(r, "id")] = r
+		return r, nil
 	case "lemmy/search":
 		return map[string]any{"posts": []any{f.posts[0]}, "comments": []any{}, "communities": []any{lemmy_fake_community()}}, nil
 	case "lemmy/resolve":

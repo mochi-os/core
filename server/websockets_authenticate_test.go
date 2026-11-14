@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,9 +158,24 @@ func TestWebsocketTokenTagsTheConnection(t *testing.T) {
 func TestWebsocketProtocolHandshake(t *testing.T) {
 	token := websocket_test_credentials(t)
 
+	// httptest's Close does not wait for a hijacked connection, so the handler
+	// ends the connection after the test returns. Wait for it, its writer and
+	// the presence notifications its end sends, before the environment the
+	// credentials stood up is restored.
+	var handlers sync.WaitGroup
+	t.Cleanup(func() {
+		handlers.Wait()
+		websocket_settle(t)
+		presence_settle()
+	})
+
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.GET("/_/websocket", websocket_connection)
+	engine.GET("/_/websocket", func(c *gin.Context) {
+		handlers.Add(1)
+		defer handlers.Done()
+		websocket_connection(c)
+	})
 	server := httptest.NewServer(engine)
 	defer server.Close()
 	address := "ws" + strings.TrimPrefix(server.URL, "http") + "/_/websocket?key=notifications"

@@ -49,18 +49,30 @@ func websocket_selected(user, app, key string) []string {
 	return ids
 }
 
-func websocket_registry_reset() {
+// websocket_registry_reset stops every registered connection's writer and
+// empties the registry.
+func websocket_registry_reset(t testing.TB) {
 	websockets_lock.Lock()
+	for _, keys := range websockets {
+		for _, clients := range keys {
+			for _, client := range clients {
+				if client.cancel != nil {
+					client.cancel()
+				}
+			}
+		}
+	}
 	websockets = map[string]map[string]map[string]*websocket_client{}
 	websockets_lock.Unlock()
+	websocket_settle(t)
 }
 
 // TestWebsocketWriteStaysWithinItsApp is the finding: two apps hold sockets on
 // the same key — which happens by construction, because entity fingerprints are
 // handed to any app — and neither may reach the other's.
 func TestWebsocketWriteStaysWithinItsApp(t *testing.T) {
-	websocket_registry_reset()
-	defer websocket_registry_reset()
+	websocket_registry_reset(t)
+	defer websocket_registry_reset(t)
 
 	const user, key = "user-1", "9fingerprint"
 	websocket_register_scoped(user, "app-wikis", key, "wikis-connection")
@@ -80,8 +92,8 @@ func TestWebsocketWriteStaysWithinItsApp(t *testing.T) {
 // TestWebsocketWriteReachesItsOwnConnections: the scoping must not cost an app
 // its own delivery, including when several of its connections share a key.
 func TestWebsocketWriteReachesItsOwnConnections(t *testing.T) {
-	websocket_registry_reset()
-	defer websocket_registry_reset()
+	websocket_registry_reset(t)
+	defer websocket_registry_reset(t)
 
 	const user, key = "user-1", "9fingerprint"
 	websocket_register_scoped(user, "app-wikis", key, "first")
@@ -98,8 +110,8 @@ func TestWebsocketWriteReachesItsOwnConnections(t *testing.T) {
 // binding, and its clients may authenticate with a cookie and so carry no app
 // at all — scoping that would silently stop delivering.
 func TestWebsocketCoreSendReachesEveryConnection(t *testing.T) {
-	websocket_registry_reset()
-	defer websocket_registry_reset()
+	websocket_registry_reset(t)
+	defer websocket_registry_reset(t)
 
 	const user, key = "user-1", "unifiedpush"
 	websocket_register_scoped(user, "app-one", key, "one")
@@ -132,15 +144,7 @@ func websocket_ends(t *testing.T, user, app, key, id string) *websocket.Conn {
 	}
 	t.Cleanup(func() { client.CloseNow(); server.Close() })
 
-	websockets_lock.Lock()
-	if websockets[user] == nil {
-		websockets[user] = map[string]map[string]*websocket_client{}
-	}
-	if websockets[user][key] == nil {
-		websockets[user][key] = map[string]*websocket_client{}
-	}
-	websockets[user][key][id] = &websocket_client{ws: <-accepted, app: app}
-	websockets_lock.Unlock()
+	websocket_add(&User{UID: user}, key, id, <-accepted, app)
 	return client
 }
 
@@ -149,8 +153,8 @@ func websocket_ends(t *testing.T, user, app, key, id string) *websocket.Conn {
 // the builtin stops passing its own app and sends unscoped — which is the bug.
 // This one reads both client ends and asserts what arrived.
 func TestStarlarkWriteDeliversOnlyToTheCallingApp(t *testing.T) {
-	websocket_registry_reset()
-	defer websocket_registry_reset()
+	websocket_registry_reset(t)
+	defer websocket_registry_reset(t)
 
 	const user, key = "user-starlark", "9fingerprint"
 	mine := websocket_ends(t, user, "app-caller", key, "mine")
@@ -172,8 +176,8 @@ func TestStarlarkWriteDeliversOnlyToTheCallingApp(t *testing.T) {
 	}
 
 	// The victim must time out rather than receive. A short budget: the frame
-	// would already be there if it had been sent, since both writes happen in
-	// the same call.
+	// would already be there if it had been sent, since both frames are queued
+	// in the same call and the caller's own has already arrived.
 	quiet, stop := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer stop()
 	if _, data, err := theirs.Read(quiet); err == nil {
@@ -197,8 +201,8 @@ func TestStarlarkWriteRequiresAnApp(t *testing.T) {
 // cookie-authenticated socket therefore stops receiving its app's frames; both
 // token paths supply an app.
 func TestWebsocketAppSendSkipsUnidentifiedConnections(t *testing.T) {
-	websocket_registry_reset()
-	defer websocket_registry_reset()
+	websocket_registry_reset(t)
+	defer websocket_registry_reset(t)
 
 	const user, key = "user-1", "notifications"
 	websocket_register_scoped(user, "", key, "cookie-authenticated")

@@ -32,17 +32,41 @@ var (
 // A var so a test can drive the expiry deterministically.
 var websocket_write_timeout = 10 * time.Second
 
+// websocket_queue bounds the frames waiting for one connection's writer.
+const websocket_queue = 64
+
+// websocket_queue_timeout bounds how long a send waits, across all its
+// connections together, for room in full queues. Each frame a writer finishes
+// frees a place, so a connection that is only behind - a Starlark loop of
+// writes outruns any writer - frees one within microseconds and the send goes
+// on. One whose writer finishes no frame in this time is closed rather than
+// waited for or skipped: it has stopped reading, or its link cannot carry what
+// is queued for it this fast, and its client reconnects and fetches what it
+// missed, where a skipped frame would leave a count or a list wrong until the
+// next one. A var so a test can shorten it.
+var websocket_queue_timeout = 1 * time.Second
+
 // websocket_client is one live connection and the app that opened it. The
 // registry key is whatever the client passed in the query string and never
 // identified an app; the app comes from the JWT, which the client cannot claim.
+//
+// Its frames go through queue to its own writer goroutine: one write per
+// connection at a time, in the order sent, and a connection that stops reading
+// holds its own writer rather than the send. Cancelling context ends the
+// writer, and the writer ends the connection.
 type websocket_client struct {
-	ws  *websocket.Conn
-	app string
+	ws      *websocket.Conn
+	app     string
+	queue   chan []byte
+	context context.Context
+	cancel  context.CancelFunc
 }
 
 // websockets_maximum bounds how many connections one user may hold at once;
-// each is a parked goroutine, a file descriptor and three map entries. Set well
-// above real use - a frontend opens one socket per view it is watching.
+// each is three parked goroutines (its reader, its writer and the websocket
+// library's timeout loop), a file descriptor, a queue of up to websocket_queue
+// frames and three map entries. Set well above
+// real use - a frontend opens one socket per view it is watching.
 const websockets_maximum = 32
 
 // websockets_held counts a user's live connections across every key. Read
@@ -198,6 +222,14 @@ func websocket_connection(c *gin.Context) {
 // connected (presence.go), under the login session the browser presented,
 // where one did.
 func websocket_open(u *User, key string, id string, ws *websocket.Conn, app string, session string) {
+	websocket_add(u, key, id, ws, app)
+	presence_connect(u.UID, id, session, "web", "")
+}
+
+// websocket_add puts a connection in the registry and starts its writer.
+func websocket_add(u *User, key string, id string, ws *websocket.Conn, app string) {
+	client := &websocket_client{ws: ws, app: app, queue: make(chan []byte, websocket_queue)}
+	client.context, client.cancel = context.WithCancel(websocket_context)
 	websockets_lock.Lock()
 	_, found := websockets[u.UID]
 	if !found {
@@ -207,57 +239,97 @@ func websocket_open(u *User, key string, id string, ws *websocket.Conn, app stri
 	if !found {
 		websockets[u.UID][key] = map[string]*websocket_client{}
 	}
-	websockets[u.UID][key][id] = &websocket_client{ws: ws, app: app}
+	websockets[u.UID][key][id] = client
 	websockets_lock.Unlock()
-	presence_connect(u.UID, id, session, "web", "")
+	// Guarded: a panic here would otherwise take the process down, where the
+	// write it does used to run on a caller that had its own recovery. The
+	// writer's deferred terminate still runs.
+	go guard("websocket writer", nil, func() { websocket_writer(client, u, key, id) })
+}
+
+// websocket_writer writes a connection's frames in the order they were sent,
+// and ends the connection when a write fails or the connection is cancelled:
+// by websocket_terminate, or by a send that found no room in its queue. It never
+// holds websockets_lock while writing, so a connection that has stopped
+// reading stalls nothing but itself.
+func websocket_writer(client *websocket_client, u *User, key string, id string) {
+	defer websocket_terminate(client.ws, u, key, id)
+	for {
+		select {
+		case <-client.context.Done():
+			return
+		case frame := <-client.queue:
+			// Bounded per write: a client in TCP zero-window otherwise parks
+			// this goroutine for the life of the connection. Taken from the
+			// connection's context, so cancelling it ends a write already
+			// blocked.
+			deadline, cancel := context.WithTimeout(client.context, websocket_write_timeout)
+			err := client.ws.Write(deadline, websocket.MessageText, frame)
+			cancel()
+			if err != nil {
+				return
+			}
+		}
+	}
 }
 
 // websockets_send delivers content to a user's connections on this key. A
 // non-empty app reaches only that app's connections; core passes "" and reaches
 // every connection on the key.
+//
+// It only queues: each connection's writer does the writing, so the caller -
+// an action, an event handler, a commit hook - waits on no connection's writes,
+// only for room in a queue that is full (websocket_queue_timeout).
 func websockets_send(u *User, app string, key string, content any) {
-	// debug("Websocket sending to user %d, key %q: %+v", u.UID, key, content)
-	j := ""
-
-	// The connection is carried into the termination pass, not looked up again:
-	// the reader goroutine deletes the entry on the same failure, so a second
-	// lookup races it and CloseNow panics on nil. Termination needs the write
-	// lock, hence a second pass.
-	type dead struct {
-		id string
-		ws *websocket.Conn
-	}
-	var failed []dead
-
-	// Snapshot the targets, then write outside the lock. A write to a client that
-	// has stopped reading blocks until its deadline, and holding the read lock
-	// across it stalls every other send: Go's RWMutex refuses new readers once a
-	// writer is waiting, so one silent connection would take the whole subsystem
-	// down behind the next websocket_terminate.
-	var targets []dead
+	var targets []*websocket_client
 	websockets_lock.RLock()
-	for id, client := range websocket_targets(u, app, key) {
-		targets = append(targets, dead{id: id, ws: client.ws})
+	for _, client := range websocket_targets(u, app, key) {
+		targets = append(targets, client)
 	}
 	websockets_lock.RUnlock()
 	if len(targets) == 0 {
 		return
 	}
-	j = json_encode(content)
+	frame := []byte(json_encode(content))
 
-	for _, target := range targets {
-		// Bounded per write: a client in TCP zero-window otherwise parks this
-		// goroutine for the life of the process.
-		deadline, cancel := context.WithTimeout(websocket_context, websocket_write_timeout)
-		err := target.ws.Write(deadline, websocket.MessageText, []byte(j))
-		cancel()
-		if err != nil {
-			failed = append(failed, target)
+	// Outside the lock: a full queue waits for room, and holding the read lock
+	// across that would hold the next websocket_terminate, and every send
+	// behind it, since Go's RWMutex admits no new reader once a writer waits.
+	websocket_enqueue(targets, frame)
+}
+
+// websocket_enqueue queues a frame for each connection's writer. Every
+// connection with room has it at once; then the send waits for room in the
+// full ones against one shared websocket_queue_timeout, so several stalled
+// connections cost it that time once, not once each, and cancels each that
+// has none by then. A cancelled connection is skipped at once.
+func websocket_enqueue(targets []*websocket_client, frame []byte) {
+	var full []*websocket_client
+	for _, client := range targets {
+		select {
+		case client.queue <- frame:
+		default:
+			full = append(full, client)
 		}
 	}
-
-	for _, entry := range failed {
-		websocket_terminate(entry.ws, u, key, entry.id)
+	if len(full) == 0 {
+		return
+	}
+	wait, stop := context.WithTimeout(websocket_context, websocket_queue_timeout)
+	defer stop()
+	for _, client := range full {
+		select {
+		case client.queue <- frame:
+		case <-client.context.Done():
+		case <-wait.Done():
+			select {
+			case client.queue <- frame:
+			default:
+				// Its writer finished no frame in that time. Cancelling
+				// never blocks, and the writer closes the connection.
+				client.cancel()
+			}
+		}
 	}
 }
 
@@ -275,15 +347,23 @@ func websocket_targets(u *User, app string, key string) map[string]*websocket_cl
 	return targets
 }
 
-// websocket_terminate closes a connection and removes it from the registry.
-// Safe to call twice for the same id and safe with a nil connection, so a
-// caller that no longer holds one can still clear the registry.
+// websocket_terminate closes a connection, removes it from the registry and
+// stops its writer. Safe to call twice for the same id: the reader and the
+// writer both call it on the way out. The entry is removed only while it is
+// still this connection's, so a late call from either never removes another
+// connection registered under the same id.
 func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	if ws != nil {
 		ws.CloseNow()
 	}
 	websockets_lock.Lock()
-	delete(websockets[u.UID][key], id)
+	client := websockets[u.UID][key][id]
+	if client != nil && client.ws != ws {
+		client = nil
+	}
+	if client != nil {
+		delete(websockets[u.UID][key], id)
+	}
 
 	if len(websockets[u.UID][key]) == 0 {
 		delete(websockets[u.UID], key)
@@ -293,6 +373,9 @@ func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 		delete(websockets, u.UID)
 	}
 	websockets_lock.Unlock()
+	if client != nil {
+		client.cancel()
+	}
 	presence_disconnect(u.UID, id)
 }
 

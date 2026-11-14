@@ -20,7 +20,13 @@ func create_presence_test_env(t *testing.T) *User {
 	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
 	saved := presence_connections
 	presence_connections = map[string]map[string]*presence_connection{}
-	t.Cleanup(func() { presence_connections = saved })
+	// Registered after the linked environment's cleanups, so it runs before
+	// them: a presence change notifies after the call that made it, and those
+	// notifications read the globals the environment restores.
+	t.Cleanup(func() {
+		presence_settle()
+		presence_connections = saved
+	})
 	return alice
 }
 
@@ -157,10 +163,19 @@ func TestPresenceAPI(t *testing.T) {
 func TestWebsocketPresence(t *testing.T) {
 	alice := create_presence_test_env(t)
 	websocket_open(alice, "chat", "w1", nil, "app1", "s1")
+	// The connection's writer ends a moment after the connection, and may
+	// send its presence change; it must be gone before the environment's own
+	// cleanup waits for those.
 	t.Cleanup(func() {
 		websockets_lock.Lock()
+		for _, clients := range websockets[alice.UID] {
+			for _, client := range clients {
+				client.cancel()
+			}
+		}
 		delete(websockets, alice.UID)
 		websockets_lock.Unlock()
+		websocket_settle(t)
 	})
 	if !websocket_registered(alice, "chat", "w1") {
 		t.Fatal("the connection is not registered")

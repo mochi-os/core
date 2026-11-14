@@ -48,7 +48,7 @@ const lemmy_image_maximum = 20 << 20
 func lemmy_engine() *engine {
 	return &engine{
 		name:     "lemmy-client",
-		prefixes: []string{"/api/v3/", "/pictrs/"},
+		prefixes: []string{"/api/v3/", "/pictrs/", "/nodeinfo/2.0.json", "/nodeinfo/2.1.json"},
 		setting:  "fediverse",
 		body:     lemmy_image_maximum + 1<<20,
 		handler:  lemmy_route,
@@ -312,6 +312,14 @@ func lemmy_route(c *gin.Context) bool {
 		return true
 	}
 	path := strings.TrimSuffix(c.Request.URL.Path, "/")
+	if version, ok := lemmy_nodeinfo_paths[path]; ok {
+		if c.Request.Method != http.MethodGet {
+			lemmy_error(c, http.StatusNotFound, "not_found")
+			return true
+		}
+		lemmy_nodeinfo(c, version)
+		return true
+	}
 	if rest, ok := strings.CutPrefix(path, "/pictrs/image"); ok {
 		lemmy_pictrs(c, strings.Trim(rest, "/"))
 		return true
@@ -328,6 +336,32 @@ func lemmy_route(c *gin.Context) bool {
 		lemmy_error(c, http.StatusNotFound, "unknown")
 	}
 	return true
+}
+
+// lemmy_nodeinfo_paths are Lemmy's own NodeInfo addresses, with the schema
+// version each answers.
+var lemmy_nodeinfo_paths = map[string]string{"/nodeinfo/2.0.json": "2.0", "/nodeinfo/2.1.json": "2.1"}
+
+// lemmy_nodeinfo answers NodeInfo at Lemmy's own addresses as the Lemmy the
+// engine answers as. Lemmy's apps fetch these addresses directly, refuse a
+// server whose software is not named lemmy, and pick the interface by its
+// version; the discovery document the rest of the fediverse follows still
+// leads to /nodeinfo/2.1, which names Mochi. The counts are zero and sign-up
+// closed, as the site's are.
+func lemmy_nodeinfo(c *gin.Context, version string) {
+	c.JSON(http.StatusOK, map[string]any{
+		"version":           version,
+		"software":          map[string]any{"name": "lemmy", "version": lemmy_version},
+		"protocols":         []string{"activitypub"},
+		"services":          map[string]any{"inbound": []string{}, "outbound": []string{}},
+		"openRegistrations": false,
+		"usage": map[string]any{
+			"users":         map[string]any{"total": 0, "activeHalfyear": 0, "activeMonth": 0},
+			"localPosts":    0,
+			"localComments": 0,
+		},
+		"metadata": map[string]any{},
+	})
 }
 
 // lemmy_public answers what needs no sign-in: logging in, the site, and the

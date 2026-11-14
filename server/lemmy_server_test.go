@@ -238,6 +238,38 @@ func lemmy_client_login(t *testing.T, password string) string {
 	return jwt
 }
 
+// TestLemmyNodeinfo: Lemmy's apps find a Lemmy at Lemmy's own NodeInfo
+// addresses, with every field they read, while the discovery document the
+// rest of the fediverse follows still leads to Mochi's own.
+func TestLemmyNodeinfo(t *testing.T) {
+	create_lemmy_test_env(t)
+	engines_test_reset(t)
+	engine_register(activitypub_engine())
+	engine_register(lemmy_engine())
+	for path, version := range map[string]string{"/nodeinfo/2.0.json": "2.0", "/nodeinfo/2.1.json": "2.1"} {
+		if e := engine_for(path); e == nil || e.name != "lemmy-client" {
+			t.Errorf("THE POINT: %s is answered by %v, not the Lemmy engine", path, e)
+		}
+		w, answer := lemmy_client_request(t, "", "GET", path, nil)
+		software, _ := answer["software"].(map[string]any)
+		usage, _ := answer["usage"].(map[string]any)
+		users, _ := usage["users"].(map[string]any)
+		if w.Code != http.StatusOK || answer["version"] != version || software["name"] != "lemmy" || software["version"] != lemmy_version {
+			t.Errorf("THE POINT: %s = %d %v", path, w.Code, answer)
+		}
+		_, registrations := answer["openRegistrations"].(bool)
+		if !registrations || usage["localPosts"] == nil || usage["localComments"] == nil || users["total"] == nil || users["activeHalfyear"] == nil || users["activeMonth"] == nil {
+			t.Errorf("%s lacks a field Lemmy's apps read: %v", path, answer)
+		}
+		if w, _ := lemmy_client_request(t, "", "POST", path, nil); w.Code != http.StatusNotFound {
+			t.Errorf("POST %s: %d", path, w.Code)
+		}
+	}
+	if e := engine_for("/nodeinfo/2.1"); e == nil || e.name != "activitypub" {
+		t.Errorf("/nodeinfo/2.1 is answered by %v, not the ActivityPub engine", e)
+	}
+}
+
 // TestLemmySession: a Lemmy app signs in with the account's handle and a
 // minted password and is given a JWT naming the account's person by its
 // number; the site names the account for a signed-in app alone; a wrong

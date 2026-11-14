@@ -14,9 +14,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -2669,11 +2671,12 @@ func account_test_url(url, secret, language string) AccountTestResult {
 	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.url_status", map[string]any{"status": itoa(resp.StatusCode)})}
 }
 
-// mochi.account.notify(app, category, object, title, body, link, urgency?, account?, id?) -> dict:
+// mochi.account.notify(app, category, object, title, body, link?, urgency?, account?, id?, queue?) -> dict:
 // Notify the user across one or all verified notification accounts, dispatching
-// via the matching provider driver. Returns {sent, failed}. id echoes the
-// notifications row id into push payloads so a tap can clear it. For
-// policy-aware routing call
+// via the matching provider driver. Returns {sent, failed}. With queue=True the
+// caller does not wait for any destination: each push is sent from the push
+// queue, and the call returns {queued}. id echoes the notifications row id
+// into push payloads so a tap can clear it. For policy-aware routing call
 // mochi.service.call("notifications", "send", ...) instead.
 func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "accounts/notify"); err != nil {
@@ -2686,6 +2689,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	var app, category, object, title, body, link, urgency, id, account string
+	var queue bool
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
 		"app", &app,
 		"category", &category,
@@ -2696,6 +2700,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		"urgency?", &urgency,
 		"account?", &account,
 		"id?", &id,
+		"queue?", &queue,
 	); err != nil {
 		return nil, err
 	}
@@ -2727,6 +2732,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	sent := 0
 	failed := 0
+	queued := 0
 	chosen := account != ""
 
 	for _, row := range rows {
@@ -2753,42 +2759,40 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			App: app, Category: category, Object: object,
 			Title: title, Body: body, Link: link, Event: id,
 		}
+
+		// Queued, the caller goes on at once: the push is a row, sent from
+		// here by another goroutine, and retried like any other.
+		if queue {
+			if push_deliverers[ptype] == nil || !push_configured(ptype) {
+				continue
+			}
+			push_dispatch(p)
+			queued++
+			continue
+		}
+
 		success, retire, handled := account_deliver(p)
 		if !handled {
 			continue
 		}
-
 		if success {
 			sent++
-			// Update last_delivered for TTL sweep
-			db.exec("update accounts set last_delivered=? where id=?", time.Now().Unix(), account)
-			continue
+		} else {
+			failed++
 		}
-
-		failed++
-
-		if retire {
-			// Google reported UNREGISTERED / INVALID_ARGUMENT — the token is
-			// permanently dead. Drop the row so the next FcmRegistrar.connect
-			// from the phone creates a fresh one rather than the upsert
-			// resurrecting the dead token. Nothing to retry.
-			db.exec("delete from accounts where id=?", account)
-			continue
-		}
-
-		// Remove expired browser subscriptions on any failure (longstanding
-		// behaviour), so there is nothing left to retry to.
-		if ptype == "browser" {
-			db.exec("delete from accounts where id=?", account)
-			continue
-		}
-
-		// Everything else is queued as transient: the deliver functions do not report
-		// whether a failure was permanent, so the attempt cap and expiry bound the
-		// cost of guessing wrong.
-		push_queue_add(p)
+		// The same outcome rules as a queued push: a delivery updates
+		// last_delivered for the TTL sweep; a destination that is permanently
+		// dead (FCM's UNREGISTERED or INVALID_ARGUMENT, a push service's
+		// answer that the subscription is gone) is deleted, so the phone's
+		// next registration creates a fresh row rather than the upsert
+		// resurrecting the dead one; any other failure is queued as
+		// transient, the attempt cap and expiry bounding the cost of a guess.
+		push_settle("", 0, p, success, retire, handled)
 	}
 
+	if queue {
+		return sl_encode(map[string]any{"queued": queued}), nil
+	}
 	return sl_encode(map[string]any{
 		"sent":   sent,
 		"failed": failed,
@@ -2796,18 +2800,20 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 }
 
 // account_deliver_browser sends a push notification to a browser
-func account_deliver_browser(data map[string]any, title, body, link, tag string) bool {
+func account_deliver_browser(data map[string]any, title, body, link, tag string) (success, retire bool) {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
-		return false
+		return false, false
 	}
 
 	endpoint, _ := data["endpoint"].(string)
 	auth, _ := data["auth"].(string)
 	p256dh, _ := data["p256dh"].(string)
 
-	if endpoint == "" || auth == "" || p256dh == "" {
-		return false
+	if endpoint == "" || auth == "" || p256dh == "" || !webpush_keys_usable(auth, p256dh) {
+		// A subscription stored without what a push needs, or with keys no
+		// push can be encrypted to, can never deliver.
+		return false, true
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -2838,17 +2844,58 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 	})
 
 	if err != nil {
-		return false
+		return false, false
 	}
 	resp.Body.Close()
 
-	return resp.StatusCode == 201
+	// A 403 is the push service refusing the credentials this server signs
+	// with for the subscription (RFC 8292). Most often the subscription was made
+	// against another key, as one is when the keys were made again or the
+	// account came from another server, and no retry changes that; the browser
+	// subscribes afresh when push is next turned on. A fault in this server's
+	// own signing, such as a clock a day out, retires subscriptions too, as any
+	// failure did before.
+	return resp.StatusCode == 201, webpush_gone(resp.StatusCode) || resp.StatusCode == http.StatusForbidden
+}
+
+// webpush_keys_usable reports whether a subscription's keys decode as a push
+// is encrypted to them: auth as base64, padded or not, standard or URL, and
+// p256dh as an uncompressed point on P-256.
+func webpush_keys_usable(auth, p256dh string) bool {
+	if _, ok := webpush_key(auth); !ok {
+		return false
+	}
+	point, ok := webpush_key(p256dh)
+	if !ok {
+		return false
+	}
+	_, err := ecdh.P256().NewPublicKey(point)
+	return err == nil
+}
+
+// webpush_key decodes a subscription key as the Web Push library does.
+func webpush_key(key string) ([]byte, bool) {
+	if rest := len(key) % 4; rest != 0 {
+		key += strings.Repeat("=", 4-rest)
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(key); err == nil {
+		return decoded, true
+	}
+	decoded, err := base64.URLEncoding.DecodeString(key)
+	return decoded, err == nil
+}
+
+// webpush_gone reports whether a push service's answer means the subscription
+// no longer exists (RFC 8030: 404 for an expired one, 410 for one removed), so
+// it will never deliver again and its account is retired rather than retried.
+func webpush_gone(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusGone
 }
 
 // account_deliver_unifiedpush sends to the distributor the user picked. A
 // path-only endpoint is our own: forward the cleartext payload over the user's
 // WebSocket. An absolute URL is a third-party distributor: RFC 8030 Web Push.
-func account_deliver_unifiedpush(user *User, account string, data map[string]any, title, body, link, tag, app, id string) bool {
+func account_deliver_unifiedpush(user *User, account string, data map[string]any, title, body, link, tag, app, id string) (success, retire bool) {
 	return unifiedpush_send(user, account, data, map[string]string{
 		"title": title,
 		"body":  body,
@@ -2860,11 +2907,12 @@ func account_deliver_unifiedpush(user *User, account string, data map[string]any
 }
 
 // unifiedpush_send delivers one payload, a notification's fields or a sync
-// signal, to a UnifiedPush account.
-func unifiedpush_send(user *User, account string, data map[string]any, fields map[string]string) bool {
+// signal, to a UnifiedPush account. retire is true when the distributor says
+// the subscription is gone.
+func unifiedpush_send(user *User, account string, data map[string]any, fields map[string]string) (success, retire bool) {
 	endpoint, _ := data["endpoint"].(string)
 	if endpoint == "" {
-		return false
+		return false, false
 	}
 
 	payload, _ := json.Marshal(fields)
@@ -2882,18 +2930,18 @@ func unifiedpush_send(user *User, account string, data map[string]any, fields ma
 			"payload": string(payload),
 			"account": account,
 		})
-		return true
+		return true, false
 	}
 
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
-		return false
+		return false, false
 	}
 
 	auth, _ := data["auth"].(string)
 	p256dh, _ := data["p256dh"].(string)
 	if auth == "" || p256dh == "" {
-		return false
+		return false, false
 	}
 
 	sub := webpush.Subscription{
@@ -2914,12 +2962,12 @@ func unifiedpush_send(user *User, account string, data map[string]any, fields ma
 	})
 
 	if err != nil {
-		return false
+		return false, false
 	}
 	resp.Body.Close()
 
-	// 201 Created = success. 404/410 = subscription dead (caller drops the row).
-	return resp.StatusCode == 201
+	// 201 Created is success; 404 and 410 say the subscription is dead.
+	return resp.StatusCode == 201, webpush_gone(resp.StatusCode)
 }
 
 // account_deliver_email sends a notification via email

@@ -170,7 +170,7 @@ func fcm_send(token string, fields map[string]string) (success bool, retire bool
 		// Google's own fault, and the class fcm_post has already retried
 		// once. The push queue retries it again over the next quarter hour,
 		// so a blip that heals itself is nothing for the operator to think
-		// about; push_queue_process warns if delivery is genuinely lost.
+		// about; push_settle warns if delivery is genuinely lost.
 		debug("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
 	default:
 		// A 4xx we do not retire on is ours to fix: rejected credentials, a

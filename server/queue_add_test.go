@@ -447,6 +447,9 @@ func TestPushQueueStopsAtTheFirstRefusal(t *testing.T) {
 	if !held("push-3") {
 		t.Error("the pass went on writing past a refused write")
 	}
+	if fresh, retry, _, _ := push_test_held(); fresh+retry != 0 {
+		t.Errorf("%d places still held after the pass: rows it deleted kept theirs, and the queue stops sending once every place is gone", fresh+retry)
+	}
 }
 
 // A provider that panics costs its push one attempt, retried as a transient
@@ -459,7 +462,7 @@ func TestPushDeliveryPanicContained(t *testing.T) {
 	db.exec(`insert into pushes (id, user, account, type, identifier, data, app, category, object, title, body, link, event, attempts, next_retry, created)
 		values ('probe-push', 'push-user', 'acct', 'probe', '', '{}', '', '', '', '', '', '', '', 1, 0, ?)`, now())
 
-	push_queue_process()
+	push_test_pass()
 
 	row := push_test_row(t, "probe-push")
 	if row == nil {

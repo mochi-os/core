@@ -91,7 +91,7 @@ func TestUnifiedPushDeliverLocalFastPath(t *testing.T) {
 		"endpoint": "/notifications/-/push/inbound/abc123",
 	}
 
-	ok := account_deliver_unifiedpush(user, "42", data, "Title", "Body", "", "tag", "", "")
+	ok, _ := account_deliver_unifiedpush(user, "42", data, "Title", "Body", "", "tag", "", "")
 	if !ok {
 		t.Error("account_deliver_unifiedpush returned false for local fast-path; want true")
 	}
@@ -122,7 +122,7 @@ func TestUnifiedPushDeliverRemote(t *testing.T) {
 		"p256dh":   p256dh,
 	}
 
-	ok := account_deliver_unifiedpush(user, "42", data, "Title", "Body", "", "tag", "", "")
+	ok, _ := account_deliver_unifiedpush(user, "42", data, "Title", "Body", "", "tag", "", "")
 	if !ok {
 		t.Errorf("account_deliver_unifiedpush returned false for remote endpoint; want true")
 	}
@@ -151,8 +151,68 @@ func TestUnifiedPushDeliverRemoteGone(t *testing.T) {
 		"p256dh":   p256dh,
 	}
 
-	if account_deliver_unifiedpush(user, "42", data, "T", "B", "", "tag", "", "") {
+	if ok, _ := account_deliver_unifiedpush(user, "42", data, "T", "B", "", "tag", "", ""); ok {
 		t.Error("delivery should fail when push service returns 410 Gone")
+	}
+}
+
+// TestWebPushGoneRetires: a push service that says the subscription is gone
+// (404 or 410) retires the account, for UnifiedPush and browsers alike, and a
+// browser's subscription is retired too when its push service refuses this
+// server's key (403) or it was stored without its keys. Any other failure is
+// retried. Unretired, a dead subscription was retried five times for every
+// notification and then mailed the administrator.
+func TestWebPushGoneRetires(t *testing.T) {
+	private_endpoints_allowed(t)
+	setup_vapid(t)
+	auth, p256dh := generate_subscription_keys(t)
+	for _, c := range []struct {
+		status      int
+		unifiedpush bool
+		browser     bool
+	}{
+		{http.StatusNotFound, true, true},
+		{http.StatusGone, true, true},
+		{http.StatusForbidden, false, true},
+		{http.StatusUnauthorized, false, false},
+		{http.StatusInternalServerError, false, false},
+		{http.StatusTooManyRequests, false, false},
+		{http.StatusRequestEntityTooLarge, false, false},
+		{http.StatusCreated, false, false},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(c.status)
+		}))
+		data := map[string]any{"endpoint": server.URL + "/push/abc", "auth": auth, "p256dh": p256dh}
+
+		ok, retire := account_deliver_unifiedpush(&User{UID: "u1"}, "42", data, "T", "B", "", "tag", "", "")
+		if ok != (c.status == http.StatusCreated) || retire != c.unifiedpush {
+			t.Errorf("UnifiedPush answered %d: success %v, retire %v; want success %v, retire %v", c.status, ok, retire, c.status == http.StatusCreated, c.unifiedpush)
+		}
+		ok, retire = account_deliver_browser(data, "T", "B", "", "tag")
+		if ok != (c.status == http.StatusCreated) || retire != c.browser {
+			t.Errorf("browser push answered %d: success %v, retire %v; want success %v, retire %v", c.status, ok, retire, c.status == http.StatusCreated, c.browser)
+		}
+		server.Close()
+	}
+
+	for _, bad := range []struct{ auth, p256dh string }{
+		{"not base64!", p256dh},
+		{auth, "not base64!"},
+		{auth, "BAECAwQ"},
+	} {
+		data := map[string]any{"endpoint": "https://push.example/abc", "auth": bad.auth, "p256dh": bad.p256dh}
+		if ok, retire := account_deliver_browser(data, "T", "B", "", "tag"); ok || !retire {
+			t.Errorf("a browser subscription with keys %q, %q no push can be encrypted to: success %v, retire %v; want it retired", bad.auth, bad.p256dh, ok, retire)
+		}
+	}
+
+	for _, missing := range []string{"endpoint", "auth", "p256dh"} {
+		data := map[string]any{"endpoint": "https://push.example/abc", "auth": auth, "p256dh": p256dh}
+		delete(data, missing)
+		if ok, retire := account_deliver_browser(data, "T", "B", "", "tag"); ok || !retire {
+			t.Errorf("a browser subscription stored without its %s: success %v, retire %v; want it retired, as it can never deliver", missing, ok, retire)
+		}
 	}
 }
 
@@ -176,7 +236,7 @@ func setup_vapid(t *testing.T) {
 func TestUnifiedPushDeliverEmptyEndpoint(t *testing.T) {
 	user := &User{UID: "u1"}
 	data := map[string]any{} // no endpoint
-	if account_deliver_unifiedpush(user, "42", data, "T", "B", "", "tag", "", "") {
+	if ok, _ := account_deliver_unifiedpush(user, "42", data, "T", "B", "", "tag", "", ""); ok {
 		t.Error("delivery should fail when endpoint is empty")
 	}
 }
@@ -206,7 +266,7 @@ func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
 		"p256dh":   p256dh,
 	}
 
-	if !account_deliver_unifiedpush(user, "42", data, "T", "B", "", "tag", "", "") {
+	if ok, _ := account_deliver_unifiedpush(user, "42", data, "T", "B", "", "tag", "", ""); !ok {
 		t.Fatal("delivery failed")
 	}
 	if expected_host == "" {

@@ -1,4 +1,6 @@
-// Mochi server: retry for pushes whose destination was momentarily unreachable.
+// Mochi server: the push queue. A notify with queue=True sends each push from
+// another goroutine, or leaves it as a row when every place is taken; a push
+// that fails, inline or queued, is retried from the same rows.
 //
 // Same shape as queue.go's P2P retry - durable row, exponential ladder with
 // jitter, bounded attempts - plus an expiry: a row that has not landed within
@@ -55,7 +57,7 @@ func (p *Push) tag() string { return p.App + "-" + p.Category + "-" + p.Object }
 // provider is wired once; push_test asserts every notify provider has an entry.
 var push_deliverers = map[string]func(*Push) (success, retire bool){
 	"browser": func(p *Push) (bool, bool) {
-		return account_deliver_browser(p.Data, p.Title, p.Body, p.Link, p.tag()), false
+		return account_deliver_browser(p.Data, p.Title, p.Body, p.Link, p.tag())
 	},
 	"email": func(p *Push) (bool, bool) {
 		return account_deliver_email(p.Identifier, p.Title, p.Body, p.Link), false
@@ -77,7 +79,7 @@ var push_deliverers = map[string]func(*Push) (success, retire bool){
 		return account_deliver_ntfy(server, topic, token, p.Title, p.Body, p.Link), false
 	},
 	"unifiedpush": func(p *Push) (bool, bool) {
-		return account_deliver_unifiedpush(p.User, p.Account, p.Data, p.Title, p.Body, p.Link, p.tag(), p.App, p.Event), false
+		return account_deliver_unifiedpush(p.User, p.Account, p.Data, p.Title, p.Body, p.Link, p.tag(), p.App, p.Event)
 	},
 	"fcm": func(p *Push) (bool, bool) {
 		success, retire, _ := account_deliver_fcm(p.Data, p.Title, p.Body, p.Link, p.tag(), p.App, p.Event)
@@ -119,50 +121,284 @@ func account_deliver(p *Push) (success, retire, handled bool) {
 	return success, retire, true
 }
 
-// push_queue_add records a failed push for a later attempt. Called only for a
-// transient failure: a retired destination is deleted by the caller instead,
-// and an unknown provider never reaches here.
-func push_queue_add(p *Push) {
+// push_queue_insert writes p as a row tried attempts times and due at due, and
+// answers its id, or "" when the row could not be written.
+func push_queue_insert(p *Push, attempts int, due int64) string {
 	if p.User == nil || p.Account == "" {
-		return
+		return ""
 	}
 	data, err := json.Marshal(p.Data)
 	if err != nil {
 		debug("Push not queuing %q: payload will not encode: %v", p.Account, err)
-		return
+		return ""
 	}
 	db := db_open("db/queue.db")
 	if db == nil {
 		info("Push not queuing %q: %v", p.Account, error_queue_unavailable)
-		return
+		return ""
 	}
-	if err := db.exec_e(`insert into pushes (id, user, account, type, identifier, data, app, category,
+	id := uid()
+	if err := push_write(db, `insert into pushes (id, user, account, type, identifier, data, app, category,
 			object, title, body, link, event, attempts, next_retry, created)
-		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		uid(), p.User.UID, p.Account, p.Type, p.Identifier, string(data),
+		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, p.User.UID, p.Account, p.Type, p.Identifier, string(data),
 		p.App, p.Category, p.Object, p.Title, p.Body, p.Link, p.Event,
-		queue_next_retry(0), now()); err != nil {
+		attempts, due, now()); err != nil {
 		info("Push not queuing %q: %v", p.Account, err)
+		return ""
+	}
+	return id
+}
+
+// Places: every push sent from the queue holds one while its destination
+// answers. Serial sending would let one unreachable destination hold every
+// other push for its timeout, and an unbounded number would let a burst of
+// notifications open a connection each. push_senders new pushes and
+// push_retry_senders retries are in flight at once across the server, so
+// destinations that keep failing never hold the places a new notification is
+// sent from; a user has at most push_user_senders in flight, so one user's slow
+// destinations never hold everyone's; and an account has one, so its pushes
+// arrive in the order they were raised and a provider's first send (a Matrix
+// notices room, made then) is never made twice at once. push_queue_batch is
+// how many due rows of each kind one pass reads.
+const (
+	push_queue_batch   = 100
+	push_senders       = 32
+	push_retry_senders = 8
+	push_user_senders  = 4
+)
+
+type push_places struct {
+	lock     sync.Mutex
+	fresh    int
+	retry    int
+	users    map[string]int
+	accounts map[string]bool
+	// backlog records that a push was left as a due row for want of a place,
+	// so the next place to come free wakes the manager to send it.
+	backlog bool
+}
+
+var push_flight = &push_places{users: map[string]int{}, accounts: map[string]bool{}}
+
+// free reports whether a push of user's to account could be sent now. The lock
+// is held.
+func (places *push_places) free(user, account string, retry bool) bool {
+	if places.accounts[user+"/"+account] || places.users[user] >= push_user_senders {
+		return false
+	}
+	if retry {
+		return places.retry < push_retry_senders
+	}
+	return places.fresh < push_senders
+}
+
+// room reports whether a place of the kind could be free for anyone, and if
+// not records that a push is waiting, so a pass with every place taken reads
+// no rows.
+func (places *push_places) room(retry bool) bool {
+	places.lock.Lock()
+	defer places.lock.Unlock()
+	full := places.fresh >= push_senders
+	if retry {
+		full = places.retry >= push_retry_senders
+	}
+	if full {
+		places.backlog = true
+	}
+	return !full
+}
+
+// take holds a place for a push of user's to account if one is free, without
+// waiting, and otherwise records that a push is waiting.
+func (places *push_places) take(user, account string, retry bool) bool {
+	places.lock.Lock()
+	defer places.lock.Unlock()
+	if !places.free(user, account, retry) {
+		places.backlog = true
+		return false
+	}
+	places.accounts[user+"/"+account] = true
+	places.users[user]++
+	if retry {
+		places.retry++
+	} else {
+		places.fresh++
+	}
+	return true
+}
+
+// release gives a place back. With wake, it also wakes the manager if a push is
+// waiting for one; a pass giving back the places of rows it will not send does
+// not, since that would only start the same pass again.
+func (places *push_places) release(user, account string, retry, wake bool) {
+	places.lock.Lock()
+	delete(places.accounts, user+"/"+account)
+	places.users[user]--
+	if places.users[user] <= 0 {
+		delete(places.users, user)
+	}
+	if retry {
+		places.retry--
+	} else {
+		places.fresh--
+	}
+	waiting := wake && places.backlog
+	if waiting {
+		places.backlog = false
+	}
+	places.lock.Unlock()
+	if waiting {
+		push_wake_manager()
 	}
 }
 
-// push_queue_batch is how many due rows one pass takes, push_queue_workers how
-// many are in flight at once. Serial sending would let one unreachable
-// destination hold the whole queue for its timeout.
-const (
-	push_queue_batch   = 100
-	push_queue_workers = 8
-)
+// wait records that a push has been left as a due row: the manager is woken
+// now if a place is already free for it, and otherwise by the next place to
+// come free.
+func (places *push_places) wait(user, account string, retry bool) {
+	places.lock.Lock()
+	free := places.free(user, account, retry)
+	if !free {
+		places.backlog = true
+	}
+	places.lock.Unlock()
+	if free {
+		push_wake_manager()
+	}
+}
 
-// push_claim is how far a pass moves its batch's retry time on before sending,
-// in seconds: past any batch's sending time, so a pass that cannot record what
-// it delivered sends those pushes again only once this has passed, not on the
-// next tick.
+// push_wake tells the manager that a row is due now.
+var push_wake = make(chan struct{}, 1)
+
+func push_wake_manager() {
+	select {
+	case push_wake <- struct{}{}:
+	default:
+	}
+}
+
+// push_sending counts the pushes in flight, so a test can wait for them.
+var push_sending sync.WaitGroup
+
+// push_dispatch sends a queued notify's push without holding its caller. With a
+// place free it goes from a goroutine at once, and is written to the queue only
+// if it fails, as an inline push is. With none it is written due now, and the
+// manager sends it when a place comes free. A row queue.db will not take is
+// sent by the caller, as an unqueued notify is.
+func push_dispatch(p *Push) {
+	if push_flight.take(p.User.UID, p.Account, false) {
+		push_start("", 0, p)
+		return
+	}
+	if push_queue_insert(p, 0, now()) == "" {
+		success, retire, handled := push_deliver(p)
+		push_settle("", 0, p, success, retire, handled)
+		return
+	}
+	push_flight.wait(p.User.UID, p.Account, false)
+}
+
+// push_start sends p, the push of row id (or of no row) tried attempts times
+// before, from a goroutine holding its place. The place goes back as soon as
+// the destination has answered, before the outcome is written.
+func push_start(id string, attempts int, p *Push) {
+	push_sending.Add(1)
+	go func() {
+		defer push_sending.Done()
+		success, retire, handled := push_deliver(p)
+		push_flight.release(p.User.UID, p.Account, attempts > 0, true)
+		guard("push settle", nil, func() {
+			push_settle(id, attempts, p, success, retire, handled)
+		})
+	}()
+}
+
+// push_deliver is account_deliver for a push sent by the queue. A provider that
+// panics costs the push an attempt, retried like any transient failure;
+// unguarded, it would end the process.
+func push_deliver(p *Push) (success, retire, handled bool) {
+	guard("push delivery", func() { handled = true }, func() {
+		success, retire, handled = account_deliver(p)
+	})
+	return success, retire, handled
+}
+
+// push_settle records an attempt's outcome. Row id goes once the push lands,
+// its destination is dead or unknown, or it has run out of attempts, and is
+// otherwise due again further up the ladder; a push sent with no row is given
+// one at its first failure. A delivery updates the account's last_delivered,
+// and a dead destination's account is deleted.
+func push_settle(id string, attempts int, p *Push, success, retire, handled bool) {
+	write := func(query string, values ...any) {
+		if id == "" {
+			return
+		}
+		db := db_open("db/queue.db")
+		if db == nil {
+			return
+		}
+		// A refused write leaves the row claimed: it is sent again only once
+		// the claim runs out.
+		if err := push_write(db, query, values...); err != nil {
+			info("Push queue write failed: %v", err)
+		}
+	}
+	switch {
+	case success:
+		write("delete from pushes where id=?", id)
+		db_user_brief(p.User, "user").exec_bg("push delivered", "update accounts set last_delivered=? where id=?", now(), p.Account)
+	case retire || !handled:
+		// Permanently dead, or a provider this build does not know or this
+		// server has not configured. Retrying any of them forever is how a
+		// queue becomes a leak.
+		write("delete from pushes where id=?", id)
+		if retire {
+			db_user_brief(p.User, "user").exec_bg("push retire", "delete from accounts where id=?", p.Account)
+		}
+	case attempts+1 >= push_attempts_maximum:
+		// The notification is lost, and this is the one moment in the path
+		// worth an operator's attention: every failure that reaches here was
+		// transient by construction, and this is where that stops being true.
+		// The email throttle keys on the format, so a provider outage costs one
+		// mail rather than one per push.
+		warn("Push giving up on %s destination %q after %d attempts",
+			p.Type, p.Account, attempts+1)
+		write("delete from pushes where id=?", id)
+	case id == "":
+		push_queue_insert(p, attempts+1, queue_next_retry(attempts))
+	default:
+		write("update pushes set attempts=?, next_retry=? where id=?",
+			attempts+1, queue_next_retry(attempts), id)
+	}
+}
+
+// push_claim is how far a pass moves the retry time of the rows it sends on, in
+// seconds: past any send's time, so a row whose outcome cannot be recorded is
+// sent again only once this has passed, not on the next pass.
 const push_claim = 15 * 60
 
-// push_queue_process makes one pass over the due rows and reports how many it
-// acted on, so the manager can loop straight back in. Read, send concurrently,
-// then apply outcomes: every database write stays on this goroutine.
+// push_queue_expire drops the rows that have not landed within push_expiry: a
+// notification nobody has received in six hours is not worth a phone buzzing
+// now. The manager runs it on its tick, not on every pass, as it reads the
+// whole table.
+func push_queue_expire() {
+	db := db_open("db/queue.db")
+	if db == nil {
+		return
+	}
+	if err := push_write(db, "delete from pushes where created<?", now()-push_expiry); err != nil {
+		info("Push queue write failed: %v", err)
+	}
+}
+
+// push_lookup finds a row's user. A var so a test can make it fail.
+var push_lookup = user_by_uid
+
+// push_queue_process makes one pass over the due rows, starts a send for each
+// that finds a place, and reports how many rows it acted on, so the manager can
+// loop straight back in. It never waits for a send: each records its own
+// outcome, and a row left for want of a place is sent when one comes free.
 func push_queue_process() int {
 	db := db_open("db/queue.db")
 	if db == nil {
@@ -170,65 +406,82 @@ func push_queue_process() int {
 	}
 	// The first write queue.db refuses ends the pass, and with 0, so the
 	// manager waits for its next tick rather than looping straight back onto
-	// rows it could not settle, sending their pushes again each time. Nothing
-	// more is written once one has failed: each would wait out the same lock.
-	failed := false
+	// rows it could not settle.
 	write := func(query string, values ...any) bool {
-		if failed {
-			return false
-		}
 		if err := push_write(db, query, values...); err != nil {
 			info("Push queue write failed: %v", err)
-			failed = true
+			return false
 		}
-		return !failed
+		return true
 	}
 
-	// Expired rows go first: a notification nobody has received in six hours
-	// is not worth a phone buzzing now, and dropping them before the due query
-	// keeps a dead destination from occupying the batch every tick.
-	write("delete from pushes where created < ?", now()-push_expiry)
-	if failed {
-		return 0
-	}
-
-	rows, err := db.rows("select * from pushes where next_retry <= ? order by next_retry limit ?", now(), push_queue_batch)
-	if err != nil || len(rows) == 0 {
-		return 0
+	// New pushes left for want of a place, and retries, are read apart, each
+	// in the order it came due, so neither keeps the other out of the pass. A
+	// row past its expiry is left for push_queue_expire.
+	var rows []map[string]any
+	for _, retry := range []bool{false, true} {
+		if !push_flight.room(retry) {
+			continue
+		}
+		kind := "attempts=0"
+		if retry {
+			kind = "attempts>0"
+		}
+		part, err := db.rows("select * from pushes where "+kind+" and next_retry<=? and created>=? order by next_retry limit ?", now(), now()-push_expiry, push_queue_batch)
+		if err != nil {
+			return 0
+		}
+		rows = append(rows, part...)
 	}
 
 	type attempt struct {
 		id       string
 		attempts int
-		user     *User
+		user     string
+		account  string
 		push     *Push
-		success  bool
-		retire   bool
-		handled  bool
 	}
 
 	acted := 0
-	var sending []*attempt
+	var taken []*attempt
+	// A place held for a row whose send never starts goes back however the
+	// pass ends, a panic in a lookup included. Each row is added the moment
+	// its place is taken.
+	started := false
+	defer func() {
+		if !started {
+			for _, a := range taken {
+				push_flight.release(a.user, a.account, a.attempts > 0, false)
+			}
+		}
+	}()
 
 	for _, row := range rows {
-		id := row_string(row, "id")
-
-		user := user_by_uid(row_string(row, "user"))
-		if user == nil {
-			// The account went away with its user. Nothing to deliver to.
-			if !write("delete from pushes where id=?", id) {
-				return 0
-			}
-			acted++
+		a := &attempt{
+			id:       row_string(row, "id"),
+			attempts: int(row_int(row, "attempts")),
+			user:     row_string(row, "user"),
+			account:  row_string(row, "account"),
+		}
+		// Taken before the row is looked at further, so a row without a place
+		// costs no user's database a read.
+		if !push_flight.take(a.user, a.account, a.attempts > 0) {
 			continue
 		}
+		taken = append(taken, a)
 
-		account := row_string(row, "account")
-
+		user := push_lookup(a.user)
 		// The account must still exist and still be verified: a user who
-		// removed a destination should not have it retried at them.
-		if have, _ := db_user_brief(user, "user").exists("select 1 from accounts where id=? and verified > 0", account); !have {
-			if !write("delete from pushes where id=?", id) {
+		// removed a destination should not have it retried at them, and one
+		// that went away with its user has nothing to deliver to.
+		have := false
+		if user != nil {
+			have, _ = db_user_brief(user, "user").exists("select 1 from accounts where id=? and verified > 0", a.account)
+		}
+		if !have {
+			taken = taken[:len(taken)-1]
+			push_flight.release(a.user, a.account, a.attempts > 0, false)
+			if !write("delete from pushes where id=?", a.id) {
 				return 0
 			}
 			acted++
@@ -239,101 +492,56 @@ func push_queue_process() int {
 		if raw := row_string(row, "data"); raw != "" {
 			json.Unmarshal([]byte(raw), &data)
 		}
-		sending = append(sending, &attempt{
-			id:       id,
-			attempts: int(row_int(row, "attempts")),
-			user:     user,
-			push: &Push{
-				User: user, Account: account, Type: row_string(row, "type"),
-				Identifier: row_string(row, "identifier"), Data: data,
-				App: row_string(row, "app"), Category: row_string(row, "category"),
-				Object: row_string(row, "object"), Title: row_string(row, "title"),
-				Body: row_string(row, "body"), Link: row_string(row, "link"),
-				Event: row_string(row, "event"),
-			},
-		})
+		a.push = &Push{
+			User: user, Account: a.account, Type: row_string(row, "type"),
+			Identifier: row_string(row, "identifier"), Data: data,
+			App: row_string(row, "app"), Category: row_string(row, "category"),
+			Object: row_string(row, "object"), Title: row_string(row, "title"),
+			Body: row_string(row, "body"), Link: row_string(row, "link"),
+			Event: row_string(row, "event"),
+		}
+	}
+	if len(taken) == 0 {
+		return acted
 	}
 
-	// Claimed before anything is sent: an outcome the loop below cannot record,
-	// once a write has been refused, leaves its push not due again until the
-	// claim runs out, rather than on the next tick.
-	// One statement's text for any batch size, as the cache keeps a statement
-	// per text.
-	if len(sending) > 0 {
-		ids := make([]string, len(sending))
-		for i, a := range sending {
-			ids[i] = a.id
-		}
-		claimed, _ := json.Marshal(ids)
-		if !write("update pushes set next_retry=? where id in (select value from json_each(?))", now()+push_claim, string(claimed)) {
-			return 0
-		}
+	// Claimed before anything is sent: a send whose outcome cannot be recorded
+	// leaves its row not due again until the claim runs out, rather than on
+	// the next pass. One statement's text for any batch size, as the cache
+	// keeps a statement per text.
+	ids := make([]string, len(taken))
+	for i, a := range taken {
+		ids[i] = a.id
 	}
-
-	var group sync.WaitGroup
-	slots := make(chan struct{}, push_queue_workers)
-	for _, a := range sending {
-		group.Add(1)
-		go func(a *attempt) {
-			defer group.Done()
-			slots <- struct{}{}
-			defer func() { <-slots }()
-			// A provider that panics costs this push an attempt, retried like
-			// any transient failure; unguarded, it would end the process.
-			guard("push delivery", func() { a.handled = true }, func() {
-				a.success, a.retire, a.handled = account_deliver(a.push)
-			})
-		}(a)
-	}
-	group.Wait()
-
-	for _, a := range sending {
-		if failed {
-			break
-		}
-		acted++
-		switch {
-		case a.success:
-			write("delete from pushes where id=?", a.id)
-			db_user_brief(a.user, "user").exec_bg("push delivered", "update accounts set last_delivered=? where id=?", now(), a.push.Account)
-		case a.retire || !a.handled:
-			// Permanently dead, or a provider this build does not know or
-			// this server has not configured. Retrying any of them forever is
-			// how a queue becomes a leak.
-			write("delete from pushes where id=?", a.id)
-			if a.retire {
-				db_user_brief(a.user, "user").exec_bg("push retire", "delete from accounts where id=?", a.push.Account)
-			}
-		case a.attempts+1 >= push_attempts_maximum:
-			// The notification is lost, and this is the one moment in the
-			// path worth an operator's attention: every failure that reaches
-			// here was transient by construction, and this is where that
-			// stops being true. The email throttle keys on the format, so a
-			// provider outage costs one mail rather than one per push.
-			warn("Push giving up on %s destination %q after %d attempts",
-				a.push.Type, a.push.Account, a.attempts+1)
-			write("delete from pushes where id=?", a.id)
-		default:
-			write("update pushes set attempts=?, next_retry=? where id=?",
-				a.attempts+1, queue_next_retry(a.attempts), a.id)
-		}
-	}
-	if failed {
+	claimed, _ := json.Marshal(ids)
+	if !write("update pushes set next_retry=? where id in (select value from json_each(?))", now()+push_claim, string(claimed)) {
 		return 0
 	}
-	return acted
+	started = true
+	for _, a := range taken {
+		push_start(a.id, a.attempts, a.push)
+	}
+	return acted + len(taken)
 }
 
-// push_write is how a pass writes to queue.db. A var so tests can refuse it.
+// push_write is how the queue writes to queue.db. A var so tests can refuse it.
 var push_write = func(db *DB, query string, values ...any) error {
 	return db.exec_e(query, values...)
 }
 
-// push_manager retries queued pushes. Separate from queue_manager because the
-// two have unrelated cadences: a P2P message is worth chasing for days, a push
-// for minutes.
+// push_manager sends queued pushes as they come due: every 30 seconds, when it
+// also drops expired rows, and at once when a push left for want of a place
+// can have one. Separate from queue_manager because the two have unrelated
+// cadences: a P2P message is worth chasing for days, a push for minutes.
 func push_manager() {
-	for range time.Tick(30 * time.Second) {
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			guard("push expiry", nil, push_queue_expire)
+		case <-push_wake:
+		}
 		guard("push queue", nil, func() {
 			for push_queue_process() > 0 {
 			}

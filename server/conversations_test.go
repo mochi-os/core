@@ -38,11 +38,21 @@ func xml_attribute(text string, name string) string {
 	return match[1]
 }
 
-// push sends a stanza from the fake server on its latest session.
+// push sends a stanza from the fake server on the session the client uses:
+// the latest still open that has sent the fake anything. Not simply the
+// latest: a link signs in once to check the password, and under load that
+// session can finish its negotiation after the account's own, and so come
+// after it, though it has already gone.
 func (f *xmpp_fake) push(t *testing.T, text string) {
 	t.Helper()
 	f.lock.Lock()
 	n := len(f.sessions)
+	for i := len(f.sessions) - 1; i >= 0; i-- {
+		if f.spoke[i] && !f.ended[i] {
+			n = i + 1
+			break
+		}
+	}
 	session := f.sessions[n-1]
 	f.lock.Unlock()
 	xmpp_fake_log("session %d sends %s", n, xmpp_fake_summary(text))
@@ -51,7 +61,7 @@ func (f *xmpp_fake) push(t *testing.T, text string) {
 	// connection's write deadline in the past for a moment, failing a write
 	// under way.
 	if err := session.Send(context.Background(), xml.NewDecoder(strings.NewReader(text))); err != nil {
-		t.Fatalf("push to session %d, the latest: %v", n, err)
+		t.Fatalf("push to session %d: %v", n, err)
 	}
 }
 

@@ -41,6 +41,10 @@ type xmpp_fake struct {
 	lock     sync.Mutex
 	dials    int
 	sessions []*xmpp.Session
+	// spoke and ended say, of each session, whether its client has sent
+	// the fake anything and whether it has gone.
+	spoke    []bool
+	ended    []bool
 	cert     tls.Certificate
 	received []string
 	answer   func(stanza string) []string
@@ -144,6 +148,8 @@ func (f *xmpp_fake) serve(raw net.Conn, conn net.Conn) {
 	}
 	f.lock.Lock()
 	f.sessions = append(f.sessions, session)
+	f.spoke = append(f.spoke, false)
+	f.ended = append(f.ended, false)
 	n := len(f.sessions)
 	f.lock.Unlock()
 	xmpp_fake_log("session %d began, from %s", n, raw.RemoteAddr())
@@ -160,6 +166,7 @@ func (f *xmpp_fake) serve(raw net.Conn, conn net.Conn) {
 			xmpp_fake_log("session %d heard %s", n, xmpp_fake_summary(text))
 			f.lock.Lock()
 			f.received = append(f.received, text)
+			f.spoke[n-1] = true
 			answer := f.answer
 			f.lock.Unlock()
 			if answer != nil {
@@ -170,6 +177,9 @@ func (f *xmpp_fake) serve(raw net.Conn, conn net.Conn) {
 			}
 			return nil
 		}))
+		f.lock.Lock()
+		f.ended[n-1] = true
+		f.lock.Unlock()
 		xmpp_fake_log("session %d ended: %v", n, err)
 	}()
 	for _, element := range f.send {

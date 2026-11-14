@@ -321,6 +321,42 @@ func TestCorsPreflightHandling(t *testing.T) {
 	}
 }
 
+// TestWebPreflightAllowsAskedHeaders: a preflight is allowed the headers it
+// asks for, as the networks' servers allow them - Voyager's User-Agent, a
+// Bluesky client's DPoP - and anything that is no header name is left out.
+func TestWebPreflightAllowsAskedHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(web_security_headers)
+	r.Any("/api/v3/site", func(c *gin.Context) { c.String(200, "should not reach here") })
+	preflight := func(asked string) string {
+		request := httptest.NewRequest("OPTIONS", "/api/v3/site", nil)
+		request.Header.Set("Origin", "https://vger.app")
+		request.Header.Set("Access-Control-Request-Method", "GET")
+		if asked != "" {
+			request.Header.Set("Access-Control-Request-Headers", asked)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, request)
+		if w.Code != 204 {
+			t.Fatalf("preflight for %q: %d", asked, w.Code)
+		}
+		return w.Header().Get("Access-Control-Allow-Headers")
+	}
+	allowed := strings.ToLower(preflight("user-agent,authorization,cache-control,dpop"))
+	for _, name := range []string{"user-agent", "authorization", "cache-control", "dpop"} {
+		if !strings.Contains(allowed, name) {
+			t.Errorf("THE POINT: %s asked for and not allowed: %q", name, allowed)
+		}
+	}
+	if allowed := preflight("user-agent, bad header;x, ok-name"); allowed != "user-agent, ok-name" {
+		t.Errorf("a name that is no token was allowed: %q", allowed)
+	}
+	if allowed := preflight(""); !strings.Contains(allowed, "Authorization") {
+		t.Errorf("a preflight asking for no headers: %q", allowed)
+	}
+}
+
 // Test /_/token endpoint requires authentication
 func TestShellTokenRequiresAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)

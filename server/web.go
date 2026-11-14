@@ -1205,12 +1205,36 @@ func web_security_headers(c *gin.Context) {
 }
 
 // web_options_preflight answers an OPTIONS request the way the sandboxed
-// iframes need: the methods and headers an app request may carry.
+// iframes and the networks' web clients need: the methods a request may use,
+// and the headers the browser asks to send. Lemmy, Mastodon and a Bluesky
+// host allow every header, and their clients send their own: Voyager its
+// User-Agent, a Bluesky client DPoP. No cross-origin answer here carries
+// credentials, so a page may send no header it could not send from anywhere.
 func web_options_preflight(c *gin.Context) {
+	headers := "Authorization, Content-Type, Accept"
+	if asked := web_preflight_headers(c.GetHeader("Access-Control-Request-Headers")); asked != "" {
+		headers = asked
+	}
 	c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+	c.Header("Access-Control-Allow-Headers", headers)
 	c.Header("Access-Control-Max-Age", "86400")
 	c.AbortWithStatus(http.StatusNoContent)
+}
+
+// web_preflight_headers is the header names a preflight asks for, each a
+// token, or "" when it names none.
+func web_preflight_headers(asked string) string {
+	names := []string{}
+	for _, name := range strings.Split(asked, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" || len(name) > 100 || strings.IndexFunc(name, func(r rune) bool {
+			return !(r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+		}) >= 0 {
+			continue
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // The ceiling on a request body that carries no file upload. Multipart and git

@@ -172,13 +172,37 @@ func signin_route(c *gin.Context) bool {
 	case path == "/oauth/authorize" && (method == "GET" || method == "POST"):
 		signin_authorize(c)
 	case path == "/oauth/token" && method == "POST":
+		signin_json(c)
 		signin_token(c)
 	case path == "/oauth/revoke" && method == "POST":
+		signin_json(c)
 		signin_revoke(c)
 	default:
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 	}
 	return true
+}
+
+// signin_json takes a JSON body at the token and revocation endpoints as the
+// form it stands for. Mastodon reads either there, and some of its clients
+// send JSON: Elk's token request does.
+func signin_json(c *gin.Context) {
+	if !strings.HasPrefix(c.ContentType(), "application/json") {
+		return
+	}
+	raw, _ := c.GetRawData()
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil {
+		return
+	}
+	// Every field these endpoints read is text.
+	form := url.Values{}
+	for key, value := range fields {
+		if text, ok := value.(string); ok {
+			form.Set(key, text)
+		}
+	}
+	c.Request.PostForm = form
 }
 
 // signin_scopes are the scopes the networks' clients ask for, listed for them.

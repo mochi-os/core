@@ -238,6 +238,39 @@ func TestSigninMastodonClient(t *testing.T) {
 	}
 }
 
+// TestSigninMastodonJSON: a Mastodon client that sends its token and
+// revocation requests as JSON, as Elk's server does, is answered as one that
+// sends a form; a wrong secret in JSON is still refused.
+func TestSigninMastodonJSON(t *testing.T) {
+	alice := create_signin_test_env(t)
+	w, registered := signin_call("POST", "/api/v1/apps", `{"client_name":"Elk","redirect_uris":"https://elk.example/cb","scopes":"read write follow push"}`, nil)
+	if w.Code != 200 || registered["client_id"] == nil {
+		t.Fatalf("registration: %d %v", w.Code, registered)
+	}
+	client, secret := registered["client_id"].(string), registered["client_secret"].(string)
+	w, _ = signin_call("GET", "/oauth/authorize?client_id="+client+"&redirect_uri=https%3A%2F%2Felk.example%2Fcb&response_type=code&scope=read+write+follow+push", "", nil)
+	code, _ := approve(t, alice, consent_id(t, w), "f1", "")
+	exchange := func(secret string) (*httptest.ResponseRecorder, map[string]any) {
+		body, _ := json.Marshal(map[string]any{"client_id": client, "client_secret": secret, "redirect_uri": "https://elk.example/cb", "grant_type": "authorization_code", "code": code, "scope": "read write follow push"})
+		return signin_call("POST", "/oauth/token", string(body), nil)
+	}
+	if w, answer := exchange("wrong"); w.Code != 401 || answer["error"] != "invalid_client" {
+		t.Errorf("a wrong secret in JSON: %d %v", w.Code, answer)
+	}
+	w, token := exchange(secret)
+	if w.Code != 200 || token["access_token"] == nil {
+		t.Fatalf("THE POINT: the token for a code exchanged in JSON: %d %v", w.Code, token)
+	}
+	access := token["access_token"].(string)
+	body, _ := json.Marshal(map[string]any{"token": access, "client_id": client, "client_secret": secret})
+	if w, _ := signin_call("POST", "/oauth/revoke", string(body), nil); w.Code != 200 {
+		t.Errorf("THE POINT: a revocation in JSON: %d", w.Code)
+	}
+	if held, _ := validate(access, "Bearer", ""); held != nil {
+		t.Error("THE POINT: a token revoked in JSON still validates")
+	}
+}
+
 // TestSigninMatrixClient: a Matrix client registers dynamically as a public
 // client, must use PKCE, and signs in to a Matrix account for an expiring
 // token with a refresh token and a device; refreshing rotates both and ends

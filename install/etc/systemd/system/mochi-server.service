@@ -28,7 +28,7 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # interface enumeration uses: without it the server starts but libp2p and
 # mDNS never find an address, so it discovers no peers. Two directives from
 # mochi-world.service are deliberately absent. MemoryDenyWriteExecute stops
-# the UPX-packed binary from unpacking and the wazero runtime from compiling.
+# the wazero runtime from compiling.
 # ProtectProc would hide the /proc/<pid>/status the admin socket reads to
 # check a connecting user's supplementary groups.
 NoNewPrivileges=true

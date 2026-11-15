@@ -535,28 +535,6 @@ func file_write(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-func file_write_from_reader(path string, r io.Reader) bool {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		warn("Unable to create directory for %q: %v", path, err)
-		return false
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		warn("Unable to open file %q for writing: %v", path, err)
-		return false
-	}
-	defer f.Close()
-
-	_, err = io.Copy(f, r)
-	if err != nil {
-		warn("Unable to write to file %q: %v", path, err)
-		return false
-	}
-
-	return true
-}
-
 // Helper function to get the path of a file
 func api_file_path(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%s/%s/files/%s", data_dir, u.UID, a.id, file)

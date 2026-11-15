@@ -473,7 +473,7 @@ func TestCleanupKeepsHighestVersion(t *testing.T) {
 	apps["test-app"] = a
 
 	// Run cleanup
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 
 	// Should remove 1.0 and 1.5, keep 2.0 (highest)
 	if removed != 2 {
@@ -508,7 +508,7 @@ func TestCleanupKeepsSystemDefault(t *testing.T) {
 	// Set 1.5 as system default
 	a.set_default_version("1.5", "", "")
 
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 
 	// Should keep 1.5 (system default) and 2.0 (highest), remove 1.0
 	if removed != 1 {
@@ -541,7 +541,7 @@ func TestCleanupKeepsTrackVersions(t *testing.T) {
 	a.set_track("stable", "1.0", "")
 	a.set_track("beta", "1.5", "")
 
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 
 	// Should keep all: 1.0 (stable track), 1.5 (beta track), 2.0 (highest)
 	if removed != 0 {
@@ -582,7 +582,7 @@ func TestCleanupKeepsUserPreferences(t *testing.T) {
 	user := &User{UID: "u1"}
 	user.set_app_version("test-app", "1.0", "")
 
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 
 	// Should keep 1.0 (user pref) and 2.0 (highest), remove 1.5
 	if removed != 1 {
@@ -1309,7 +1309,7 @@ func TestCleanupNoUnusedVersions(t *testing.T) {
 	a.latest = a.versions["1.0"]
 	apps["test-app"] = a
 
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 	if removed != 0 {
 		t.Errorf("cleanup with single version removed = %d, want 0", removed)
 	}
@@ -1334,7 +1334,7 @@ func TestCleanupAllVersionsReferenced(t *testing.T) {
 	a.set_track("legacy", "1.0", "")
 	a.set_track("stable", "1.5", "")
 
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 	if removed != 0 {
 		t.Errorf("cleanup with all referenced = %d, want 0", removed)
 	}
@@ -1447,7 +1447,7 @@ func TestMultipleAppsCleanup(t *testing.T) {
 
 	// app1: keep 2.0 (highest), remove 1.0
 	// app2: keep 2.0 (highest), remove 1.0 and 1.5
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 	if removed != 3 {
 		t.Errorf("cleanup multiple apps removed = %d, want 3", removed)
 	}
@@ -2406,7 +2406,7 @@ func TestCleanupKeepsNumericallyHighestVersion(t *testing.T) {
 	apps["test-app"] = a
 	generation := resolution_generation.Load()
 
-	if removed := apps_cleanup_unused_versions(); removed != 1 {
+	if removed := apps_cleanup_unused_versions(0); removed != 1 {
 		t.Errorf("removed = %d, want 1", removed)
 	}
 	if _, exists := a.versions["1.10"]; !exists {
@@ -2434,8 +2434,162 @@ func TestCleanupRecomputesLatestFromTheSurvivors(t *testing.T) {
 	// A stale latest, as a load that raced a removal could leave.
 	a.latest = &AppVersion{Version: "0.5"}
 	apps["test-app"] = a
-	apps_cleanup_unused_versions()
+	apps_cleanup_unused_versions(0)
 	if a.latest == nil || a.latest.Version != "2.0" {
 		t.Errorf("a.latest = %v, want the surviving 2.0", a.latest)
+	}
+}
+
+// The daily pass keeps the newest version below the highest for rollback, by
+// version number: as strings "1.9" sorts above "1.10".
+func TestCleanupKeepsThePreviousVersion(t *testing.T) {
+	create_test_cleanup_env(t)
+	a := &App{id: "test-app", versions: map[string]*AppVersion{
+		"1.0":  {Version: "1.0"},
+		"1.9":  {Version: "1.9"},
+		"1.10": {Version: "1.10"},
+		"2.0":  {Version: "2.0"},
+	}}
+	a.latest = a.versions["2.0"]
+	apps["test-app"] = a
+
+	if removed := apps_cleanup_unused_versions(1); removed != 2 {
+		t.Errorf("removed = %d, want 2 (1.0 and 1.9)", removed)
+	}
+	for _, kept := range []string{"2.0", "1.10"} {
+		if _, exists := a.versions[kept]; !exists {
+			t.Errorf("%s was removed: the highest and the one below it are kept", kept)
+		}
+	}
+	for _, gone := range []string{"1.0", "1.9"} {
+		if _, exists := a.versions[gone]; exists {
+			t.Errorf("%s survived though nothing uses it and it is not the previous version", gone)
+		}
+	}
+}
+
+// A removed version's directory stays until the grace has passed, so a request
+// that resolved the version before its removal can still load its files, and
+// is gone after it.
+func TestCleanupDeletesDirectoriesAfterTheGrace(t *testing.T) {
+	create_test_cleanup_env(t)
+	previous := apps_removal_grace
+	apps_removal_grace = 300 * time.Millisecond
+	t.Cleanup(func() { apps_removal_grace = previous })
+
+	const id = "1dC5uGzWLzjPBZCB1HhBx82XXa2rxNeiBmEn6MbVd2gSLzNQWz"
+	if !valid(id, "entity") {
+		t.Fatal("the test's app id is not an entity id, so cleanup would leave its directories alone")
+	}
+	old := data_dir + "/apps/" + id + "/1.0"
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{id: id, versions: map[string]*AppVersion{
+		"1.0": {Version: "1.0"},
+		"2.0": {Version: "2.0"},
+	}}
+	a.latest = a.versions["2.0"]
+	apps[id] = a
+
+	if removed := apps_cleanup_unused_versions(0); removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("the removed version's directory went at once: a request that resolved it a moment before fails to load its files")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(old); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("the removed version's directory is still on disk after the grace")
+}
+
+// The root page is served by the app its token is minted for: app_by_root
+// resolves the empty path as app_for_path does, bindings first, where it used
+// to take whichever app declaring "" the map gave first.
+func TestRootAppFollowsTheBindings(t *testing.T) {
+	create_test_routing_env(t)
+	for _, id := range []string{"root-app-1", "root-app-2"} {
+		apps[id] = &App{id: id, versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{""}}}}
+	}
+	for _, bound := range []string{"root-app-2", "root-app-1"} {
+		apps_path_set("", bound)
+		resolution_invalidate()
+		for i := 0; i < 20; i++ {
+			if a := app_by_root(nil); a == nil || a.id != bound {
+				t.Fatalf("THE POINT: the root page is served by %v with the root bound to %s, which its token names", a, bound)
+			}
+		}
+	}
+}
+
+// A version reinstalled while its old directory waits out the grace keeps its
+// new directory: the delete names the directory that was unregistered, and a
+// reinstall renames a new one into the same path.
+func TestCleanupLeavesAVersionReinstalledInTheGrace(t *testing.T) {
+	create_test_cleanup_env(t)
+	previous := apps_removal_grace
+	apps_removal_grace = 300 * time.Millisecond
+	t.Cleanup(func() { apps_removal_grace = previous })
+
+	const id = "1dC5uGzWLzjPBZCB1HhBx82XXa2rxNeiBmEn6MbVd2gSLzNQWz"
+	directory := data_dir + "/apps/" + id + "/1.0"
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{id: id, versions: map[string]*AppVersion{"1.0": {Version: "1.0"}, "2.0": {Version: "2.0"}}}
+	a.latest = a.versions["2.0"]
+	apps[id] = a
+	if removed := apps_cleanup_unused_versions(0); removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+
+	// The reinstall, as app_install does it: the old directory goes and a new
+	// one is renamed into its place.
+	if err := os.RemoveAll(directory); err != nil {
+		t.Fatal(err)
+	}
+	fresh := directory + ".new"
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fresh+"/app.json", []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fresh, directory); err != nil {
+		t.Fatal(err)
+	}
+	apps_lock.Lock()
+	a.versions["1.0"] = &AppVersion{Version: "1.0"}
+	apps_lock.Unlock()
+
+	time.Sleep(time.Second)
+	if _, err := os.Stat(directory + "/app.json"); err != nil {
+		t.Error("THE POINT: the delayed delete removed the directory of a version reinstalled during its grace")
+	}
+}
+
+// Versions the publisher's tracks name are kept: the daily check installs each
+// of them, and removing them in the same pass downloaded them again every day.
+func TestCleanupKeepsThePublishersVersions(t *testing.T) {
+	create_test_cleanup_env(t)
+	a := &App{id: "test-app", versions: map[string]*AppVersion{
+		"2.4": {Version: "2.4"},
+		"2.5": {Version: "2.5"},
+		"2.6": {Version: "2.6"},
+	}}
+	a.latest = a.versions["2.6"]
+	apps["test-app"] = a
+	app_published_record("test-app", map[string]string{"production": "2.4", "development": "2.6"}, "2.4")
+
+	if removed := apps_cleanup_unused_versions(0); removed != 1 {
+		t.Errorf("removed = %d, want 1 (2.5)", removed)
+	}
+	if _, kept := a.versions["2.4"]; !kept {
+		t.Error("THE POINT: the version the publisher's production track names was removed, so the next daily check downloads it again")
 	}
 }

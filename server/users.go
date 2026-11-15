@@ -2173,6 +2173,18 @@ func (p *UserAppPath) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.String(app), nil
 }
 
+// user_path_bindable refuses a path a user may not bind to an app: one that is
+// not an app path, or one reserved for an engine or the root app.
+func user_path_bindable(path string) error {
+	if !valid(path, "apppath") {
+		return fmt.Errorf("invalid path %q", path)
+	}
+	if app_path_reserved(path) {
+		return fmt.Errorf("path %q is reserved for a protocol engine or the home page", path)
+	}
+	return nil
+}
+
 // a.user.app.path.set(path, app) -> None: Set user path binding
 func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/apps/write"); err != nil {
@@ -2180,6 +2192,9 @@ func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 	var path, app string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path, "app", &app); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if err := user_path_bindable(path); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	p.user.set_path_app(path, app)

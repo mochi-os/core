@@ -62,8 +62,8 @@ type DB struct {
 	// version to its last step (db_upgrade_file): a per-user database,
 	// encryption.db, an app's app.db. Gated on this rather than db_open_work's
 	// `reused`, so a handle first cached by a raw db_open is still brought up to
-	// date. Guarded by lock(path).
-	versioned bool
+	// date. Set under lock(path); read without it on the fast path, so atomic.
+	versioned atomic.Bool
 	// retry is when a handle whose steps failed may try them again, so a file
 	// that cannot be brought up to date is not tried on every open. Guarded by
 	// lock(path).
@@ -792,7 +792,7 @@ func notifications_upgrade_1(db *DB) error {
 // passing cause (no file descriptor free, a lock held) must not leave the file
 // behind for the life of the process.
 func db_upgrade_file(db *DB, path string, steps []func(*DB) error) {
-	if db == nil || db.versioned {
+	if db == nil || db.versioned.Load() {
 		return
 	}
 	l := lock(path)
@@ -800,7 +800,7 @@ func db_upgrade_file(db *DB, path string, steps []func(*DB) error) {
 	defer l.Unlock()
 	// Re-checked under the lock: a concurrent opener waits here for the steps
 	// rather than reading a file still being laid.
-	if db.versioned || now() < db.retry {
+	if db.versioned.Load() || now() < db.retry {
 		return
 	}
 	var version int
@@ -815,7 +815,7 @@ func db_upgrade_file(db *DB, path string, steps []func(*DB) error) {
 		}
 		version++
 	}
-	db.versioned = true
+	db.versioned.Store(true)
 }
 
 // db_upgrade_retry is how long a handle waits before trying failed steps again.

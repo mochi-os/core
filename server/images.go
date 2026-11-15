@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/disintegration/imaging"
@@ -185,7 +186,8 @@ func variant_render(path string, variant string, destinations ...string) (string
 	// Reject a decompression bomb before decoding allocates for it: the config
 	// header carries the dimensions cheaply, so an oversized image is refused
 	// without ever holding its pixels in memory.
-	if config, _, err := image.DecodeConfig(bytes.NewReader(b)); err == nil {
+	config, format, err := image.DecodeConfig(bytes.NewReader(b))
+	if err == nil {
 		if int64(config.Width)*int64(config.Height) > image_decode_pixels_maximum {
 			info("Refusing to decode image file %q for %s variant: %dx%d exceeds pixel cap", path, variant, config.Width, config.Height)
 			return "", nil
@@ -208,6 +210,14 @@ func variant_render(path string, variant string, destinations ...string) (string
 
 	size := variant_size(variant)
 	t := resize.Thumbnail(size, size, i, resize.Lanczos3)
+
+	// A PNG that already fits the box and stands upright as stored is its own
+	// variant: Thumbnail hands back its pixels unchanged, and encoding them
+	// again gave the same image at about its size, for 0.3-0.4 s of a core and
+	// a second copy in the cache.
+	if t.Bounds() == i.Bounds() && orientation <= 1 && format == "png" && strings.EqualFold(filepath.Ext(thumb), ".png") && variant_png_plain(b, i.Bounds()) {
+		return variant_own(path, b, t, destinations)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(thumb), 0755); err != nil {
 		warn("Unable to create %s variant directory %q: %v", variant, filepath.Dir(thumb), err)
@@ -279,6 +289,72 @@ func variant_render(path string, variant string, destinations ...string) (string
 	}
 
 	return thumb, nil
+}
+
+// variant_own keeps, as the variant of a PNG that already fits its box, the
+// JPEG of it when it is opaque and that saves enough, and otherwise a copy of
+// the bytes it was decoded from. A copy, not a link: the source is rewritten
+// in place, and a link would take its new bytes - any size - under a time
+// variant_fresh reads as current. A copy is older than any later write of the
+// source, so the variant is made again.
+func variant_own(source string, data []byte, i image.Image, destinations []string) (string, error) {
+	thumb := destinations[0]
+	if err := os.MkdirAll(filepath.Dir(thumb), 0755); err != nil {
+		warn("Unable to create variant directory %q: %v", filepath.Dir(thumb), err)
+		return "", err
+	}
+	if len(destinations) > 1 && variant_is_opaque(i) {
+		var lossy bytes.Buffer
+		if jpeg.Encode(&lossy, i, &jpeg.Options{Quality: 80}) == nil && variant_lossy_worth(int64(len(data)), int64(lossy.Len())) {
+			if tmp, err := variant_temporary(destinations[1], lossy.Bytes()); err == nil {
+				if err := os.Rename(tmp, destinations[1]); err == nil {
+					return destinations[1], nil
+				}
+				_ = os.Remove(tmp)
+			}
+		}
+	}
+	tmp, err := variant_temporary(thumb, data)
+	if err != nil {
+		info("Unable to keep %q as its own variant %q: %v", source, thumb, err)
+		return "", err
+	}
+	if err := os.Rename(tmp, thumb); err != nil {
+		_ = os.Remove(tmp)
+		info("Unable to move variant into place %q: %v", thumb, err)
+		return "", err
+	}
+	return thumb, nil
+}
+
+// variant_png_plain reports whether a PNG's bytes are fit to serve as its own
+// variant: only the chunks that draw it - no text, EXIF, animation or other
+// metadata a re-encode drops - and no larger than its pixels uncompressed
+// (four bytes each, and room for a colour profile), so nothing padded rides
+// along as a thumbnail.
+func variant_png_plain(data []byte, bounds image.Rectangle) bool {
+	if int64(len(data)) > 4*int64(bounds.Dx())*int64(bounds.Dy())+65536 {
+		return false
+	}
+	if len(data) < 8 || string(data[:8]) != "\x89PNG\r\n\x1a\n" {
+		return false
+	}
+	allowed := map[string]bool{"IHDR": true, "PLTE": true, "tRNS": true, "IDAT": true, "IEND": true, "gAMA": true, "cHRM": true, "sRGB": true, "iCCP": true, "sBIT": true, "pHYs": true, "bKGD": true}
+	for offset := 8; offset < len(data); {
+		if offset+8 > len(data) {
+			return false
+		}
+		length := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		kind := string(data[offset+4 : offset+8])
+		if !allowed[kind] || length < 0 || offset+12+length > len(data) {
+			return false
+		}
+		offset += 12 + length
+		if kind == "IEND" {
+			return offset == len(data)
+		}
+	}
+	return false
 }
 
 // variant_counter counts the bytes an encoder writes through it.

@@ -30,10 +30,23 @@ type rate_limiter struct {
 }
 
 var (
-	// General API rate limiter: 1000 requests per minute
+	// General API rate limiter: 10,000 requests per minute per address. An
+	// office, school or carrier NAT shares one address, and a signed-in page
+	// load makes 5-15 action requests; the static files it also fetches are
+	// refunded when they cost no more than a stat and a send (refund).
 	rate_limit_api = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
-		limit:   1000,
+		limit:   10000,
+		window:  60,
+	}
+
+	// Static files answered cheaply (web_static_refund) are charged here
+	// instead of to rate_limit_api: about 700 page loads a minute, as a
+	// bound on the work a request does before routing finds the file, which
+	// a refund alone left unbounded.
+	rate_limit_static = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   60000,
 		window:  60,
 	}
 
@@ -396,6 +409,16 @@ func (r *rate_limiter) allow(key string) bool {
 	return true
 }
 
+// refund gives back one request allow counted against key in its current
+// window, for a request that turned out to cost nothing worth limiting.
+func (r *rate_limiter) refund(key string) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if entry := r.entries[key]; entry != nil && entry.count > 0 && now() < entry.reset {
+		entry.count--
+	}
+}
+
 // since reports how long ago key's current window began, or a large sentinel
 // when no window is live, so "no recent action" needs no special case.
 // remote_reach uses it to bound the wait for an already-sent address request.
@@ -687,6 +710,7 @@ func rate_limit_login_middleware(c *gin.Context) {
 func ratelimit_manager() {
 	for range time.Tick(time.Minute) {
 		rate_limit_api.cleanup()
+		rate_limit_static.cleanup()
 		rate_limit_host.cleanup()
 		account_login.cleanup()
 		account_shared.cleanup()

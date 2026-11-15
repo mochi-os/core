@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 2.0.20
+version = 2.0.21
 
 # Matrix's Olm and Megolm in pure Go (mautrix-go's goolm), for every build,
 # test and check: without the tag the library links the C libolm, which a
@@ -257,7 +257,6 @@ deb-amd64: $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(b
 	cp -av install/* $(build_linux_amd64)
 	cp -av $(bin)/mochi-server-linux-amd64 $(build_linux_amd64)/usr/sbin/mochi-server
 	cp -av $(bin)/mochictl $(build_linux_amd64)/usr/bin
-	upx -1 -qq $(build_linux_amd64)/usr/sbin/mochi-server
 	mkdir -p $(build_linux_amd64)/usr/share/man/man1 $(build_linux_amd64)/usr/share/man/man5 $(build_linux_amd64)/usr/share/man/man7 $(build_linux_amd64)/usr/share/man/man8
 	cp $(bin)/mochictl.1     $(build_linux_amd64)/usr/share/man/man1/
 	cp $(bin)/mochi.conf.5   $(build_linux_amd64)/usr/share/man/man5/

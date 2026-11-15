@@ -759,6 +759,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			return true
 		}
 		if web_cache_static(c, file, aa.Cache) {
+			web_static_refund(c)
 			return true
 		}
 		if strings.HasSuffix(strings.ToLower(aa.File), ".svg") {
@@ -766,6 +767,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			return true
 		}
 		if web_serve_compressed(c, a, av.base, file) {
+			web_static_refund(c)
 			return true
 		}
 		c.File(file)
@@ -782,11 +784,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			file := av.base + "/" + aa.Files + "/" + aa.filepath
 			//debug("Serving file from directory for app %q: %q", a.id, file)
 			if web_cache_static(c, file, aa.Cache) {
+				web_static_refund(c)
 				return true
 			}
 			if strings.HasSuffix(strings.ToLower(aa.filepath), ".svg") {
 				web_serve_svg_path(c, file)
-			} else if !web_serve_compressed(c, a, av.base, file) {
+			} else if web_serve_compressed(c, a, av.base, file) {
+				web_static_refund(c)
+			} else {
 				web_serve_path(c, file)
 			}
 		} else {
@@ -1237,6 +1242,61 @@ func web_preflight_headers(asked string) string {
 	return strings.Join(names, ", ")
 }
 
+// web_path_app is the app a request's first path segment names, or nil. The
+// root app's own segments are never another app's, whatever a binding or a
+// manifest installed before they were reserved claims: they fall through to
+// the root app, and the shell carries the home page's requests for them
+// (app_paths_root).
+func web_path_app(user *User, first string) *App {
+	if app_path_root(first) {
+		return nil
+	}
+	return app_for_path(user, first)
+}
+
+// web_static_refund moves a static file's charge from the request budget
+// (rate_limit_api_middleware charges every request before routing) to the
+// static files' own (rate_limit_static), once the file has been answered for
+// no more than a stat and a send: revalidated, or from its stored compressed
+// copy. Past the static budget the charge stays where it was. A signed-in page load fetches 45-83 files,
+// and at one budget per address a shared address broke pages with 429s. Called
+// only from the branches that served the file, never decided by a path the
+// client chose; a file compressed on the fly, or HTML that may run the app's
+// OpenGraph function, stays charged.
+func web_static_refund(c *gin.Context) {
+	ip := rate_limit_client_ip(c)
+	if rate_limit_static.allow(ip) {
+		rate_limit_api.refund(ip)
+	}
+}
+
+// web_body_idle is how long a request body may stop arriving before the
+// connection is cut: a pause longer than a radio handover, while one that
+// keeps moving at any speed is never cut. A var so a test can shorten it.
+var web_body_idle = 2 * time.Minute
+
+// web_idle_body moves the connection's read deadline web_body_idle on before
+// each read of a request body, and clears it when the body ends, so a client
+// that stops sending part way no longer holds its goroutine, descriptor and
+// part buffer for as long as it keeps the connection open.
+type web_idle_body struct {
+	body       io.ReadCloser
+	controller *http.ResponseController
+}
+
+func (b *web_idle_body) Read(p []byte) (int, error) {
+	_ = b.controller.SetReadDeadline(time.Now().Add(web_body_idle))
+	n, err := b.body.Read(p)
+	if err == io.EOF {
+		_ = b.controller.SetReadDeadline(time.Time{})
+	}
+	return n, err
+}
+
+func (b *web_idle_body) Close() error {
+	return b.body.Close()
+}
+
 // The ceiling on a request body that carries no file upload. Multipart and git
 // pack bodies are exempt here because uploads legitimately exceed it; they are
 // bounded separately, by web_multipart_maximum and the git RPC respectively.
@@ -1253,6 +1313,12 @@ const web_multipart_framing = 64 << 10 // 64KB
 // REPORT are small and keep the general cap. A protocol engine's paths take
 // the cap the engine declares, where it declares one.
 func web_body_limit(c *gin.Context) {
+	// Every body that has content gets the idle bound, a pushed pack and an
+	// upload included. A websocket's upgrade carries none, so no deadline is
+	// set that would outlive the request on the websocket.
+	if c.Request.ContentLength != 0 || len(c.Request.TransferEncoding) > 0 {
+		c.Request.Body = &web_idle_body{body: c.Request.Body, controller: http.NewResponseController(c.Writer)}
+	}
 	ct := c.GetHeader("Content-Type")
 	switch {
 	case strings.HasPrefix(ct, "multipart/form-data"), strings.HasPrefix(ct, "application/x-git-"):
@@ -2389,8 +2455,9 @@ func web_path(c *gin.Context) {
 	segments := strings.Split(raw, "/")
 	first := segments[0]
 
-	// Check for app matching first segment (user preferences, then system defaults, then fallback)
-	a := app_for_path(user, first)
+	// Check for app matching first segment (user preferences, then system
+	// defaults, then fallback).
+	a := web_path_app(user, first)
 	if a != nil {
 		// 301 redirect the login path -> / for unauthenticated users (bookmarks, password managers)
 		if first == app_login_path() && len(segments) == 1 && user == nil &&

@@ -429,7 +429,9 @@ func TestVersionRemovalHoldsCompressedLock(t *testing.T) {
 	if lock < 0 || lock > strings.Index(install, "os.RemoveAll(av.base)") || lock > strings.Index(install, "os.Rename(tmp, av.base)") {
 		t.Error("app_install removes or replaces a version without compressed_lock")
 	}
-	if strings.Count(source, "os.RemoveAll(dir)") != 1 || !strings.Contains(source, "compressed_lock.Lock()\n\t\t\t\terr := os.RemoveAll(dir)") {
+	removal := function_source(t, source, "apps_versions_delete")
+	lock = strings.Index(removal, "compressed_lock.Lock()")
+	if strings.Count(source, "os.RemoveAll(dir.path)") != 1 || lock < 0 || lock > strings.Index(removal, "os.RemoveAll(dir.path)") || strings.Index(removal, "compressed_lock.Unlock()") < strings.Index(removal, "os.RemoveAll(dir.path)") {
 		t.Error("the unused-version cleanup removes a version without compressed_lock")
 	}
 }

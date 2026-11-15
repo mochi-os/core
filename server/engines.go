@@ -60,6 +60,29 @@ func engine_register(e *engine) {
 	engines = append(engines, e)
 }
 
+// app_paths_root are the first path segments core sends to the root app, the
+// home page: its bundle under assets and images, its actions under -. The
+// shell carries the home page's own requests for exactly these (shell.js
+// frameCarries), so an app that claimed one would take them from the home
+// page and be sent the home page's credentials.
+var app_paths_root = []string{"assets", "images", "-"}
+
+// app_path_reserved reports whether no app may claim path: an engine's
+// segment, or one of the root app's.
+func app_path_reserved(path string) bool {
+	return engine_path_reserved(path) || app_path_root(path)
+}
+
+// app_path_root reports whether path is one of the root app's segments.
+func app_path_root(path string) bool {
+	for _, s := range app_paths_root {
+		if path == s {
+			return true
+		}
+	}
+	return false
+}
+
 // engine_path_reserved reports whether an app path is one engines reserve.
 // Paths are compared whole, so "api" is refused and "apiary" is not.
 func engine_path_reserved(path string) bool {

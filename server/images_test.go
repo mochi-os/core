@@ -9,6 +9,8 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/draw"
@@ -911,5 +913,108 @@ func TestVariantsOfOneStemStayApart(t *testing.T) {
 	}
 	if _, _, again := image_variant_call(t, thread, "photos/a.png", "medium"); centre(again).R < 180 || centre(png_decoded).R < 180 {
 		t.Errorf("THE POINT: a.png's medium is %v, want its own red", centre(again))
+	}
+}
+
+// A PNG that already fits the variant's box is its own variant: the source's
+// own file, linked rather than encoded again, unless it is opaque and its JPEG
+// saves enough, which is then kept as before.
+func TestVariantOfAFittingPngIsItsOwn(t *testing.T) {
+	directory := t.TempDir()
+	for _, c := range []struct {
+		kind string
+		own  bool
+	}{
+		{"clear", true},
+		{"flat", true},
+		{"photo", false},
+	} {
+		source := filepath.Join(directory, c.kind+".png")
+		// Encoded as no re-encode here would encode it, so a variant equal
+		// to these bytes can only be the source's own.
+		decoded, err := png.Decode(bytes.NewReader(variant_choice_image(t, c.kind, 900, 600)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fast bytes.Buffer
+		if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&fast, decoded); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, fast.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		choice := []string{filepath.Join(directory, "cache", c.kind+"_preview.png"), filepath.Join(directory, "cache", c.kind+"_preview.png.jpg")}
+		result, err := variant_render(source, "preview", choice...)
+		if err != nil || result == "" {
+			t.Fatalf("rendering the %s: %q, %v", c.kind, result, err)
+		}
+		original, _ := os.ReadFile(source)
+		kept, err := os.ReadFile(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.own {
+			if result != choice[0] || !bytes.Equal(original, kept) {
+				t.Errorf("THE POINT: the fitting %s PNG's preview at %s is not the source's own bytes: it was encoded again", c.kind, result)
+			}
+		} else if result != choice[1] {
+			t.Errorf("the fitting opaque photo's preview is %s, want its smaller JPEG %s", result, choice[1])
+		}
+	}
+}
+
+// variant_png_chunk inserts a chunk after a PNG's header chunk.
+func variant_png_chunk(t *testing.T, data []byte, kind string, body []byte) []byte {
+	t.Helper()
+	header := 8 + 12 + int(binary.BigEndian.Uint32(data[8:12]))
+	chunk := make([]byte, 12+len(body))
+	binary.BigEndian.PutUint32(chunk[0:4], uint32(len(body)))
+	copy(chunk[4:8], kind)
+	copy(chunk[8:], body)
+	binary.BigEndian.PutUint32(chunk[8+len(body):], crc32.ChecksumIEEE(chunk[4:8+len(body)]))
+	return append(append(append([]byte{}, data[:header]...), chunk...), data[header:]...)
+}
+
+// A fitting PNG carrying text, EXIF or animation is encoded again, as before,
+// so a thumbnail never carries what a re-encode drops.
+func TestVariantOfAFittingPngWithMetadataIsEncoded(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "tagged.png")
+	data := variant_png_chunk(t, variant_choice_image(t, "clear", 900, 600), "tEXt", []byte("Comment\x00where it was taken"))
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := variant_render(source, "preview", filepath.Join(directory, "cache", "tagged_preview.png"))
+	if err != nil || result == "" {
+		t.Fatalf("rendering: %q, %v", result, err)
+	}
+	kept, _ := os.ReadFile(result)
+	if bytes.Contains(kept, []byte("where it was taken")) {
+		t.Error("THE POINT: a fitting PNG's text chunk was kept in its variant")
+	}
+}
+
+// A source rewritten in place after its variant was kept makes that variant
+// stale, so the variant is made again from the new image.
+func TestVariantOfAFittingPngFollowsAnInPlaceRewrite(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "small.png")
+	if err := os.WriteFile(source, variant_choice_image(t, "clear", 40, 40), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destinations := []string{filepath.Join(directory, "cache", "small_thumbnail.png")}
+	if result, err := variant_render(source, "thumbnail", destinations...); err != nil || result == "" {
+		t.Fatalf("rendering: %q, %v", result, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	file, err := os.OpenFile(source, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Write(variant_choice_image(t, "clear", 3000, 2000))
+	file.Close()
+	information, _ := os.Stat(source)
+	if variant_fresh(destinations, information.ModTime()) >= 0 {
+		t.Error("THE POINT: the variant still reads as current after its source was rewritten in place, so the new 3000x2000 image would be served as a thumbnail")
 	}
 }

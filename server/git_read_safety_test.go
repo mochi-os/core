@@ -1866,12 +1866,12 @@ func read_chain(t *testing.T, repo *git.Repository, tree plumbing.Hash, label st
 	return tip
 }
 
-// read_walk_limit sets git_walk_maximum for the test.
+// read_walk_limit sets git_walk_maximum and git_merge_maximum for the test.
 func read_walk_limit(t *testing.T, limit int) {
 	t.Helper()
-	previous := git_walk_maximum
-	git_walk_maximum = limit
-	t.Cleanup(func() { git_walk_maximum = previous })
+	previous, merge := git_walk_maximum, git_merge_maximum
+	git_walk_maximum, git_merge_maximum = limit, limit
+	t.Cleanup(func() { git_walk_maximum, git_merge_maximum = previous, merge })
 }
 
 // TestMergeBaseGivesUpPastTheWalkLimit. Two histories that never meet were
@@ -1894,6 +1894,27 @@ func TestMergeBaseGivesUpPastTheWalkLimit(t *testing.T) {
 	var refusal *Refusal
 	if !errors.As(err, &refusal) || refusal.Key != "errors.histories_too_long" {
 		t.Errorf("THE POINT: past the walk limit the merge base = %v, %v; want the walk to give up, refused in the reader's language", value, err)
+	}
+}
+
+// TestMergeBaseHasItsOwnBudget. A comparison reads up to git_merge_maximum
+// commits, five times the bound on other walks: git answers one of a long-lived
+// branch in under a second, and the compare page refused it.
+func TestMergeBaseHasItsOwnBudget(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "mergebudget")
+	tree := read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a")})
+	read_branch(t, repo, "main", read_chain(t, repo, tree, "main", 20))
+	read_branch(t, repo, "pages", read_chain(t, repo, tree, "pages", 20))
+
+	previous, merge := git_walk_maximum, git_merge_maximum
+	git_walk_maximum, git_merge_maximum = 5, 100
+	t.Cleanup(func() { git_walk_maximum, git_merge_maximum = previous, merge })
+	value, err := read_call(t, thread, api_git_merge_base, sl.String(id), sl.String("main"), sl.String("pages"))
+	if err != nil || value != sl.None {
+		t.Errorf("THE POINT: a comparison within git_merge_maximum but past git_walk_maximum = %v, %v; want it answered", value, err)
+	}
+	if merge < 5*previous {
+		t.Errorf("git_merge_maximum is %d, under five times the walk bound of %d", merge, previous)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"hash/crc32"
 	"hash/fnv"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -56,6 +57,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 	"github.com/go-git/go-git/v5/storage"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -706,6 +708,12 @@ func git_placeholder_sweep() {
 // Delete a repository
 func git_delete(owner *User, app *App, entity string) error {
 	path := git_repo_path(owner, app, entity)
+	// Under the owner's push lock, which a tag pack holds (git_tags_pack): a
+	// repository removed under a pack was recreated by it, holding only a
+	// packed-refs.
+	lock := git_push_lock(owner.UID)
+	lock.Lock()
+	defer lock.Unlock()
 	return os.RemoveAll(path)
 }
 
@@ -2410,7 +2418,7 @@ func git_merge_bases(ctx context.Context, load func(plumbing.Hash) (*object.Comm
 		return []*object.Commit{one}, nil
 	}
 	// One budget for the whole search, the redundancy walks below included.
-	budget := git_walk_maximum
+	budget := git_merge_maximum
 	_, found, err := git_merge_paint(ctx, load, one, []*object.Commit{other}, &budget)
 	if err != nil {
 		return nil, err
@@ -2579,6 +2587,13 @@ type git_merge_node struct {
 // base search, a file's history - reads for one answer. A var so tests can
 // shorten it.
 var git_walk_maximum = 100000
+
+// git_merge_maximum bounds the commits a merge base search reads - the compare
+// page and the merge check - for anyone who may read the repository. At about
+// 7 us a commit that is 3-3.5 s of one core for a search that reaches it, and a
+// comparison git answers in under a second is not refused below it. A var so
+// tests can shorten it.
+var git_merge_maximum = 500000
 
 // error_git_walk_exceeded is a merge base search that read git_walk_maximum
 // commits without finding where two histories meet, or that they never do:
@@ -7112,7 +7127,12 @@ func git_repack_consider(repo_path string) {
 	if left, seen := git_repack_remaining.Load(repo_path); seen {
 		remaining, _ = left.(int)
 	}
-	if git_loose_count(repo_path)-remaining < git_repack_minimum && git_pack_count(repo_path) <= git_packs_maximum && !git_unsearched(repo_path) {
+	objects := git_loose_count(repo_path)-remaining >= git_repack_minimum || git_pack_count(repo_path) > git_packs_maximum || git_unsearched(repo_path)
+	// Resolved here, not in the background: it reads the data directory.
+	account := git_repository_account(repo_path)
+	// A push of tags alone brings no objects, so loose tags have a trigger of
+	// their own: packing them is a file rewrite, not a repack.
+	if !objects && git_tags_loose(repo_path) < git_tags_minimum {
 		return
 	}
 	// One repack per repository waiting or running, and one running on the
@@ -7135,13 +7155,18 @@ func git_repack_consider(repo_path string) {
 			defer git_repack_running.Delete(repo_path)
 			git_repack_slot <- struct{}{}
 			defer func() { <-git_repack_slot }()
-			if err := git_repack_dispatch(repo_path); err != nil {
-				// What a failed repack left says nothing about what the
-				// next one can do, so it retries after the interval.
-				warn("Repository repack failed for %q: %v", repo_path, err)
-				return
+			if objects {
+				if err := git_repack_dispatch(repo_path); err != nil {
+					// What a failed repack left says nothing about what the
+					// next one can do, so it retries after the interval.
+					warn("Repository repack failed for %q: %v", repo_path, err)
+					return
+				}
+				git_repack_remaining.Store(repo_path, git_loose_count(repo_path))
 			}
-			git_repack_remaining.Store(repo_path, git_loose_count(repo_path))
+			if err := git_tags_dispatch(repo_path, account); err != nil {
+				warn("Repository tag packing failed for %q: %v", repo_path, err)
+			}
 		})
 	}()
 }
@@ -7167,6 +7192,116 @@ func git_repack_read(repo_path string) {
 // git_repack_dispatch is git_repack behind a var, so tests can watch the
 // decision without doing the work.
 var git_repack_dispatch = git_repack
+
+// git_tags_dispatch is git_tags_pack behind a var, for the same reason.
+var git_tags_dispatch = git_tags_pack
+
+// git_tags_minimum is how many loose tags make a repository worth packing them
+// for when its objects are not: below it a listing opens few files anyway.
+const git_tags_minimum = 50
+
+// git_tags_loose counts a repository's loose tag references.
+func git_tags_loose(repo_path string) int {
+	count := 0
+	filepath.WalkDir(filepath.Join(repo_path, "refs", "tags"), func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			count++
+		}
+		return nil
+	})
+	return count
+}
+
+// git_tags_pack moves a repository's loose tags into packed-refs, as git's
+// pack-refs does: each pushed tag otherwise stays one file for good, and every
+// listing of refs or tags, and a clone's or fetch's advertisement, opens them
+// all - 115-200 ms at 4,000 tags.
+//
+// Only tags, and under the owner's push lock. go-git's PackRefs deletes each
+// loose file it packed without checking it still holds what was packed, and a
+// writer that opened the file before the delete then writes into a file no
+// longer linked: the update is lost. A push is the only writer of a tag, and
+// it holds the same lock, so no tag moves while it is packed. Branches are
+// also written by merges and the branch functions, which take no such lock,
+// and stay loose; there are few of them. A view of the repository that shows
+// only refs/tags under refs keeps PackRefs to the tags, while it keeps every
+// entry packed-refs already holds; the new file is written and flushed before
+// any loose tag goes (git_durable), so a crash leaves both forms or the old.
+// account is the repository's owner (git_repository_account), the key its
+// pushes serialise on.
+func git_tags_pack(repo_path string, account string) error {
+	if account == "" || git_tags_loose(repo_path) == 0 {
+		return nil
+	}
+	// Tried, not waited for: a push holds the lock for its whole receive, and
+	// this holds the server's one repack slot. The tags are packed at the
+	// next repack instead.
+	lock := git_push_lock(account)
+	if !lock.TryLock() {
+		return nil
+	}
+	defer lock.Unlock()
+	// Deleted meanwhile (git_delete takes the same lock): packing would
+	// recreate it.
+	if _, err := os.Stat(filepath.Join(repo_path, "HEAD")); err != nil {
+		return nil
+	}
+	git_packed_temporaries_sweep(repo_path)
+	view := git_tags_view{git_durable{Filesystem: git_live{Filesystem: osfs.New(repo_path)}, root: repo_path}}
+	if err := dotgit.New(view).PackRefs(); err != nil {
+		return err
+	}
+	// go-git makes it 0600; the loose tags it replaces were 0644, readable
+	// by a backup or by git run as another user.
+	return os.Chmod(filepath.Join(repo_path, "packed-refs"), 0o644)
+}
+
+// git_packed_temporaries_sweep removes the temporary files a rewrite of
+// packed-refs left when it died before its rename. Only old ones: a rewrite
+// under way holds its own for moments.
+func git_packed_temporaries_sweep(repo_path string) {
+	temporaries, _ := filepath.Glob(filepath.Join(repo_path, "._packed-refs*"))
+	for _, temporary := range temporaries {
+		if information, err := os.Stat(temporary); err == nil && time.Since(information.ModTime()) > 10*time.Minute {
+			_ = os.Remove(temporary)
+		}
+	}
+}
+
+// git_repository_account is the owner a repository at path belongs to - the
+// key its pushes serialise on (git_push_lock) - or "" for a path outside
+// data_dir/users/<owner>/<app>/<entity>.
+func git_repository_account(path string) string {
+	relative, err := filepath.Rel(filepath.Join(data_dir, "users"), path)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) != 3 || parts[0] == ".." || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+// git_tags_view is a repository's filesystem showing, under refs, only tags.
+type git_tags_view struct {
+	git_durable
+}
+
+// ReadDir lists a folder, and refs with only its tags folder.
+func (v git_tags_view) ReadDir(path string) ([]os.FileInfo, error) {
+	entries, err := v.git_durable.ReadDir(path)
+	if err != nil || filepath.Clean(path) != "refs" {
+		return entries, err
+	}
+	var tags []os.FileInfo
+	for _, entry := range entries {
+		if entry.Name() == "tags" && entry.IsDir() {
+			tags = append(tags, entry)
+		}
+	}
+	return tags, nil
+}
 
 // git_repack prunes unreachable objects past git_prune_age, then writes one
 // packfile for everything the references reach and drops the loose copies.
@@ -7745,6 +7880,24 @@ func (l git_live) ReadDir(path string) ([]os.FileInfo, error) {
 		}
 	}
 	return live, nil
+}
+
+// Rename flushes a new packed-refs, and then its folder, around the rename
+// that replaces the old: go-git rewrites the file whole when a push deletes a
+// packed tag, and a crash before its bytes reached disk could leave it empty,
+// every packed tag gone at once. Other renames pass through.
+func (l git_live) Rename(from, to string) error {
+	if filepath.Base(to) != "packed-refs" {
+		return l.Filesystem.Rename(from, to)
+	}
+	root := l.Filesystem.Root()
+	if err := git_flush(filepath.Join(root, from)); err != nil {
+		return err
+	}
+	if err := l.Filesystem.Rename(from, to); err != nil {
+		return err
+	}
+	return git_flush(filepath.Dir(filepath.Join(root, to)))
 }
 
 // Chmod passes through, as git_durable's does: embedding hides it.

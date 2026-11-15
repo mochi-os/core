@@ -38,6 +38,10 @@ type App struct {
 	// internal Go apps). Set at load; drives dev-precedence in service/path/class
 	// selection. Never inferred from the id's shape.
 	development bool
+	// published holds the versions the publisher's tracks named at the last
+	// check (app_check_install downloads each of them), so the daily cleanup
+	// keeps them rather than removing what the same pass installed.
+	published map[string]bool
 }
 
 type AppAction struct {
@@ -872,22 +876,13 @@ func app_by_any(user *User, s string) *App {
 	return nil
 }
 
-// Get the app that handles root path
+// app_by_root is the app that handles the root path, resolved as any path is
+// (app_for_path): the user's binding, the server's, then the first app that
+// declares it. The root frame's token is minted through the same resolution
+// (/_/token for the empty app), so the page and its token always name one app;
+// this used to take whichever app declaring "" the map gave first.
 func app_by_root(user *User) *App {
-	apps_lock.Lock()
-	defer apps_lock.Unlock()
-	for _, a := range apps {
-		av := a.active_locked(user)
-		if av == nil {
-			continue
-		}
-		for _, p := range av.Paths {
-			if p == "" {
-				return a
-			}
-		}
-	}
-	return nil
+	return app_for_path(user, "")
 }
 
 // Check whether app is the correct version, and if not download and install new version
@@ -904,6 +899,7 @@ func app_check_install(id string) bool {
 	if !ok {
 		return false
 	}
+	defer app_published_record(id, tracks, default_version)
 
 	// Download each track's version if not already installed
 	// This enables instant track switching without additional downloads
@@ -934,6 +930,23 @@ func app_check_install(id string) bool {
 	}
 
 	return true
+}
+
+// app_published_record keeps on the app the versions its publisher's tracks
+// name, once they are installed (App.published).
+func app_published_record(id string, tracks map[string]string, version string) {
+	published := map[string]bool{}
+	for _, v := range tracks {
+		published[v] = true
+	}
+	if version != "" {
+		published[version] = true
+	}
+	apps_lock.Lock()
+	if a := apps[id]; a != nil {
+		a.published = published
+	}
+	apps_lock.Unlock()
 }
 
 // Check all track versions of an app on the remote server
@@ -1005,15 +1018,137 @@ func app_has_version(id, version string) bool {
 	return exists
 }
 
+// app_download_locks holds a mutex per release zip being downloaded.
+var app_download_locks sync.Map
+
+// app_download_body reads a release's bytes from its stream, each read bounded
+// by the stream's read timeout: a publisher that stalls without closing held
+// the download, and every later download of the version behind its lock, for
+// as long as it kept the stream open.
+type app_download_body struct {
+	stream *Stream
+	reader io.Reader
+}
+
+func (b *app_download_body) Read(p []byte) (int, error) {
+	b.stream.idle()
+	return b.reader.Read(p)
+}
+
+// app_download_offset is how much of a release an interrupted download left at
+// partial, to ask the publisher for the rest: 0 when there is none.
+func app_download_offset(partial string) int64 {
+	information, err := os.Stat(partial)
+	if err != nil || !information.Mode().IsRegular() {
+		return 0
+	}
+	return information.Size()
+}
+
+// app_download_receive writes a publisher's answer to a release request to
+// zip, by way of zip.partial, as attachments are resumed: the answer echoes the
+// offset it was asked for when it sends from there, and the body is then
+// appended to what the partial holds; an answer that echoes nothing is the
+// whole file, from an older publisher or one that could not resume, and starts
+// the partial again. An echo of another offset is a body this partial cannot
+// take, so the partial goes and the next attempt starts over. A body cut short
+// is kept to resume from: a publisher whose send fails ends the stream as
+// cleanly as one that finished, so the size it names for the whole release
+// decides, where it names one. The result is checked as a whole when it is
+// installed (app_install), so a resumed release is trusted no more than one
+// downloaded in one go.
+func app_download_receive(zip string, offset int64, response map[string]any, body io.Reader) bool {
+	partial := zip + ".partial"
+	size, sized := app_download_echo(response["size"])
+	echoed, has := app_download_echo(response["offset"])
+	if has && (offset <= 0 || echoed != offset) {
+		_ = os.Remove(partial)
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(partial), 0755); err != nil {
+		warn("Unable to create directory for %q: %v", partial, err)
+		return false
+	}
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if has {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	file, err := os.OpenFile(partial, flags, 0644)
+	if err != nil {
+		warn("Unable to open %q for writing: %v", partial, err)
+		return false
+	}
+	if _, err := io.Copy(file, body); err != nil {
+		_ = file.Close()
+		return false
+	}
+	if err := file.Close(); err != nil {
+		return false
+	}
+	if sized {
+		got := app_download_offset(partial)
+		if got < size {
+			return false
+		}
+		if got > size {
+			_ = os.Remove(partial)
+			return false
+		}
+	}
+	if err := os.Rename(partial, zip); err != nil {
+		_ = os.Remove(partial)
+		return false
+	}
+	return true
+}
+
+// app_download_echo reads the offset an answer echoes, and whether it echoed
+// one at all.
+func app_download_echo(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case uint64:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	}
+	return 0, false
+}
+
 // Download and install a specific version of an app, without activating it. An
 // optional peer (libp2p id or entity id) names where to ask for an app the
 // directory does not list; the stream handshake still proves the host holds id.
 func app_download_version(id, version string, peer ...string) bool {
 	debug("App %q downloading version %q", id, version)
 
+	zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
+	// Defence in depth: version is validated by valid(..., "version"), but
+	// this path is built with Sprintf, so confirm it stays under cache_dir/tmp.
+	tmp_root := filepath.Clean(fmt.Sprintf("%s/tmp", cache_dir))
+	if !strings.HasPrefix(filepath.Clean(zip), tmp_root+"/") {
+		return false
+	}
+	// One download of a version at a time: two would write one partial. One
+	// that waited here for another finds the version installed by it.
+	lock, _ := app_download_locks.LoadOrStore(zip, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	if app_has_version(id, version) {
+		return true
+	}
+
 	var s *Stream
 	var err error
 	request := map[string]any{"version": version}
+	// What an interrupted download left is asked for from where it ends
+	// (app_download_receive).
+	offset := app_download_offset(zip + ".partial")
+	if offset > 0 {
+		request["offset"] = offset
+	}
 	if len(peer) > 0 && peer[0] != "" {
 		target := peer[0]
 		if valid(target, "entity") {
@@ -1050,15 +1185,8 @@ func app_download_version(id, version string, peer ...string) bool {
 		return false
 	}
 
-	zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
-	// Defence in depth: version is validated by valid(..., "version"), but
-	// this path is built with Sprintf, so confirm it stays under cache_dir/tmp.
-	tmp_root := filepath.Clean(fmt.Sprintf("%s/tmp", cache_dir))
-	if !strings.HasPrefix(filepath.Clean(zip), tmp_root+"/") {
-		return false
-	}
-	if !file_write_from_reader(zip, s.raw_reader()) {
-		_ = os.Remove(zip)
+	if !app_download_receive(zip, offset, response, &app_download_body{stream: s, reader: s.raw_reader()}) {
+		debug("App %q download of version %q interrupted; kept what arrived to resume from", id, version)
 		return false
 	}
 
@@ -1789,6 +1917,11 @@ func apps_manager() {
 		// apps_seed_default_permissions).
 		apps_seed_default_permissions()
 
+		// Remove the versions nothing uses, keeping apps_versions_previous
+		// below the highest for rollback: every installed update otherwise
+		// stays on disk for good.
+		apps_cleanup_unused_versions(apps_versions_previous)
+
 		// Wait out the poll. There was an early-wake channel here, signalled
 		// by a replicated publisher-catalog write; replication went in July
 		// 2026 and nothing has signalled it since.
@@ -1911,8 +2044,8 @@ func manifest_validate(av *AppVersion) error {
 		if !valid(path, "apppath") {
 			return fmt.Errorf("App bad path %q", path)
 		}
-		if engine_path_reserved(path) {
-			return fmt.Errorf("App path %q is reserved for a protocol engine", path)
+		if app_path_reserved(path) {
+			return fmt.Errorf("App path %q is reserved for a protocol engine or the home page", path)
 		}
 	}
 
@@ -3559,8 +3692,8 @@ func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if !ok {
 		return sl_error(fn, "invalid app_id")
 	}
-	if engine_path_reserved(path) {
-		return sl_error(fn, "path %q is reserved for a protocol engine", path)
+	if app_path_reserved(path) {
+		return sl_error(fn, "path %q is reserved for a protocol engine or the home page", path)
 	}
 	apps_path_set(path, app_id)
 	audit_default_routing_changed(user.Username, "path", path, app_id)
@@ -3819,14 +3952,27 @@ func api_app_cleanup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if u == nil || !u.administrator() {
 		return sl_error(fn, "not administrator")
 	}
-	removed := apps_cleanup_unused_versions()
+	removed := apps_cleanup_unused_versions(0)
 	return sl.MakeInt(removed), nil
 }
 
-// apps_cleanup_unused_versions removes app versions not referenced by system defaults,
-// user bindings, tracks, or being the highest version (fallback).
-// Returns the number of versions removed.
-func apps_cleanup_unused_versions() int {
+// apps_versions_previous is how many versions below the highest the daily pass
+// keeps for rollback, besides every version a default, a track or a user's
+// binding names. A rollback past them downloads the version again.
+const apps_versions_previous = 1
+
+// apps_removal_grace is how long a removed version's directory stays on disk,
+// when set; unset, it is an action's timeout and a minute. A request that
+// resolved the version before its removal still loads its files - another
+// Starlark file, a label catalogue, an asset - for up to that long. A var so a
+// test can shorten it.
+var apps_removal_grace time.Duration
+
+// apps_cleanup_unused_versions removes app versions not referenced by system
+// defaults, user bindings or tracks, other than the highest (the fallback) and
+// the previous versions below it, and returns how many it removed. Each is
+// unregistered at once and its directory deleted after apps_removal_grace.
+func apps_cleanup_unused_versions(previous int) int {
 	removed := 0
 
 	apps_lock.Lock()
@@ -3842,8 +3988,19 @@ func apps_cleanup_unused_versions() int {
 			continue
 		}
 
-		// Collect versions in use for this app
+		// Collect versions in use for this app. Only versions registered
+		// before the scan are removed: one installed while it runs is not
+		// in the bindings and tracks it read.
 		in_use := make(map[string]bool)
+		known := make(map[string]bool)
+		apps_lock.Lock()
+		for v := range a.versions {
+			known[v] = true
+		}
+		for v := range a.published {
+			in_use[v] = true
+		}
+		apps_lock.Unlock()
 
 		// Highest version is always kept as fallback. Numerically: as strings
 		// "0.9" sorts above "0.10", and the one that lost was a.latest.
@@ -3857,6 +4014,20 @@ func apps_cleanup_unused_versions() int {
 		apps_lock.Unlock()
 		if highest != "" {
 			in_use[highest] = true
+		}
+
+		// And the previous versions below it, newest first, for rollback.
+		if previous > 0 {
+			apps_lock.Lock()
+			versions := make([]string, 0, len(a.versions))
+			for v := range a.versions {
+				versions = append(versions, v)
+			}
+			apps_lock.Unlock()
+			sort.Slice(versions, func(i, j int) bool { return version_greater(versions[i], versions[j]) })
+			for i := 1; i < len(versions) && i <= previous; i++ {
+				in_use[versions[i]] = true
+			}
 		}
 
 		// Check system defaults
@@ -3899,7 +4070,7 @@ func apps_cleanup_unused_versions() int {
 		apps_lock.Lock()
 		var to_delete []string
 		for v := range a.versions {
-			if !in_use[v] {
+			if known[v] && !in_use[v] {
 				delete(a.versions, v)
 				to_delete = append(to_delete, v)
 				removed++
@@ -3920,23 +4091,55 @@ func apps_cleanup_unused_versions() int {
 			resolution_invalidate()
 		}
 
-		// Delete version directories from disk (only for published apps)
-		if valid(app_id, "entity") {
+		// Delete version directories from disk (only for published apps),
+		// once a request that resolved one before its removal has finished:
+		// a call may queue, compute and then serve a file for up to the file
+		// timeout. Each is named by the directory it was, so one reinstalled
+		// in the meantime - a new directory renamed into the same path - is
+		// left alone.
+		if valid(app_id, "entity") && len(to_delete) > 0 {
+			grace := apps_removal_grace
+			if grace <= 0 {
+				grace = max(starlark_default_timeout, starlark_file_timeout) + 5*time.Minute
+			}
+			var dirs []app_version_directory
 			for _, v := range to_delete {
-				dir := fmt.Sprintf("%s/apps/%s/%s", data_dir, app_id, v)
-				compressed_lock.Lock()
-				err := os.RemoveAll(dir)
-				compressed_lock.Unlock()
-				if err != nil {
-					warn("Failed to delete app version directory %s: %v", dir, err)
-				} else {
-					info("Deleted unused app version %s %s", app_id, v)
+				path := fmt.Sprintf("%s/apps/%s/%s", data_dir, app_id, v)
+				if information, err := os.Stat(path); err == nil {
+					dirs = append(dirs, app_version_directory{path: path, information: information})
 				}
 			}
+			time.AfterFunc(grace, func() { apps_versions_delete(dirs) })
 		}
 	}
 
 	return removed
+}
+
+// app_version_directory is an unregistered version's directory as it was when
+// it was unregistered.
+type app_version_directory struct {
+	path        string
+	information os.FileInfo
+}
+
+// apps_versions_delete removes the directories of app versions already
+// unregistered, each only while it is still the directory that was: under
+// compressed_lock, which app_install holds to replace a version's directory.
+func apps_versions_delete(dirs []app_version_directory) {
+	for _, dir := range dirs {
+		compressed_lock.Lock()
+		current, err := os.Stat(dir.path)
+		if err == nil && os.SameFile(current, dir.information) {
+			err = os.RemoveAll(dir.path)
+			if err != nil {
+				warn("Failed to delete app version directory %s: %v", dir.path, err)
+			} else {
+				info("Deleted unused app version directory %s", dir.path)
+			}
+		}
+		compressed_lock.Unlock()
+	}
 }
 
 // Compare two semantic version strings (e.g., "0.2", "0.3.1")

@@ -209,6 +209,50 @@ func TestEngineBodyLimit(t *testing.T) {
 	}
 }
 
+// TestRootPathsReserved: the segments core sends to the home page, which the
+// shell carries the home page's requests for, cannot be an app's path.
+func TestRootPathsReserved(t *testing.T) {
+	for _, path := range []string{"assets", "images", "-"} {
+		if !app_path_reserved(path) {
+			t.Errorf("THE POINT: app_path_reserved(%q) is false: an app could take the home page's carried requests", path)
+		}
+		av := &AppVersion{Version: "1.0", Label: "test", Paths: []string{path}}
+		if err := manifest_validate(av); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("manifest_validate accepts an app at %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{"api", "feeds"} {
+		if app_path_reserved(path) != engine_path_reserved(path) {
+			t.Errorf("app_path_reserved(%q) disagrees with the engines' reservation", path)
+		}
+	}
+}
+
+// The root app's segments go to the home page whatever claims them - a user's
+// binding, the server's, or a manifest installed before they were reserved -
+// and a user cannot bind one.
+func TestRootSegmentsStayTheHomePages(t *testing.T) {
+	create_test_routing_env(t)
+	apps["claimant"] = &App{id: "claimant", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{"assets", "images", "-"}}}}
+	user := &User{UID: "u1", Username: "user1@example.com"}
+	apps_path_set("images", "claimant")
+	user.set_path_app("-", "claimant")
+	for _, segment := range []string{"assets", "images", "-"} {
+		if a := web_path_app(user, segment); a != nil {
+			t.Errorf("THE POINT: /%s/ routes to %s, taking the home page's carried requests", segment, a.id)
+		}
+		if err := user_path_bindable(segment); err == nil {
+			t.Errorf("a user may bind %q to an app", segment)
+		}
+	}
+	if a := web_path_app(user, "claimant"); a != nil {
+		t.Errorf("CONTROL: an ordinary unclaimed segment resolved to %v", a.id)
+	}
+	if err := user_path_bindable("feeds"); err != nil {
+		t.Errorf("an ordinary path is refused for a user binding: %v", err)
+	}
+}
+
 // TestEnginePathReserved: the segments engines answer cannot be an app's path,
 // whole, and the manifest validator refuses one.
 func TestEnginePathReserved(t *testing.T) {

@@ -868,7 +868,7 @@ func TestUpgradeFileSurvivesAPanickingStep(t *testing.T) {
 		}()
 		db_upgrade_file(db, "db/panics.db", steps)
 	}()
-	if db.versioned || db.integer("pragma user_version") != 0 {
+	if db.versioned.Load() || db.integer("pragma user_version") != 0 {
 		t.Error("THE POINT: a panicking step marked the file done")
 	}
 	panicking = false

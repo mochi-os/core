@@ -27,7 +27,7 @@ func create_signin_test_env(t *testing.T) *User {
 	t.Helper()
 	alice := create_linked_test_env(t)
 	users := db_open("db/users.db")
-	users.exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+	users.exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '', password text not null default '')")
 	db_open("db/sessions.db").exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
 	users.exec("insert into handles (domain, name, user, kind, created) values ('example.com', 'alice', 'u-alice', 'handle', 1)")
 	db := db_user(alice, "user")
@@ -579,8 +579,8 @@ func TestPasswords(t *testing.T) {
 		t.Error("a password for no account was minted")
 	}
 
-	if user, row, name := password_check("fediverse", "@Alice@Example.com", phone); user == nil || row["id"] != "f1" || name != "Phone" {
-		t.Errorf("fediverse check = %v %v %q", user, row, name)
+	if user, row, password := password_check("fediverse", "@Alice@Example.com", phone); user == nil || row["id"] != "f1" || password.Name != "Phone" || password.Hash != token_hash(phone) {
+		t.Errorf("fediverse check = %v %v %+v", user, row, password)
 	}
 	if user, _, _ := password_check("fediverse", "alice@example.com", laptop); user != nil {
 		t.Error("another account's password opened the fediverse account")

@@ -445,7 +445,7 @@ func create_mastodon_test_env(t *testing.T) (*User, *mastodon_feeds) {
 // scopes given.
 func mastodon_token(t *testing.T, alice *User, scope string) string {
 	t.Helper()
-	m := signin_mint(alice, "", "Test", "fediverse", "f1", scope, "", "", false)
+	m, _ := signin_mint(alice, "", "Test", "fediverse", "f1", scope, "", "", false, "")
 	if m == nil {
 		t.Fatal("no token")
 	}
@@ -509,11 +509,11 @@ func TestMastodonAuthentication(t *testing.T) {
 	if w, body := mastodon_request(t, "", "GET", "/api/v1/accounts/verify_credentials", nil); w.Code != 401 || mastodon_map(body)["error"] == nil {
 		t.Errorf("THE POINT: no token: %d %v", w.Code, body)
 	}
-	matrix := signin_mint(alice, "", "Matrix", "matrix", "m1", "urn:matrix:client:api:*", "", "", false)
+	matrix, _ := signin_mint(alice, "", "Matrix", "matrix", "m1", "urn:matrix:client:api:*", "", "", false, "")
 	if w, _ := mastodon_request(t, matrix.token, "GET", "/api/v1/accounts/verify_credentials", nil); w.Code != 401 {
 		t.Errorf("THE POINT: a Matrix token: %d", w.Code)
 	}
-	other := signin_mint(alice, "", "Other", "fediverse", "m1", "read", "", "", false)
+	other, _ := signin_mint(alice, "", "Other", "fediverse", "m1", "read", "", "", false, "")
 	if w, _ := mastodon_request(t, other.token, "GET", "/api/v1/accounts/verify_credentials", nil); w.Code != 401 {
 		t.Errorf("THE POINT: a token for another network's account: %d", w.Code)
 	}
@@ -553,7 +553,7 @@ func TestMastodonInstance(t *testing.T) {
 	if key, _ := registered["vapid_key"].(string); w.Code != 200 || key == "" {
 		t.Fatalf("THE POINT: registration = %d %v", w.Code, registered)
 	}
-	m := signin_mint(alice, registered["client_id"].(string), "Ivory", "fediverse", "f1", "read write", "", "", false)
+	m, _ := signin_mint(alice, registered["client_id"].(string), "Ivory", "fediverse", "f1", "read write", "", "", false, "")
 	w, app := signin_call("GET", "/api/v1/apps/verify_credentials", "", map[string]string{"Authorization": "Bearer " + m.token})
 	if w.Code != 200 || app["name"] != "Ivory" {
 		t.Errorf("THE POINT: the app checking its token = %d %v", w.Code, app)

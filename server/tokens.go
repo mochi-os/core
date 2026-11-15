@@ -36,15 +36,17 @@ type Token struct {
 	// bound to the client and the hosted account it signed in to, with a
 	// refresh token's hash, the DPoP key it is bound to and the device it
 	// is for; or a minted password for a hosted account, with its SCRAM
-	// forms. An app's own token has an empty kind.
-	Kind    string `db:"kind"`
-	Client  string `db:"client"`
-	Account string `db:"account"`
-	Network string `db:"network"`
-	JKT     string `db:"jkt"`
-	Refresh string `db:"refresh"`
-	Device  string `db:"device"`
-	Scram   string `db:"scram"`
+	// forms. An app's own token has an empty kind. A sign-in made with a
+	// minted password names the password's hash, and ends with it.
+	Kind     string `db:"kind"`
+	Client   string `db:"client"`
+	Account  string `db:"account"`
+	Network  string `db:"network"`
+	JKT      string `db:"jkt"`
+	Refresh  string `db:"refresh"`
+	Device   string `db:"device"`
+	Scram    string `db:"scram"`
+	Password string `db:"password"`
 }
 
 var api_token = sls.FromStringDict(sl.String("mochi.token"), sl.StringDict{
@@ -92,11 +94,32 @@ func token_create(user string, app string, name string, scopes []string, expires
 	return token
 }
 
-// Delete a token by its hash
+// token_delete deletes a token by its hash. A minted password's sign-ins and
+// XMPP streams end with it.
 func token_delete(hash string) bool {
-	db_open("db/users.db").exec("delete from tokens where hash = ?", hash)
-	db_open("db/sessions.db").exec("delete from accesses where hash = ?", hash)
+	if hash == "" {
+		return false
+	}
+	users := db_open("db/users.db")
+	sessions := db_open("db/sessions.db")
+	rows, _ := users.rows("select hash from tokens where password=?", hash)
+	for _, row := range rows {
+		sessions.exec("delete from accesses where hash=?", row_string(row, "hash"))
+	}
+	users.exec("delete from tokens where hash=? or password=?", hash, hash)
+	sessions.exec("delete from accesses where hash=?", hash)
+	xmpp_password_ended(hash)
 	return true
+}
+
+// token_delete_account deletes every token naming a user's account on another
+// network: its minted passwords, with what each ends, and the sign-ins of the
+// apps signed in to it.
+func token_delete_account(user *User, account string) {
+	rows, _ := db_open("db/users.db").rows("select hash from tokens where user=? and account=? and kind!=''", user.UID, account)
+	for _, row := range rows {
+		token_delete(row_string(row, "hash"))
+	}
 }
 
 // Return all tokens for a user and app (without the actual token values). An
@@ -171,7 +194,7 @@ func token_lookup(token string) *Token {
 	db := db_open("db/users.db")
 
 	var t Token
-	if !db.scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, scram from tokens where hash = ?", hash) {
+	if !db.scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, scram, password from tokens where hash = ?", hash) {
 		return nil
 	}
 

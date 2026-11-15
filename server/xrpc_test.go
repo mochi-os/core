@@ -65,7 +65,7 @@ func create_xrpc_test_env(t *testing.T) (*User, *xrpc_feeds, *appview_fake, *plc
 	t.Helper()
 	alice, view, plc := create_appview_test_env(t)
 	users := db_open("db/users.db")
-	users.exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+	users.exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '', password text not null default '')")
 	db_open("db/sessions.db").exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
 	row := account_hosted_get(alice, "b1")
 	data := account_data(row)
@@ -154,6 +154,69 @@ func xrpc_claims(t *testing.T, token string) map[string]any {
 		t.Fatal(err)
 	}
 	return claims
+}
+
+// TestXrpcPasswordRevoked: revoking the minted password a Bluesky app signed
+// in with ends its session, renewed or not: neither the access token nor the
+// refresh token works, and the password signs in no more. A session made with
+// the account's other password goes on.
+func TestXrpcPasswordRevoked(t *testing.T) {
+	alice, _, _, _ := create_xrpc_test_env(t)
+	phone := password_mint(alice, "", "b1", "bluesky", "Phone")
+	tablet := password_mint(alice, "", "b1", "bluesky", "Tablet")
+	session := func(password string) (string, string) {
+		t.Helper()
+		w, answer := xrpc_call(t, "POST", "com.atproto.server.createSession", "", map[string]any{"identifier": "alice.example.com", "password": password}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("createSession = %d %s", w.Code, w.Body.String())
+		}
+		return answer["accessJwt"].(string), answer["refreshJwt"].(string)
+	}
+	_, refresh := session(phone)
+	w, answer := xrpc_call(t, "POST", "com.atproto.server.refreshSession", refresh, nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("refreshSession = %d %s", w.Code, w.Body.String())
+	}
+	access, refresh := answer["accessJwt"].(string), answer["refreshJwt"].(string)
+	other, _ := session(tablet)
+
+	token_delete(token_hash(phone))
+	if w, _ := xrpc_call(t, "GET", "com.atproto.server.getSession", access, nil, nil); w.Code == http.StatusOK {
+		t.Error("THE POINT: a renewed session outlived the password it was made with")
+	}
+	if w, _ := xrpc_call(t, "POST", "com.atproto.server.refreshSession", refresh, nil, nil); w.Code == http.StatusOK {
+		t.Error("THE POINT: the session's refresh token renewed it after its password was revoked")
+	}
+	if w, _ := xrpc_call(t, "POST", "com.atproto.server.createSession", "", map[string]any{"identifier": "alice.example.com", "password": phone}, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("the revoked password signed in: %d", w.Code)
+	}
+	if w, _ := xrpc_call(t, "GET", "com.atproto.server.getSession", other, nil, nil); w.Code != http.StatusOK {
+		t.Errorf("the other password's session ended: %d", w.Code)
+	}
+
+	// A session whose password went while it was being renewed renews no
+	// more, and leaves nothing behind.
+	_, stale := session(tablet)
+	db_open("db/users.db").exec("update tokens set password='gone' where refresh=?", token_hash(stale))
+	if w, _ := xrpc_call(t, "POST", "com.atproto.server.refreshSession", stale, nil, nil); w.Code == http.StatusOK {
+		t.Error("THE POINT: a session renewed under a password revoked meanwhile")
+	}
+	users := db_open("db/users.db")
+	if n := users.integer("select count(*) from tokens where password='gone'"); n != 0 {
+		t.Errorf("THE POINT: %d sessions outlived the password revoked while they were renewed", n)
+	}
+
+	// Revoked after the sign-in read the password and before it was written.
+	racing := password_mint(alice, "", "b1", "bluesky", "Racing")
+	saved := password_read
+	password_read = func(hash string) { token_delete(hash) }
+	t.Cleanup(func() { password_read = saved })
+	if w, _ := xrpc_call(t, "POST", "com.atproto.server.createSession", "", map[string]any{"identifier": "alice.example.com", "password": racing}, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("THE POINT: a session whose password was revoked while it was made = %d", w.Code)
+	}
+	if n := users.integer("select count(*) from tokens where password=?", token_hash(racing)); n != 0 {
+		t.Errorf("THE POINT: %d sessions outlived the password revoked while they were made", n)
+	}
 }
 
 // TestXrpcResolveHandleElsewhere: a handle elsewhere is resolved for an app
@@ -777,6 +840,9 @@ func TestXrpcMoveIn(t *testing.T) {
 		t.Fatalf("createAccount = %d %s", w.Code, w.Body.String())
 	}
 	access, _ := answer["accessJwt"].(string)
+	if made := xrpc_token(access); made == nil || made.Password != token_hash(password) {
+		t.Errorf("the arrival's session does not end with the password it was made with: %+v", made)
+	}
 	if w, _ := xrpc_call(t, "POST", "com.atproto.server.createAccount", authorization, body, nil); w.Code == http.StatusOK {
 		t.Error("the account arrived twice")
 	}

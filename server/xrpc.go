@@ -90,17 +90,21 @@ func xrpc_jwt(did string, scope string, audience string, expires int64) string {
 
 // xrpc_mint mints an old-style session for an account: an access token that
 // expires within hours and the refresh token that renews it, both kept as
-// any sign-in's tokens are.
-func xrpc_mint(c *gin.Context, user *User, row map[string]any, name string) (string, string) {
+// any sign-in's tokens are, with the hash of the password it was made with;
+// none where that password was revoked meanwhile.
+func xrpc_mint(c *gin.Context, user *User, row map[string]any, name string, password string) (string, string, error) {
 	id, _ := row["id"].(string)
 	did := atproto_did(row)
 	audience := "did:web:" + activitypub_host(c)
 	access := xrpc_jwt(did, "com.atproto.access", audience, now()+xrpc_access_lifetime)
 	refresh := xrpc_jwt(did, "com.atproto.refresh", audience, now()+xrpc_refresh_lifetime)
-	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device) values (?, ?, '', ?, ?, '', '', ?, ?, ?, '', ?, 'bluesky', '', ?, '')",
-		token_hash(access), user.UID, name, json_encode([]string{"atproto", "transition:generic", "transition:chat.bsky"}), now(), now()+xrpc_access_lifetime, token_signin, id, token_hash(refresh))
+	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, password) values (?, ?, '', ?, ?, '', '', ?, ?, ?, '', ?, 'bluesky', '', ?, '', ?)",
+		token_hash(access), user.UID, name, json_encode([]string{"atproto", "transition:generic", "transition:chat.bsky"}), now(), now()+xrpc_access_lifetime, token_signin, id, token_hash(refresh), password)
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?)", token_hash(access), user.UID, now())
-	return access, refresh
+	if password_outlived(password, token_hash(access)) {
+		return "", "", signin_revoked
+	}
+	return access, refresh, nil
 }
 
 // xrpc_bearer is the token a request carries, and its scheme.
@@ -120,7 +124,7 @@ func xrpc_token(raw string) *Token {
 		return nil
 	}
 	var t Token
-	if !db_open("db/users.db").scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, scram from tokens where hash=? and network='bluesky' and client=''", token_hash(raw)) {
+	if !db_open("db/users.db").scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, scram, password from tokens where hash=? and network='bluesky' and client=''", token_hash(raw)) {
 		return nil
 	}
 	if t.Expires > 0 && now() > t.Expires {
@@ -343,12 +347,16 @@ func xrpc_create_session(c *gin.Context) {
 	if !xrpc_body(c, &body) {
 		return
 	}
-	user, row, name := password_check("bluesky", strings.TrimPrefix(body.Identifier, "@"), body.Password)
+	user, row, password := password_check("bluesky", strings.TrimPrefix(body.Identifier, "@"), body.Password)
 	if user == nil || row == nil || atproto_did(row) == "" {
 		xrpc_fail(c, http.StatusUnauthorized, "AuthenticationRequired", "Invalid identifier or password")
 		return
 	}
-	access, refresh := xrpc_mint(c, user, row, name)
+	access, refresh, err := xrpc_mint(c, user, row, password.Name, password.Hash)
+	if err != nil {
+		xrpc_fail(c, http.StatusUnauthorized, "AuthenticationRequired", "Invalid identifier or password")
+		return
+	}
 	answer := xrpc_session_answer(c, user, row)
 	answer["accessJwt"], answer["refreshJwt"] = access, refresh
 	c.JSON(http.StatusOK, answer)
@@ -359,7 +367,7 @@ func xrpc_create_session(c *gin.Context) {
 func xrpc_refresh_session(c *gin.Context) {
 	_, raw := xrpc_bearer(c)
 	var t Token
-	if raw == "" || !db_open("db/users.db").scan(&t, "select hash, user, name, account, created from tokens where refresh=? and kind=? and network='bluesky' and client=''", token_hash(raw), token_signin) {
+	if raw == "" || !db_open("db/users.db").scan(&t, "select hash, user, name, account, created, password from tokens where refresh=? and kind=? and network='bluesky' and client=''", token_hash(raw), token_signin) {
 		xrpc_fail(c, http.StatusBadRequest, "ExpiredToken", "Token has expired")
 		return
 	}
@@ -370,7 +378,11 @@ func xrpc_refresh_session(c *gin.Context) {
 		xrpc_fail(c, http.StatusBadRequest, "ExpiredToken", "Token has expired")
 		return
 	}
-	access, refresh := xrpc_mint(c, user, row, t.Name)
+	access, refresh, err := xrpc_mint(c, user, row, t.Name, t.Password)
+	if err != nil {
+		xrpc_fail(c, http.StatusBadRequest, "ExpiredToken", "Token has expired")
+		return
+	}
 	answer := xrpc_session_answer(c, user, row)
 	answer["accessJwt"], answer["refreshJwt"] = access, refresh
 	c.JSON(http.StatusOK, answer)
@@ -1227,7 +1239,7 @@ func xrpc_create_account(c *gin.Context) {
 	if password == "" {
 		password = body.InviteCode
 	}
-	user, row, name := password_check("bluesky", strings.ToLower(body.Handle), password)
+	user, row, minted := password_check("bluesky", strings.ToLower(body.Handle), password)
 	if user == nil || row == nil {
 		xrpc_fail(c, http.StatusBadRequest, "InvalidInviteCode", "Make the account ready in Mochi first, and give the password it mints")
 		return
@@ -1253,7 +1265,11 @@ func xrpc_create_account(c *gin.Context) {
 	atproto_register(body.DID, id, user)
 	repository_create(user, id, body.DID)
 	row = account_hosted_get(user, id)
-	access, refresh := xrpc_mint(c, user, row, name)
+	access, refresh, err := xrpc_mint(c, user, row, minted.Name, minted.Hash)
+	if err != nil {
+		xrpc_fail(c, http.StatusUnauthorized, "AuthenticationRequired", "The password was revoked")
+		return
+	}
 	c.JSON(http.StatusOK, map[string]any{"accessJwt": access, "refreshJwt": refresh, "handle": row_string(row, "identifier"), "did": body.DID})
 }
 

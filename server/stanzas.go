@@ -530,6 +530,7 @@ func xmpp_client_negotiate(x xmpp_stream, ip string, secure bool, starttls func(
 	domain := ""
 	var user *User
 	var account map[string]any
+	password := ""
 	for {
 		attrs, err := x.header()
 		if err != nil {
@@ -565,7 +566,7 @@ func xmpp_client_negotiate(x xmpp_stream, ip string, secure bool, starttls func(
 			secure = true
 		case user == nil:
 			x.write(xmpp_stream_features(`<mechanisms xmlns="` + xmpp_ns_sasl + `"><mechanism>SCRAM-SHA-256</mechanism><mechanism>SCRAM-SHA-1</mechanism><mechanism>PLAIN</mechanism></mechanisms>`))
-			user, account = xmpp_sasl(x, domain, ip)
+			user, account, password = xmpp_sasl(x, domain, ip)
 			if user == nil {
 				x.close()
 				return
@@ -573,7 +574,7 @@ func xmpp_client_negotiate(x xmpp_stream, ip string, secure bool, starttls func(
 			x.restart()
 		default:
 			x.write(xmpp_stream_features(`<bind xmlns="` + xmpp_ns_bind + `"/><session xmlns="` + xmpp_ns_session + `"><optional/></session><sm xmlns="` + xmpp_ns_management + `"/><csi xmlns="` + xmpp_ns_state + `"/>`))
-			r := xmpp_bind(x, user, account)
+			r := xmpp_bind(x, user, account, password)
 			if r == nil {
 				return
 			}
@@ -587,8 +588,9 @@ func xmpp_client_negotiate(x xmpp_stream, ip string, secure bool, starttls func(
 // xmpp_bind waits for the client to bind a resource, or to resume one that
 // waits for it, answering the requests that may come before. A resource
 // already bound is taken over: the client holding it is told of the conflict
-// and its stream ended, as the newer connection is the one in use.
-func xmpp_bind(x xmpp_stream, user *User, account map[string]any) *xmpp_resource {
+// and its stream ended, as the newer connection is the one in use. The
+// resource keeps the hash of the password its stream signed in with.
+func xmpp_bind(x xmpp_stream, user *User, account map[string]any, password string) *xmpp_resource {
 	address, err := jid.Parse(row_string(account, "identifier"))
 	if err != nil {
 		x.fail("internal-server-error")
@@ -603,7 +605,7 @@ func xmpp_bind(x xmpp_stream, user *User, account map[string]any) *xmpp_resource
 		if s.space == xmpp_ns_management {
 			switch s.name {
 			case "resume":
-				if r := xmpp_resume(x, user, address, s); r != nil {
+				if r := xmpp_resume(x, user, address, s, password); r != nil {
 					return r
 				}
 			default:
@@ -637,6 +639,7 @@ func xmpp_bind(x xmpp_stream, user *User, account map[string]any) *xmpp_resource
 			full, _ = address.WithResource(xmpp_mochi_resource + "-" + random_alphanumeric(8))
 		}
 		r := xmpp_resource_new(user, row_string(account, "id"), address, full)
+		r.password = password
 		xmpp_resources_lock.Lock()
 		if xmpp_resources[address.String()] == nil {
 			xmpp_resources[address.String()] = map[string]*xmpp_resource{}
@@ -646,6 +649,14 @@ func xmpp_bind(x xmpp_stream, user *User, account map[string]any) *xmpp_resource
 		xmpp_resources_lock.Unlock()
 		if old != nil {
 			old.end("conflict")
+		}
+		// A password revoked since the stream signed in, before revoking it
+		// could find the resource, is found here: the resource is bound
+		// before the password is asked for.
+		if !password_held(password) {
+			r.end("")
+			x.fail("reset")
+			return nil
 		}
 		x.write(xmpp_make("iq", `<bind xmlns="`+xmpp_ns_bind+`"><jid>`+xmpp_escape(full.String())+`</jid></bind>`, "type", "result", "id", s.get("id")).text(xmpp_ns_client))
 		return r
@@ -657,24 +668,25 @@ func xmpp_bind(x xmpp_stream, user *User, account map[string]any) *xmpp_resource
 // xmpp_sasl signs a client in by one of the mechanisms offered, against the
 // passwords minted for the account the name names on the stream's domain,
 // allowing three tries within the sign-in limit per address. It answers the
-// user and the account, or nil once the client has had its tries.
-func xmpp_sasl(x xmpp_stream, domain string, ip string) (*User, map[string]any) {
+// user, the account and the hash of the password signed in with, or nil once
+// the client has had its tries.
+func xmpp_sasl(x xmpp_stream, domain string, ip string) (*User, map[string]any, string) {
 	for range 3 {
 		s, err := x.next()
 		if err != nil || s.space != xmpp_ns_sasl {
-			return nil, nil
+			return nil, nil, ""
 		}
 		if s.name == "abort" {
 			x.write(`<failure xmlns="` + xmpp_ns_sasl + `"><aborted/></failure>`)
 			continue
 		}
 		if s.name != "auth" {
-			return nil, nil
+			return nil, nil, ""
 		}
 		if !rate_limit_login.allow(ip) {
 			audit_repeated_failures(ip, rate_limit_login.limit, "xmpp")
 			x.write(`<failure xmlns="` + xmpp_ns_sasl + `"><temporary-auth-failure/></failure>`)
-			return nil, nil
+			return nil, nil, ""
 		}
 		initial, ok := xmpp_sasl_data(s.inner)
 		if !ok {
@@ -683,15 +695,15 @@ func xmpp_sasl(x xmpp_stream, domain string, ip string) (*User, map[string]any) 
 		}
 		var user *User
 		var account map[string]any
-		additional := ""
+		password, additional := "", ""
 		switch mechanism := s.get("mechanism"); mechanism {
 		case "PLAIN":
-			user, account = xmpp_plain(initial, domain)
+			user, account, password = xmpp_plain(initial, domain)
 		case "SCRAM-SHA-256", "SCRAM-SHA-1":
 			var aborted bool
-			user, account, additional, aborted = xmpp_scram(x, mechanism, initial, domain)
+			user, account, password, additional, aborted = xmpp_scram(x, mechanism, initial, domain)
 			if aborted {
-				return nil, nil
+				return nil, nil, ""
 			}
 		default:
 			x.write(`<failure xmlns="` + xmpp_ns_sasl + `"><invalid-mechanism/></failure>`)
@@ -707,9 +719,9 @@ func xmpp_sasl(x xmpp_stream, domain string, ip string) (*User, map[string]any) 
 		} else {
 			x.write(`<success xmlns="` + xmpp_ns_sasl + `"/>`)
 		}
-		return user, account
+		return user, account, password
 	}
-	return nil, nil
+	return nil, nil, ""
 }
 
 // xmpp_sasl_data reads what an auth or response element carries: base64, or
@@ -739,27 +751,31 @@ func xmpp_name(name string, domain string) string {
 }
 
 // xmpp_plain checks a PLAIN sign-in: an identity to act as, which may only be
-// the account itself, the name and the password.
-func xmpp_plain(data []byte, domain string) (*User, map[string]any) {
+// the account itself, the name and the password. It answers the user, the
+// account and the password's hash.
+func xmpp_plain(data []byte, domain string) (*User, map[string]any, string) {
 	parts := strings.Split(string(data), "\x00")
 	if len(parts) != 3 {
-		return nil, nil
+		return nil, nil, ""
 	}
 	address := xmpp_name(parts[1], domain)
 	if address == "" || (parts[0] != "" && !strings.EqualFold(parts[0], address)) {
-		return nil, nil
+		return nil, nil, ""
 	}
-	user, account, _ := password_check("xmpp", address, parts[2])
-	return user, account
+	user, account, password := password_check("xmpp", address, parts[2])
+	if user == nil {
+		return nil, nil, ""
+	}
+	return user, account, password.Hash
 }
 
 // xmpp_scram runs a SCRAM exchange (RFC 5802) against the account's minted
 // passwords. They share a salt, so the client's proof is tried against each.
 // Someone with no account is given a salt all the same, made from the name,
 // so a sign-in says nothing of whether the account exists. It answers the user,
-// the account and the server's final message, or aborted where the client
-// broke off.
-func xmpp_scram(x xmpp_stream, mechanism string, first []byte, domain string) (*User, map[string]any, string, bool) {
+// the account, the hash of the password that matched and the server's final
+// message, or aborted where the client broke off.
+func xmpp_scram(x xmpp_stream, mechanism string, first []byte, domain string) (*User, map[string]any, string, string, bool) {
 	algorithm, hasher := "sha256", sha256.New
 	if mechanism == "SCRAM-SHA-1" {
 		algorithm, hasher = "sha1", sha1.New
@@ -769,44 +785,47 @@ func xmpp_scram(x xmpp_stream, mechanism string, first []byte, domain string) (*
 	text := string(first)
 	header, bare, found := xmpp_scram_cut(text)
 	if !found || (header[0] != "n" && header[0] != "y") {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	fields := xmpp_scram_fields(bare)
 	name := strings.ReplaceAll(strings.ReplaceAll(fields["n"], "=2C", ","), "=3D", "=")
 	address := xmpp_name(name, domain)
 	nonce := fields["r"]
 	if address == "" || nonce == "" {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	if header[1] != "" && !strings.EqualFold(header[1], address) {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	salt, iterations, candidates := xmpp_scram_candidates(address, algorithm)
+	for _, c := range candidates {
+		password_read(c.token)
+	}
 	server := nonce + random_alphanumeric(24)
 	reply := "r=" + server + ",s=" + base64.StdEncoding.EncodeToString(salt) + ",i=" + strconv.Itoa(iterations)
 	if x.write(`<challenge xmlns="`+xmpp_ns_sasl+`">`+base64.StdEncoding.EncodeToString([]byte(reply))+`</challenge>`) != nil {
-		return nil, nil, "", true
+		return nil, nil, "", "", true
 	}
 	s, err := x.next()
 	if err != nil || s.space != xmpp_ns_sasl || s.name != "response" {
-		return nil, nil, "", true
+		return nil, nil, "", "", true
 	}
 	data, ok := xmpp_sasl_data(s.inner)
 	if !ok {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	final := string(data)
 	at := strings.LastIndex(final, ",p=")
 	if at < 0 {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	answer := xmpp_scram_fields(final)
 	if answer["c"] != base64.StdEncoding.EncodeToString([]byte(header[0]+","+header[2]+",")) || answer["r"] != server {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	proof, err := base64.StdEncoding.DecodeString(answer["p"])
 	if err != nil {
-		return nil, nil, "", false
+		return nil, nil, "", "", false
 	}
 	message := bare + "," + reply + "," + final[:at]
 	for _, c := range candidates {
@@ -828,13 +847,20 @@ func xmpp_scram(x xmpp_stream, mechanism string, first []byte, domain string) (*
 		}
 		user, account := account_by_address("xmpp", address)
 		if user == nil {
-			return nil, nil, "", false
+			return nil, nil, "", "", false
+		}
+		// The password proved must still be the account's: it was read
+		// before the challenge, and since then may have been revoked or the
+		// address taken by someone else.
+		var held Token
+		if !db_open("db/users.db").scan(&held, "select user, account from tokens where hash=? and kind=?", c.token, token_password) || held.User != user.UID || held.Account != row_string(account, "id") {
+			return nil, nil, "", "", false
 		}
 		password_used(c.token, user.UID)
 		verifier := xmpp_hmac(hasher, xmpp_hmac(hasher, c.salted, "Server Key"), message)
-		return user, account, "v=" + base64.StdEncoding.EncodeToString(verifier), false
+		return user, account, c.token, "v=" + base64.StdEncoding.EncodeToString(verifier), false
 	}
-	return nil, nil, "", false
+	return nil, nil, "", "", false
 }
 
 // xmpp_scram_cut splits a SCRAM client's first message into its GS2 header -

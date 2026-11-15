@@ -359,6 +359,45 @@ func TestLemmySession(t *testing.T) {
 	}
 }
 
+// TestLemmyPasswordRevoked: revoking the minted password a Lemmy app signed
+// in with signs the app out, and the password signs in no more; an app signed
+// in with the account's other password stays signed in.
+func TestLemmyPasswordRevoked(t *testing.T) {
+	alice, _, _, phone := create_lemmy_test_env(t)
+	laptop := password_mint(alice, "", "f1", "fediverse", "Laptop")
+	signed := lemmy_client_login(t, phone)
+	kept := lemmy_client_login(t, laptop)
+	if _, site := lemmy_client_request(t, signed, "GET", "/api/v3/site", nil); site["my_user"] == nil {
+		t.Fatal("the app is not signed in")
+	}
+	token_delete(token_hash(phone))
+	if _, site := lemmy_client_request(t, signed, "GET", "/api/v3/site", nil); site["my_user"] != nil {
+		t.Error("THE POINT: the app signed in with the revoked password is still signed in")
+	}
+	if w, answer := lemmy_client_request(t, signed, "GET", "/api/v3/user/unread_count", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("THE POINT: the app's token after its password was revoked = %d %v", w.Code, answer)
+	}
+	if w, _ := lemmy_client_request(t, "", "POST", "/api/v3/user/login", map[string]any{"username_or_email": "alice", "password": phone}); w.Code != http.StatusBadRequest {
+		t.Errorf("the revoked password signed in: %d", w.Code)
+	}
+	if _, site := lemmy_client_request(t, kept, "GET", "/api/v3/site", nil); site["my_user"] == nil {
+		t.Error("the app signed in with the other password was signed out")
+	}
+
+	// Revoked after the sign-in read the password and before it was written:
+	// nothing is left signed in.
+	tablet := password_mint(alice, "", "f1", "fediverse", "Tablet")
+	saved := password_read
+	password_read = func(hash string) { token_delete(hash) }
+	t.Cleanup(func() { password_read = saved })
+	if w, answer := lemmy_client_request(t, "", "POST", "/api/v3/user/login", map[string]any{"username_or_email": "alice", "password": tablet}); w.Code != http.StatusBadRequest {
+		t.Errorf("THE POINT: a sign-in whose password was revoked while it was made = %d %v", w.Code, answer)
+	}
+	if n := db_open("db/users.db").integer("select count(*) from tokens where password=?", token_hash(tablet)); n != 0 {
+		t.Errorf("THE POINT: %d sign-ins outlived the password revoked while they were made", n)
+	}
+}
+
 // TestLemmyItems: communities, posts and comments come from forums with
 // numbers the app keeps, the same each time; the numbers the app sends back
 // reach forums as its own ids; counts, votes and paths are Lemmy's; an

@@ -398,9 +398,12 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 // cannot be taken back: the fediverse by a Delete of the actor to its
 // followers' servers, Bluesky by tombstoning its identity, Matrix by its
 // leaving every room it is in; what Matrix kept of it here goes with it
-// (clients_forget).
+// (clients_forget). Its minted passwords and the sign-ins of the apps signed
+// in to it end, and the XMPP clients its passwords signed in are closed
+// (tokens.go).
 func account_hosted_gone(user *User, row map[string]any) {
 	id := row_string(row, "id")
+	token_delete_account(user, id)
 	activitypub_account_remove(user, id)
 	switch row_string(row, "type") {
 	case "bluesky":

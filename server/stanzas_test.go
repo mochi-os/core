@@ -17,8 +17,10 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -407,6 +409,236 @@ func TestXMPPSignIn(t *testing.T) {
 	if strings.HasPrefix(env.raw(t, "alice@example.com", phone, "mochi").full, "alice@example.com/mochi-") == false {
 		t.Error("a client took the resource Mochi's own sessions show under")
 	}
+}
+
+// TestXMPPPasswordRevoked: revoking a minted password ends every stream it
+// signed in with a reset, a resource waiting to be resumed among them, and the
+// password signs in no more. A stream the account's other password signed in
+// goes on, and a resource resumed on a stream signed in with the other
+// password goes with that password, not the one it was bound with.
+func TestXMPPPasswordRevoked(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	phone := env.mint(t, env.alice, "x1", "Phone")
+	laptop := env.mint(t, env.alice, "x1", "Laptop")
+	waiting := func(resource string) {
+		t.Helper()
+		wait(t, "the resource to wait to be resumed", func() bool {
+			r := xmpp_resource_get("alice@example.com", resource)
+			if r == nil {
+				return false
+			}
+			r.lock.Lock()
+			defer r.lock.Unlock()
+			return r.stream == nil
+		})
+	}
+	managed := func(resource string) string {
+		t.Helper()
+		c := env.raw(t, "alice@example.com", phone, resource)
+		c.send(`<enable xmlns="urn:xmpp:sm:3" resume="true"/>`)
+		enabled := c.expect(t, "stream management enabled", "<enabled", `resume="true"`)
+		c.conn.Close()
+		waiting(resource)
+		return regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(enabled)[1]
+	}
+
+	desk := env.raw(t, "alice@example.com", phone, "desk")
+	couch := env.raw(t, "alice@example.com", laptop, "couch")
+	scram, err := env.connect(t, "alice@example.com", phone, "", sasl.ScramSha256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { scram.session.Close() })
+	managed("away")
+	token := managed("moved")
+	resumed := env.signed(t, "alice@example.com", laptop)
+	if s := resumed.step(t, `<resume xmlns="urn:xmpp:sm:3" previd="`+token+`" h="0"/>`); s.name != "resumed" {
+		t.Fatalf("the resumption: %s", s.text(s.space))
+	}
+	resumed.listen()
+
+	token_delete(token_hash(phone))
+	desk.expect(t, "THE POINT: the stream the revoked password signed in is reset", "<reset")
+	wait(t, "THE POINT: the resource waiting to be resumed to end", func() bool { return xmpp_resource_get("alice@example.com", "away") == nil })
+	wait(t, "THE POINT: the stream signed in by SCRAM to end", func() bool { return xmpp_resource_get("alice@example.com", scram.full.Resourcepart()) == nil })
+	couch.silent(t, "the other password's stream was reset", "<reset")
+	resumed.silent(t, "THE POINT: the stream resumed with the other password was reset", "<reset")
+	if _, err := env.connect(t, "alice@example.com", phone, "", sasl.ScramSha256); err == nil || !strings.Contains(err.Error(), "not-authorized") {
+		t.Errorf("the revoked password signed in: %v", err)
+	}
+	rate_limit_login.reset("127.0.0.1")
+
+	token_delete(token_hash(laptop))
+	resumed.expect(t, "THE POINT: the resumed stream ends with the password it resumed with", "<reset")
+	couch.expect(t, "the other password's stream ends with it", "<reset")
+}
+
+// TestXMPPAccountRemoved: a hosted XMPP account going takes its minted
+// passwords with it, off the Sessions page, and resets the clients they signed
+// in, whichever way it goes: removed, its handle released, or its user
+// deleted. Another account's password and client stay until theirs goes.
+func TestXMPPAccountRemoved(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	app := create_external_app("remover")
+	permission_grant(env.alice, app.id, "accounts/write")
+	listed := func(user *User) int {
+		return len(token_list_kind(user, token_password))
+	}
+
+	phone := env.mint(t, env.alice, "x1", "Phone")
+	other := env.mint(t, env.bob, "x2", "Phone")
+	desk := env.raw(t, "alice@example.com", phone, "desk")
+	kept := env.raw(t, "bob@example.com", other, "desk")
+	if value, err := api_account_remove(create_test_thread(env.alice, app), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("x1")}, nil); err != nil || value != sl.True {
+		t.Fatalf("remove = %v %v", value, err)
+	}
+	if n := listed(env.alice); n != 0 {
+		t.Errorf("THE POINT: the removed account's passwords are still listed: %d", n)
+	}
+	desk.expect(t, "THE POINT: the removed account's client is reset", "<reset")
+	kept.silent(t, "another account's client was reset", "<reset")
+	if n := listed(env.bob); n != 1 {
+		t.Errorf("another account's passwords = %d", n)
+	}
+
+	// The handle released: its accounts go, with their passwords.
+	if err := handle_release(env.bob, "example.com", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if n := listed(env.bob); n != 0 {
+		t.Errorf("THE POINT: the passwords of an account whose handle was released are still listed: %d", n)
+	}
+	kept.expect(t, "THE POINT: the released handle's client is reset", "<reset")
+
+	// The user deleted: their accounts' clients are reset with them.
+	db_open("db/users.db").exec("insert into handles (domain, name, user, kind, created) values ('example.com', 'carol', 'u-alice', 'handle', 1)")
+	db_user(env.alice, "user").exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('x3', 'xmpp', '', 'carol@example.com', '{\"hosted\":true,\"handle\":\"carol\",\"domain\":\"example.com\"}', 1, 1)")
+	actor_register(env.alice, "x3", "xmpp", "example.com", "carol")
+	laptop := env.mint(t, env.alice, "x3", "Laptop")
+	couch := env.raw(t, "carol@example.com", laptop, "couch")
+	// The rest of core's schema, which a purge goes through.
+	db_create()
+	if _, err := user_purge_local(env.alice.UID); err != nil {
+		t.Fatal(err)
+	}
+	couch.expect(t, "THE POINT: a deleted user's client is reset", "<reset")
+}
+
+// TestXMPPPasswordRevokedWhileSigningIn: a password revoked while a client
+// signs in with it opens nothing. Revoked after the sign-in and before the
+// bind, the bind is refused; before a resumption, the resumption is; between
+// the challenge and the proof, the proof is. A resource ended before its
+// stream starts has the stream closed, not run.
+func TestXMPPPasswordRevokedWhileSigningIn(t *testing.T) {
+	env := create_xmpp_server_env(t)
+
+	phone := env.mint(t, env.alice, "x1", "Phone")
+	c := env.signed(t, "alice@example.com", phone)
+	token_delete(token_hash(phone))
+	if s := c.step(t, `<iq xmlns="jabber:client" type="set" id="b1"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><resource>desk</resource></bind></iq>`); !strings.Contains(s.text(s.space), "<reset") {
+		t.Errorf("THE POINT: a bind after the password was revoked = %s", s.text(s.space))
+	}
+	if xmpp_resource_get("alice@example.com", "desk") != nil {
+		t.Error("THE POINT: the resource stayed bound under a revoked password")
+	}
+
+	tablet := env.mint(t, env.alice, "x1", "Tablet")
+	laptop := env.mint(t, env.alice, "x1", "Laptop")
+	away := env.raw(t, "alice@example.com", tablet, "away")
+	away.send(`<enable xmlns="urn:xmpp:sm:3" resume="true"/>`)
+	enabled := away.expect(t, "stream management enabled", "<enabled", `resume="true"`)
+	token := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(enabled)[1]
+	away.conn.Close()
+	wait(t, "the resource to wait to be resumed", func() bool {
+		r := xmpp_resource_get("alice@example.com", "away")
+		if r == nil {
+			return false
+		}
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		return r.stream == nil
+	})
+	again := env.signed(t, "alice@example.com", laptop)
+	token_delete(token_hash(laptop))
+	if s := again.step(t, `<resume xmlns="urn:xmpp:sm:3" previd="`+token+`" h="0"/>`); s.name != "failed" {
+		t.Errorf("THE POINT: a resumption after the password was revoked = %s", s.text(s.space))
+	}
+	wait(t, "THE POINT: the resource a revoked password resumed to end", func() bool { return xmpp_resource_get("alice@example.com", "away") == nil })
+
+	address := jid.MustParse("alice@example.com")
+	full, _ := address.WithResource("late")
+	r := xmpp_resource_new(env.alice, "x1", address, full)
+	r.end("reset")
+	server, client := net.Pipe()
+	t.Cleanup(func() { server.Close(); client.Close() })
+	done := make(chan struct{})
+	go func() { xmpp_client_run(r, xmpp_conn_new(server, 1<<20)); close(done) }()
+	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buffer := make([]byte, 512)
+	n, _ := client.Read(buffer)
+	if !strings.Contains(string(buffer[:n]), "<reset") {
+		t.Errorf("THE POINT: the stream of a resource already ended was not reset: %q", buffer[:n])
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("THE POINT: the stream of a resource already ended was run")
+	}
+
+	// Last, as the hook revokes every password of the account.
+	scram := env.mint(t, env.alice, "x1", "Scram")
+	saved := password_read
+	password_read = func(hash string) { token_delete(hash) }
+	t.Cleanup(func() { password_read = saved })
+	if _, err := env.connect(t, "alice@example.com", scram, "", sasl.ScramSha256); err == nil || !strings.Contains(err.Error(), "not-authorized") {
+		t.Errorf("THE POINT: the proof of a password revoked after the challenge: %v", err)
+	}
+	password_read = saved
+	rate_limit_login.reset("127.0.0.1")
+}
+
+// An xmpp_stalled is a client's stream that has stopped reading: nothing
+// written to it, nor its ending, returns until it is released.
+type xmpp_stalled struct{ release chan struct{} }
+
+func (s *xmpp_stalled) header() (map[string]string, error)        { return nil, io.EOF }
+func (s *xmpp_stalled) open(string, string, string, string) error { return nil }
+func (s *xmpp_stalled) next() (*xmpp_stanza, error)               { <-s.release; return nil, io.EOF }
+func (s *xmpp_stalled) write(string) error                        { <-s.release; return nil }
+func (s *xmpp_stalled) fail(string)                               { <-s.release }
+func (s *xmpp_stalled) close()                                    { <-s.release }
+func (s *xmpp_stalled) abort()                                    {}
+func (s *xmpp_stalled) restart()                                  {}
+func (s *xmpp_stalled) deadline(time.Time)                        {}
+
+// TestXMPPRevocationNotHeldUp: a client that has stopped reading neither holds
+// up the revocation of its password nor keeps the password's other clients
+// live meanwhile.
+func TestXMPPRevocationNotHeldUp(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	phone := env.mint(t, env.alice, "x1", "Phone")
+	stalled := &xmpp_stalled{release: make(chan struct{})}
+	t.Cleanup(func() { close(stalled.release) })
+	address := jid.MustParse("alice@example.com")
+	full, _ := address.WithResource("stalled")
+	r := xmpp_resource_new(env.alice, "x1", address, full)
+	r.password, r.stream = token_hash(phone), stalled
+	xmpp_resources_lock.Lock()
+	if xmpp_resources[address.String()] == nil {
+		xmpp_resources[address.String()] = map[string]*xmpp_resource{}
+	}
+	xmpp_resources[address.String()]["stalled"] = r
+	xmpp_resources_lock.Unlock()
+	desk := env.raw(t, "alice@example.com", phone, "desk")
+
+	deleted := make(chan struct{})
+	go func() { token_delete(token_hash(phone)); close(deleted) }()
+	select {
+	case <-deleted:
+	case <-time.After(3 * time.Second):
+		t.Error("THE POINT: the revocation waited on a client that stopped reading")
+	}
+	desk.expect(t, "THE POINT: the password's other client reset meanwhile", "<reset")
 }
 
 // An xmpp_raw_client is a client written stanza by stanza, for what the

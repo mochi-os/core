@@ -57,7 +57,7 @@ func (clients_transport) RoundTrip(request *http.Request) (*http.Response, error
 func create_clients_test_env(t *testing.T) (*User, *User) {
 	t.Helper()
 	alice, _ := create_matrix_test_env(t)
-	db_open("db/users.db").exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+	db_open("db/users.db").exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '', password text not null default '')")
 	db_open("db/sessions.db").exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
 	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
 	root := user_by_uid("u-root")
@@ -85,7 +85,7 @@ func create_clients_test_env(t *testing.T) (*User, *User) {
 // with a token minted as the sign-in server mints one.
 func clients_client(t *testing.T, user *User, account string, address string, device string) *mautrix.Client {
 	t.Helper()
-	m := signin_mint(user, "", "Test", "matrix", account, clients_api_scopes[0], "", device, false)
+	m, _ := signin_mint(user, "", "Test", "matrix", account, clients_api_scopes[0], "", device, false, "")
 	if m == nil {
 		t.Fatal("no token")
 	}
@@ -438,7 +438,7 @@ func TestClientsAuthentication(t *testing.T) {
 	if status, body := clients_request(t, nil, "GET", "/_matrix/client/v3/account/whoami", nil); status != 401 || body["errcode"] != "M_MISSING_TOKEN" {
 		t.Errorf("THE POINT: no token: %d %v", status, body)
 	}
-	fediverse := signin_mint(alice, "", "Other", "fediverse", "f1", "read", "", "", false)
+	fediverse, _ := signin_mint(alice, "", "Other", "fediverse", "f1", "read", "", "", false, "")
 	request := httptest.NewRequest("GET", "http://example.com/_matrix/client/v3/account/whoami", nil)
 	request.Header.Set("Authorization", "Bearer "+fediverse.token)
 	response, _ := clients_transport{}.RoundTrip(request)
@@ -447,7 +447,7 @@ func TestClientsAuthentication(t *testing.T) {
 	if response.StatusCode != 401 || body["errcode"] != "M_UNKNOWN_TOKEN" {
 		t.Errorf("THE POINT: another network's token: %d %v", response.StatusCode, body)
 	}
-	narrow := signin_mint(alice, "", "Narrow", "matrix", "m1", "openid", "", "NARROW", false)
+	narrow, _ := signin_mint(alice, "", "Narrow", "matrix", "m1", "openid", "", "NARROW", false, "")
 	request = httptest.NewRequest("GET", "http://example.com/_matrix/client/v3/account/whoami", nil)
 	request.Header.Set("Authorization", "Bearer "+narrow.token)
 	response, _ = clients_transport{}.RoundTrip(request)
@@ -1519,6 +1519,76 @@ func TestClientsAccount(t *testing.T) {
 	}
 }
 
+// TestClientsPasswordRevoked: revoking the minted password a Matrix client
+// signed in with signs it out, renewed or not, and its refresh token renews no
+// more; a client signed in with the account's other password stays.
+func TestClientsPasswordRevoked(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	db_open("db/users.db").exec("insert or ignore into handles (domain, name, user, kind, created) values ('example.com', 'alice', 'u-alice', 'handle', 1)")
+	laptop := password_mint(alice, "", "m1", "matrix", "Laptop")
+	phone := password_mint(alice, "", "m1", "matrix", "Phone")
+	anonymous, _ := mautrix.NewClient("http://example.com", "", "")
+	anonymous.Client = &http.Client{Transport: clients_transport{}}
+	anonymous.DefaultHTTPRetries = 0
+	signin := func(password string, device string) (*mautrix.Client, string) {
+		t.Helper()
+		login, err := anonymous.Login(ctx, &mautrix.ReqLogin{Type: mautrix.AuthTypePassword, Identifier: mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: "alice"}, Password: password, DeviceID: id.DeviceID(device), RefreshToken: true})
+		if err != nil {
+			t.Fatalf("login = %v", err)
+		}
+		c, _ := mautrix.NewClient("http://example.com", login.UserID, login.AccessToken)
+		c.Client = &http.Client{Transport: clients_transport{}}
+		c.DefaultHTTPRetries = 0
+		return c, login.RefreshToken
+	}
+	a, refresh := signin(laptop, "LAPTOP")
+	status, renewed := clients_request(t, nil, "POST", "/_matrix/client/v3/refresh", map[string]any{"refresh_token": refresh})
+	if status != 200 {
+		t.Fatalf("refresh = %d %v", status, renewed)
+	}
+	a.AccessToken = renewed["access_token"].(string)
+	b, _ := signin(phone, "PHONE")
+
+	token_delete(token_hash(laptop))
+	if _, err := a.Whoami(ctx); err == nil {
+		t.Error("THE POINT: a renewed sign-in outlived the password it was made with")
+	}
+	if status, _ := clients_request(t, nil, "POST", "/_matrix/client/v3/refresh", map[string]any{"refresh_token": renewed["refresh_token"]}); status != 401 {
+		t.Errorf("THE POINT: the sign-in's refresh token renewed it after its password was revoked: %d", status)
+	}
+	if _, err := anonymous.Login(ctx, &mautrix.ReqLogin{Type: mautrix.AuthTypePassword, Identifier: mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: "alice"}, Password: laptop}); err == nil {
+		t.Error("the revoked password signed in")
+	}
+	if who, err := b.Whoami(ctx); err != nil || who.DeviceID != "PHONE" {
+		t.Errorf("the other password's sign-in ended: %+v %v", who, err)
+	}
+
+	// A sign-in whose password went while it was being renewed renews no
+	// more, and leaves nothing behind.
+	_, stale := signin(phone, "STALE")
+	users := db_open("db/users.db")
+	users.exec("update tokens set password='gone' where refresh=?", token_hash(stale))
+	if status, _ := clients_request(t, nil, "POST", "/_matrix/client/v3/refresh", map[string]any{"refresh_token": stale}); status != 401 {
+		t.Errorf("THE POINT: a sign-in renewed under a password revoked meanwhile: %d", status)
+	}
+	if n := users.integer("select count(*) from tokens where password='gone'"); n != 0 {
+		t.Errorf("THE POINT: %d sign-ins outlived the password revoked while they were renewed", n)
+	}
+
+	// Revoked after the sign-in read the password and before it was written.
+	racing := password_mint(alice, "", "m1", "matrix", "Racing")
+	saved := password_read
+	password_read = func(hash string) { token_delete(hash) }
+	t.Cleanup(func() { password_read = saved })
+	if _, err := anonymous.Login(ctx, &mautrix.ReqLogin{Type: mautrix.AuthTypePassword, Identifier: mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: "alice"}, Password: racing}); err == nil {
+		t.Error("THE POINT: a sign-in whose password was revoked while it was made went through")
+	}
+	if n := users.integer("select count(*) from tokens where password=?", token_hash(racing)); n != 0 {
+		t.Errorf("THE POINT: %d sign-ins outlived the password revoked while they were made", n)
+	}
+}
+
 // TestClientsRegistration: with [development] registration on, the client
 // interface asks the dummy stage, then makes a user, their handle and a
 // hosted Matrix account, signs a device in and keeps the password to sign
@@ -1559,6 +1629,9 @@ func TestClientsRegistration(t *testing.T) {
 	}
 	if status, answer := clients_request(t, cli, "GET", "/_matrix/client/v3/account/whoami", nil); status != 200 || answer["user_id"] != "@carol:example.com" {
 		t.Errorf("THE POINT: the token is the account's: %d %v", status, answer)
+	}
+	if signed, _ := db_open("db/users.db").row("select password from tokens where hash=?", token_hash(token)); signed == nil || !password_held(row_string(signed, "password")) {
+		t.Errorf("THE POINT: the registration's sign-in does not end with the password it chose: %v", signed)
 	}
 	login := map[string]any{"type": "m.login.password", "identifier": map[string]any{"type": "m.id.user", "user": "carol"}, "password": "secret-carol-1"}
 	if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/login", login); status != 200 || answer["user_id"] != "@carol:example.com" {

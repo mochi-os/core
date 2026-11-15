@@ -1,0 +1,7 @@
+index handles_user: CREATE INDEX handles_user on handles(user)
+index tokens_app: CREATE INDEX tokens_app on tokens(app)
+index tokens_password: CREATE INDEX tokens_password on tokens(password)
+index tokens_refresh: CREATE INDEX tokens_refresh on tokens(refresh)
+index tokens_user: CREATE INDEX tokens_user on tokens(user)
+table handles: CREATE TABLE handles (domain text not null, name text not null, user text not null references users(uid) on delete cascade, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))
+table tokens: CREATE TABLE tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '', password text not null default '')

@@ -58,10 +58,13 @@ const (
 // its own; what waits to be written to it; whether it takes copies of the
 // account's other messages (carbons); and, where it manages its stream, the
 // counts both ways, what it has not acknowledged and the token it resumes
-// with. Its stream is nil while it waits to be resumed.
+// with; and the hash of the minted password its stream signed in with, which
+// ends it when revoked. Its stream is nil while it waits to be resumed.
 type xmpp_resource struct {
 	user       *User
 	account    string
+	password   string
+	condition  string
 	address    jid.JID
 	full       jid.JID
 	lock       sync.Mutex
@@ -115,6 +118,29 @@ var (
 // xmpp_resource_new is a resource of an account, not yet bound.
 func xmpp_resource_new(user *User, account string, address jid.JID, full jid.JID) *xmpp_resource {
 	return &xmpp_resource{user: user, account: account, address: address, full: full, wake: make(chan struct{}, 1), done: make(chan struct{}), connection: "xmpp-" + uid(), directed: map[string]bool{}}
+}
+
+// xmpp_password_ended ends every resource whose stream signed in with a minted
+// password just revoked, the one waiting to be resumed included: its client is
+// told to start again, and its next sign-in is refused.
+func xmpp_password_ended(password string) {
+	xmpp_resources_lock.Lock()
+	var ended []*xmpp_resource
+	for _, resources := range xmpp_resources {
+		for _, r := range resources {
+			r.lock.Lock()
+			if r.password == password {
+				ended = append(ended, r)
+			}
+			r.lock.Unlock()
+		}
+	}
+	xmpp_resources_lock.Unlock()
+	// Each ends on its own, so a client that has stopped reading neither
+	// holds up the revocation nor keeps the others live meanwhile.
+	for _, r := range ended {
+		go r.end("reset")
+	}
 }
 
 // xmpp_resources_of lists an account's bound resources.
@@ -250,6 +276,19 @@ func (r *xmpp_resource) writer(stream xmpp_stream, broken chan struct{}) {
 func xmpp_client_run(r *xmpp_resource, stream xmpp_stream) {
 	broken := make(chan struct{})
 	r.lock.Lock()
+	// A resource ended between its binding and here, by a revocation or a
+	// newer client taking it, never had this stream to close: it is closed
+	// here, as ending it would have.
+	if r.ended {
+		condition := r.condition
+		r.lock.Unlock()
+		if condition != "" {
+			stream.fail(condition)
+		} else {
+			stream.close()
+		}
+		return
+	}
 	if r.expiry != nil {
 		r.expiry.Stop()
 		r.expiry = nil
@@ -319,6 +358,7 @@ func (r *xmpp_resource) end(condition string) {
 	r.once.Do(func() {
 		r.lock.Lock()
 		r.ended = true
+		r.condition = condition
 		stream := r.stream
 		r.stream = nil
 		if r.expiry != nil {
@@ -477,8 +517,9 @@ func (r *xmpp_resource) manage(stream xmpp_stream, s *xmpp_stanza) {
 // xmpp_resume takes up a resource waiting to be resumed on a new stream, for
 // the account that signed in on it, and answers with what the client last
 // handled; what it did not acknowledge is written again. A resource that
-// cannot be resumed is refused, and the client binds a new one.
-func xmpp_resume(x xmpp_stream, user *User, address jid.JID, s *xmpp_stanza) *xmpp_resource {
+// cannot be resumed is refused, and the client binds a new one. The resource
+// goes on under the password the new stream signed in with.
+func xmpp_resume(x xmpp_stream, user *User, address jid.JID, s *xmpp_stanza, password string) *xmpp_resource {
 	token := s.get("previd")
 	h, err := strconv.ParseUint(s.get("h"), 10, 32)
 	var found *xmpp_resource
@@ -510,12 +551,20 @@ func xmpp_resume(x xmpp_stream, user *User, address jid.JID, s *xmpp_stanza) *xm
 	r.unacked = nil
 	r.acked, r.sent = uint32(h), uint32(h)
 	r.asked = false
+	r.password = password
 	old := r.stream
 	r.stream = nil
 	handled := r.handled
 	r.lock.Unlock()
 	if old != nil {
 		old.abort()
+	}
+	// A password revoked since the stream signed in, before revoking it could
+	// find the resource under it, is found here.
+	if !password_held(password) {
+		r.end("")
+		x.write(`<failed xmlns="` + xmpp_ns_management + `"><not-authorized xmlns="` + xmpp_ns_stanzas + `"/></failed>`)
+		return nil
 	}
 	x.write(`<resumed xmlns="` + xmpp_ns_management + `" previd="` + xmpp_escape(token) + `" h="` + strconv.FormatUint(uint64(handled), 10) + `"/>`)
 	return r

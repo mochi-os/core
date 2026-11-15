@@ -169,7 +169,7 @@ func lemmy_login(c *gin.Context) {
 	if !strings.Contains(name, "@") {
 		name += "@" + strings.ToLower(activitypub_host(c))
 	}
-	user, row, device := password_check("fediverse", name, in.text("password"))
+	user, row, password := password_check("fediverse", name, in.text("password"))
 	if user == nil || row == nil || account_group(row) {
 		lemmy_error(c, http.StatusBadRequest, "incorrect_login")
 		return
@@ -178,9 +178,13 @@ func lemmy_login(c *gin.Context) {
 	data := account_data(row)
 	domain, _ := data["domain"].(string)
 	jwt := lemmy_jwt(number_for(user, "person", account_url(domain, id)), "https://"+strings.ToLower(activitypub_host(c)))
-	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device) values (?, ?, '', ?, ?, '', '', ?, ?, ?, 'lemmy', ?, 'fediverse', '', '', '')",
-		token_hash(jwt), user.UID, device, json_encode([]string{"read", "write", "follow"}), now(), now()+lemmy_lifetime, token_signin, id)
+	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, password) values (?, ?, '', ?, ?, '', '', ?, ?, ?, 'lemmy', ?, 'fediverse', '', '', '', ?)",
+		token_hash(jwt), user.UID, password.Name, json_encode([]string{"read", "write", "follow"}), now(), now()+lemmy_lifetime, token_signin, id, password.Hash)
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?)", token_hash(jwt), user.UID, now())
+	if password_outlived(password.Hash, token_hash(jwt)) {
+		lemmy_error(c, http.StatusBadRequest, "incorrect_login")
+		return
+	}
 	c.JSON(http.StatusOK, map[string]any{"jwt": jwt, "registration_created": false, "verify_email_sent": false})
 }
 

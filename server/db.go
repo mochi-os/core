@@ -99,7 +99,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 26
+	schema_version = 27
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -290,9 +290,10 @@ func db_create(names ...string) {
 		// API token definitions. Hot per-request "used" timestamp lives in
 		// sessions.db.accesses; here we keep just the definition so token loss
 		// doesn't follow sessions.db corruption.
-		users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+		users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '', password text not null default '')")
 		users.exec("create index if not exists tokens_refresh on tokens(refresh)")
 		users.exec("create index if not exists tokens_user on tokens(user)")
+		users.exec("create index if not exists tokens_password on tokens(password)")
 		users.exec("create index if not exists tokens_app on tokens(app)")
 
 		// Handles: the names behind hosted accounts on other networks, one
@@ -1816,6 +1817,8 @@ func db_upgrade() {
 			db_upgrade_25()
 		case 26:
 			db_upgrade_26()
+		case 27:
+			db_upgrade_27()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -3800,6 +3803,24 @@ func db_upgrade_25() {
 func db_upgrade_26() {
 	networks := db_open("db/networks.db")
 	networks.exec("create table if not exists occupants (room text not null, address text not null, nick text not null, bare text not null, role text not null, presence text not null default '', primary key (room, address))")
+}
+
+// db_upgrade_27 adds tokens.password to users.db: the minted password a
+// sign-in was made with, so revoking the password ends the sign-in.
+func db_upgrade_27() {
+	users := db_open("db/users.db")
+	// An install with no tokens table has no sign-ins to change.
+	found, err := users.exists("select 1 from sqlite_master where type='table' and name='tokens'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 27: tokens table lookup: %v", err))
+	}
+	if !found {
+		return
+	}
+	if have, _ := users.exists("select 1 from pragma_table_info('tokens') where name='password'"); !have {
+		users.exec("alter table tokens add column password text not null default ''")
+	}
+	users.exec("create index if not exists tokens_password on tokens(password)")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

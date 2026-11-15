@@ -747,7 +747,7 @@ func clients_login(c *gin.Context, domain spec.ServerName) {
 	if !strings.HasPrefix(address, "@") {
 		address = "@" + name + ":" + string(domain)
 	}
-	user, row, device := password_check("matrix", address, clients_password(address, body.Password))
+	user, row, password := password_check("matrix", address, clients_password(address, body.Password))
 	if user == nil {
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "The address or the password is wrong")
 		return
@@ -759,7 +759,7 @@ func clients_login(c *gin.Context, domain spec.ServerName) {
 	}
 	label := strings.TrimSpace(body.Name)
 	if label == "" {
-		label = device
+		label = password.Name
 	}
 	if len(body.Device) > 100 || strings.ContainsAny(body.Device, "/ ") {
 		clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid device id")
@@ -769,7 +769,11 @@ func clients_login(c *gin.Context, domain spec.ServerName) {
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "That device is Mochi's own")
 		return
 	}
-	m := signin_mint(user, "", label, "matrix", h.id, clients_api_scopes[0], "", body.Device, body.Refresh)
+	m, err := signin_mint(user, "", label, "matrix", h.id, clients_api_scopes[0], "", body.Device, body.Refresh, password.Hash)
+	if err == signin_revoked {
+		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "The address or the password is wrong")
+		return
+	}
 	if m == nil {
 		clients_error(c, http.StatusInternalServerError, "M_UNKNOWN", "No token")
 		return
@@ -873,7 +877,16 @@ func clients_register(c *gin.Context, domain spec.ServerName) {
 	if label == "" {
 		label = name
 	}
-	m := signin_mint(user, "", label, "matrix", account, clients_api_scopes[0], "", body.Device, body.Refresh)
+	// The sign-in ends with the password the registration chose.
+	password := ""
+	if body.Password != "" {
+		password = token_hash(clients_password(address, body.Password))
+	}
+	m, err := signin_mint(user, "", label, "matrix", account, clients_api_scopes[0], "", body.Device, body.Refresh, password)
+	if err == signin_revoked {
+		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "The password was revoked")
+		return
+	}
 	if m == nil {
 		clients_error(c, http.StatusInternalServerError, "M_UNKNOWN", "No token")
 		return
@@ -963,7 +976,7 @@ func clients_refresh(c *gin.Context) {
 		return
 	}
 	var t Token
-	if body.Refresh == "" || !db_open("db/users.db").scan(&t, "select hash, user, name, scopes, created, kind, client, account, network, device from tokens where refresh=? and kind=? and network='matrix' and client=''", token_hash(body.Refresh), token_signin) {
+	if body.Refresh == "" || !db_open("db/users.db").scan(&t, "select hash, user, name, scopes, created, kind, client, account, network, device, password from tokens where refresh=? and kind=? and network='matrix' and client=''", token_hash(body.Refresh), token_signin) {
 		clients_error(c, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Unknown refresh token")
 		return
 	}
@@ -979,7 +992,11 @@ func clients_refresh(c *gin.Context) {
 	}
 	token_delete(t.Hash)
 	json.Unmarshal([]byte(t.ScopesDB), &t.Scopes)
-	m := signin_mint(user, "", t.Name, "matrix", t.Account, strings.Join(t.Scopes, " "), "", t.Device, true)
+	m, err := signin_mint(user, "", t.Name, "matrix", t.Account, strings.Join(t.Scopes, " "), "", t.Device, true, t.Password)
+	if err == signin_revoked {
+		clients_error(c, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "The refresh token has expired")
+		return
+	}
 	if m == nil {
 		clients_error(c, http.StatusInternalServerError, "M_UNKNOWN", "No token")
 		return

@@ -35,6 +35,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -1186,8 +1187,9 @@ func signin_device(scope string) string {
 // signin_mint mints the tokens for a sign-in: an access token that expires
 // when expiring is set, with a refresh token then, bound to the client, the
 // account, the key and the device - the one named, else the one the scope
-// asks for, else a new one.
-func signin_mint(user *User, client string, name string, network string, account string, scope string, key string, device string, expiring bool) *signin_minted {
+// asks for, else a new one - and to the hash of the minted password it was
+// made with, if any, so it ends with that password.
+func signin_mint(user *User, client string, name string, network string, account string, scope string, key string, device string, expiring bool, password string) (*signin_minted, error) {
 	m := &signin_minted{device: device}
 	if m.device == "" {
 		m.device = signin_device(scope)
@@ -1201,15 +1203,18 @@ func signin_mint(user *User, client string, name string, network string, account
 	}
 	m.token = token_generate()
 	if m.token == "" {
-		return nil
+		return nil, errors.New("no token")
 	}
 	refresh := ""
 	if m.refresh != "" {
 		refresh = token_hash(m.refresh)
 	}
-	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device) values (?, ?, '', ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		token_hash(m.token), user.UID, name, json_encode(strings.Fields(scope)), now(), m.expires, token_signin, client, account, network, key, refresh, m.device)
+	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, password) values (?, ?, '', ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		token_hash(m.token), user.UID, name, json_encode(strings.Fields(scope)), now(), m.expires, token_signin, client, account, network, key, refresh, m.device, password)
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?)", token_hash(m.token), user.UID, now())
+	if password_outlived(password, token_hash(m.token)) {
+		return nil, signin_revoked
+	}
 	// A Matrix client's device is the account's from its sign-in, listed
 	// among its devices before it makes a request.
 	if network == "matrix" {
@@ -1217,14 +1222,14 @@ func signin_mint(user *User, client string, name string, network string, account
 			networks_database().exec("insert or ignore into devices (user, device, name, created) values (?, ?, ?, ?)", h.address, m.device, name, now())
 		}
 	}
-	return m
+	return m, nil
 }
 
 // signin_issue mints the tokens for a sign-in and answers them: an access
 // token that lasts on the fediverse and expires elsewhere, with a refresh
 // token where it expires, bound to the client, the account and the key.
 func signin_issue(c *gin.Context, cl *signin_client, user *User, account string, scope string, key string, device string) {
-	m := signin_mint(user, cl.ID, cl.Name, cl.Network, account, scope, key, device, cl.Network != "fediverse")
+	m, _ := signin_mint(user, cl.ID, cl.Name, cl.Network, account, scope, key, device, cl.Network != "fediverse", "")
 	if m == nil {
 		signin_fail(c, http.StatusInternalServerError, "server_error", "no token")
 		return
@@ -1490,19 +1495,48 @@ func account_by_did(did string) (*User, map[string]any) {
 
 // password_check verifies a password typed to a protocol against the minted
 // passwords of the account an address names on a network, and answers the
-// user, the account and the password's device name. The password's use is
-// recorded.
-func password_check(network string, address string, password string) (*User, map[string]any, string) {
+// user, the account and the password, whose name is its device's and whose
+// hash a sign-in made with it keeps. The password's use is recorded.
+func password_check(network string, address string, password string) (*User, map[string]any, *Token) {
 	user, row := account_by_address(network, address)
 	if user == nil || !strings.HasPrefix(password, "mochi-") {
-		return nil, nil, ""
+		return nil, nil, nil
 	}
 	t := token_lookup(password)
 	if t == nil || t.Kind != token_password || t.User != user.UID || t.Account != row["id"] {
-		return nil, nil, ""
+		return nil, nil, nil
 	}
 	password_used(t.Hash, t.User)
-	return user, row, t.Name
+	password_read(t.Hash)
+	return user, row, t
+}
+
+// password_read runs once a password has been read for a sign-in, before the
+// sign-in is made. It does nothing; a test revokes the password there, as a
+// revocation racing the sign-in would.
+var password_read = func(hash string) {}
+
+// signin_revoked refuses a sign-in whose password was revoked while it was
+// being made.
+var signin_revoked = errors.New("the password was revoked")
+
+// password_held reports whether a minted password, by its hash, is kept.
+func password_held(hash string) bool {
+	held, _ := db_open("db/users.db").exists("select 1 from tokens where hash=? and kind=?", hash, token_password)
+	return held
+}
+
+// password_outlived deletes a sign-in just written with a password since
+// revoked, and reports so. Revoking a password deletes the sign-ins made with
+// it, and a sign-in written after the revocation read the password before:
+// asking once it is written leaves none behind. A sign-in made with no
+// password always stands.
+func password_outlived(password string, signin string) bool {
+	if password == "" || password_held(password) {
+		return false
+	}
+	token_delete(signin)
+	return true
 }
 
 // password_used records a minted password's use.

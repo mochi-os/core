@@ -140,6 +140,8 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	users.exec("insert into entities (id, fingerprint, user, class, name) values ('e-u1', 'fp-u1abc', 'u1', 'person', 'A')")
 	// The handle registry, as every install since step 12 has it.
 	db_upgrade_12()
+	// The tokens, as every install since step 15 has them.
+	users.exec("create table tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
 	networks.exec("create table actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
 	networks.exec("insert into actors (id, user, domain, handle, network, created) values ('m-a', 'u1', 'b', 'a', 'matrix', 1)")
 
@@ -168,6 +170,9 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	}
 	if !versioning_column(networks, "deliveries", "address") {
 		t.Error("THE POINT: deliveries did not gain address")
+	}
+	if !versioning_column(users, "tokens", "password") {
+		t.Error("THE POINT: tokens did not gain password")
 	}
 	if versioning_has(networks, "received") {
 		t.Error("the server-wide received table survived")
@@ -826,6 +831,14 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	check("db_upgrade_25.networks", versioning_schema(db_open("db/networks.db")))
 	db_upgrade_26()
 	check("db_upgrade_26.networks", versioning_schema(db_open("db/networks.db")))
+	// users.db's tokens as schema 26 left them, for db_upgrade_27 to change.
+	users := db_open("db/users.db")
+	users.exec("create table tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+	users.exec("create index tokens_refresh on tokens(refresh)")
+	users.exec("create index tokens_user on tokens(user)")
+	users.exec("create index tokens_app on tokens(app)")
+	db_upgrade_27()
+	check("db_upgrade_27.users", versioning_schema(users))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

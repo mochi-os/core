@@ -385,7 +385,7 @@ func web_bearer_two_users(t *testing.T) (*App, string, map[string]string, map[st
 	identity := test_entity_id('o')
 	users.exec("insert into entities (id, fingerprint, user, class, name, privacy) values (?, ?, 'other-user', 'person', 'Other Tester', 'private')",
 		identity, fingerprint(identity))
-	users.exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+	users.exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '', password text not null default '')")
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
 	n := now()

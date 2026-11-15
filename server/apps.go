@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2881,20 +2882,32 @@ func starlark_kwargs_to_map(kwargs []sl.Tuple) (map[string]any, error) {
 	return out, nil
 }
 
-// mochi.app.icons() -> dict: Get available icons for home screen
+// mochi.app.icons(data=False) -> dict: Get available icons for home screen
 // Returns {"icons": [...], "icon_mask": "...", "icon_background": "..."}
 // A development app and the published app declaring the same path are one
-// app; only the one that path opens is listed (see app_twinned).
+// app; only the one that path opens is listed (see app_twinned). With data,
+// each icon that is an SVG of at most app_icon_data_maximum bytes also
+// carries it as a data: URL, so a page draws every icon from the one answer.
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var data bool
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "data?", &data); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	user := principal_caller(t)
 
 	// Each icon keeps the version that produced it, so the require.function
 	// gate can be applied after apps_lock is released - app_listed calls into
-	// Starlark, which resolves services and paths under that same lock.
+	// Starlark, which resolves services and paths under that same lock. The
+	// path the icon's address begins with and the name it asks that path for
+	// are kept too: the icon's data is read from the file that request would
+	// be answered with, by whichever app the path opens for this user.
 	type candidate struct {
-		app  *App
-		av   *AppVersion
-		icon map[string]any
+		app    *App
+		av     *AppVersion
+		icon   map[string]any
+		served *AppVersion
+		route  string
+		name   string
 	}
 	var candidates []candidate
 
@@ -2929,8 +2942,10 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 			icon_file := i.File
 			icon_path := path
+			served, route, name := av, path, i.File
 			if i.Action != "" {
 				icon_path = path + "/" + i.Action
+				name = i.Action + "/" + i.File
 			}
 
 			// Icon resolution priority:
@@ -2943,6 +2958,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 					if theme_av != nil && len(theme_av.Paths) > 0 {
 						icon_path = theme_av.Paths[0] + "/icons"
 						icon_file = override
+						served, route, name = theme_av, theme_av.Paths[0], "icons/"+override
 					}
 				}
 			}
@@ -2950,10 +2966,11 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 				if override, ok := av.ThemeIcons[active_theme_id]; ok {
 					icon_path = path + "/images"
 					icon_file = filepath.Base(override)
+					served, name = av, "images/"+icon_file
 				}
 			}
 
-			candidates = append(candidates, candidate{app: a, av: av, icon: map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development}})
+			candidates = append(candidates, candidate{app: a, av: av, icon: map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development}, served: served, route: route, name: name})
 		}
 	}
 	apps_lock.Unlock()
@@ -2974,6 +2991,17 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		if app_twinned(c.app, c.av, user, shown) {
 			continue
 		}
+		if data {
+			served := c.served
+			if routed := app_for_path(user, c.route); routed != nil {
+				if av := routed.active(user); av != nil {
+					served = av
+				}
+			}
+			if value := app_icon_data(served, c.name); value != "" {
+				c.icon["data"] = value
+			}
+		}
 		icons = append(icons, c.icon)
 	}
 
@@ -2989,6 +3017,40 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 	return sl_encode(result), nil
+}
+
+// The largest icon mochi.app.icons inlines; an app's icon is under 1 KB.
+const app_icon_data_maximum = 16 * 1024
+
+// app_icon_data returns the icon av answers at name as a data: URL, or ""
+// for one that is not an SVG served from a files route, or is larger than
+// app_icon_data_maximum, which the page then loads by its path. The file is
+// the one web_action serves for that request, sanitised as it sanitises it,
+// and is found by the version's own routes: no caller names it.
+func app_icon_data(av *AppVersion, name string) string {
+	if av == nil {
+		return ""
+	}
+	// web_action serves an action's own file before its files directory, and
+	// a feature route's path is no file at all.
+	aa := av.find_action(name)
+	if aa == nil || aa.File != "" || aa.Files == "" || !valid(aa.filepath, "filepath") {
+		return ""
+	}
+	file := av.base + "/" + aa.Files + "/" + aa.filepath
+	if !strings.HasSuffix(strings.ToLower(file), ".svg") {
+		return ""
+	}
+	handle, err := os.Open(file)
+	if err != nil {
+		return ""
+	}
+	defer handle.Close()
+	content, err := io.ReadAll(io.LimitReader(handle, app_icon_data_maximum+1))
+	if err != nil || len(content) > app_icon_data_maximum {
+		return ""
+	}
+	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(svg_sanitize(content))
 }
 
 // app_twinned reports whether an app's icon gives way to its twin: another
@@ -3962,7 +4024,7 @@ func api_app_cleanup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 const apps_versions_previous = 1
 
 // apps_removal_grace is how long a removed version's directory stays on disk,
-// when set; unset, it is an action's timeout and a minute. A request that
+// when set; unset, the longer action timeout and five minutes. A request that
 // resolved the version before its removal still loads its files - another
 // Starlark file, a label catalogue, an asset - for up to that long. A var so a
 // test can shorten it.

@@ -1723,24 +1723,14 @@ func linked_session_key(uid string, id string) string {
 	return uid + "/" + id
 }
 
-// linked_manager starts a session for every linked chat account at startup,
-// and once an hour reads again the limits of each linked Mastodon account's
-// server that are a day old (decision 24). With the development switch off
-// nothing runs.
+// linked_manager starts a session for every linked account that holds one at
+// startup. With the development switch off nothing runs. A Mastodon account's
+// session keeps its server's limits fresh itself (mastodon_limits_kept).
 func linked_manager() {
 	if !networks_development {
 		return
 	}
 	linked_resume()
-	for range time.Tick(time.Hour) {
-		linked_each(func(user *User, l *linked) {
-			if l.kind == "mastodon" {
-				ctx, cancel := context.WithTimeout(context.Background(), linked_timeout)
-				mastodon_refresh_limits(ctx, l)
-				cancel()
-			}
-		})
-	}
 }
 
 // linked_resume starts a session for every enabled linked account of every
@@ -1753,21 +1743,35 @@ func linked_resume() {
 	})
 }
 
+// linked_resume_user starts a session for each enabled linked account of one
+// user that holds one: a user made active again (reactivated, restored) has
+// them as one active at start does.
+func linked_resume_user(user *User) {
+	linked_user_each(user, func(user *User, l *linked) {
+		if linked_held(l.kind) {
+			linked_start(l)
+		}
+	})
+}
+
 // linked_each calls fn for every enabled linked account of every active user.
 func linked_each(fn func(user *User, l *linked)) {
 	rows, _ := db_open("db/users.db").rows("select uid from users where status='active'")
 	for _, row := range rows {
-		user := user_by_uid(row_string(row, "uid"))
-		if user == nil {
+		if user := user_by_uid(row_string(row, "uid")); user != nil {
+			linked_user_each(user, fn)
+		}
+	}
+}
+
+// linked_user_each calls fn for every enabled linked account of a user.
+func linked_user_each(user *User, fn func(user *User, l *linked)) {
+	for _, account := range accounts_network(user) {
+		if enabled, _ := account["enabled"].(int64); enabled == 0 {
 			continue
 		}
-		for _, account := range accounts_network(user) {
-			if enabled, _ := account["enabled"].(int64); enabled == 0 {
-				continue
-			}
-			if l := linked_from(user, account); l != nil {
-				fn(user, l)
-			}
+		if l := linked_from(user, account); l != nil {
+			fn(user, l)
 		}
 	}
 }

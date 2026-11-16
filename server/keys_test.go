@@ -24,7 +24,10 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -638,6 +641,124 @@ func TestSignatureKeyFetch(t *testing.T) {
 	}
 	if _, err := signature_key_fetch(context.Background(), "http://remote.example/users/bob#main-key", false); err == nil {
 		t.Error("a keyId that is not https is refused")
+	}
+}
+
+// TestSignatureKeyFetchedOnceWithItsOwnDeadline: activities from one actor
+// arriving together while its key server never answers wait for one fetch,
+// which gives up at its own deadline rather than the client's 30 s; the
+// failure is kept, so the next activity asks nobody; a signed fetch does not
+// take an unsigned one's answer; and a caller that stops waiting returns at
+// once, the fetch going on without it.
+func TestSignatureKeyFetchedOnceWithItsOwnDeadline(t *testing.T) {
+	signature_keys_test_reset(t)
+	saved_fetch, saved_timeout := resolve_fetch, signature_key_timeout
+	t.Cleanup(func() { resolve_fetch, signature_key_timeout = saved_fetch, saved_timeout })
+	signature_key_timeout = 300 * time.Millisecond
+	var unsigned, signed atomic.Int64
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if resolve_signed_by(ctx) != nil {
+			signed.Add(1)
+		} else {
+			unsigned.Add(1)
+		}
+		// A server that takes the connection and never answers: the
+		// client's own timeout, shortened, ends it where nothing else does.
+		select {
+		case <-ctx.Done():
+			return nil, &url.Error{Op: "Get", URL: address, Err: ctx.Err()}
+		case <-time.After(5 * time.Second):
+			return nil, &url.Error{Op: "Get", URL: address, Err: fmt.Errorf("client timeout")}
+		}
+	}
+	key := "https://silent.example/users/eve#main-key"
+	background := context.Background()
+	signing := resolve_signing(background, func(r *http.Request) {})
+
+	start := time.Now()
+	var group sync.WaitGroup
+	failures := make([]error, 12)
+	for i := range failures {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			ctx := background
+			if i%4 == 3 {
+				ctx = signing
+			}
+			_, failures[i] = signature_key_fetch(ctx, key, false)
+		}()
+	}
+	group.Wait()
+	elapsed := time.Since(start)
+	for i, err := range failures {
+		if err == nil {
+			t.Fatalf("CONTROL: activity %d took a key from a server that never answered", i)
+		}
+	}
+	if unsigned.Load() != 1 {
+		t.Errorf("THE POINT: nine unsigned activities arriving together fetched the key %d times, want once", unsigned.Load())
+	}
+	if signed.Load() != 1 {
+		t.Errorf("THE POINT: three signed activities fetched the key %d times, want once and apart from the unsigned fetch", signed.Load())
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("THE POINT: the activities were held %v, past the fetch's own deadline", elapsed)
+	}
+	if _, err := signature_key_fetch(background, key, false); err == nil || unsigned.Load() != 1 {
+		t.Errorf("THE POINT: the next activity fetched again (%d fetches): the failure was not kept", unsigned.Load())
+	}
+
+	// A caller that stops waiting returns at once; the fetch it started goes
+	// on for the others waiting on it, and is kept.
+	public, _, _ := key_generate(key_rsa)
+	slow := "https://slow.example/users/mallory"
+	document, _ := json.Marshal(map[string]any{"id": slow, "publicKey": map[string]any{"id": slow + "#main-key", "owner": slow, "publicKeyPem": public}})
+	var asked atomic.Int64
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		asked.Add(1)
+		select {
+		case <-ctx.Done():
+			return nil, &url.Error{Op: "Get", URL: address, Err: ctx.Err()}
+		case <-time.After(150 * time.Millisecond):
+			return document, nil
+		}
+	}
+	impatient, cancel := context.WithTimeout(background, 50*time.Millisecond)
+	defer cancel()
+	waited := make(chan error, 1)
+	start = time.Now()
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		got, err := signature_key_fetch(background, slow+"#main-key", false)
+		if err == nil && got != public {
+			err = fmt.Errorf("another key")
+		}
+		waited <- err
+	}()
+	if _, err := signature_key_fetch(impatient, slow+"#main-key", false); err == nil || time.Since(start) > 120*time.Millisecond {
+		t.Errorf("THE POINT: a caller that stopped waiting was held %v (%v)", time.Since(start), err)
+	}
+	if err := <-waited; err != nil {
+		t.Errorf("THE POINT: the caller still waiting lost the fetch the first one abandoned: %v", err)
+	}
+	if got, err := signature_key_fetch(background, slow+"#main-key", false); err != nil || got != public || asked.Load() != 1 {
+		t.Errorf("THE POINT: the key was not kept: %v, %d fetches", err, asked.Load())
+	}
+
+	// A fetch that panics, off any request's goroutine: its caller is told
+	// it failed, and the server goes on.
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		panic("a broken document")
+	}
+	if _, err := signature_key_fetch(background, "https://broken.example/users/x#main-key", false); err == nil {
+		t.Error("THE POINT: a fetch that panicked answered a key")
+	}
+	signature_keys_lock.Lock()
+	left := len(signature_key_calls)
+	signature_keys_lock.Unlock()
+	if left != 0 {
+		t.Errorf("THE POINT: %d fetches left in flight after they ended", left)
 	}
 }
 

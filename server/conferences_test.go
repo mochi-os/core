@@ -10,9 +10,13 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"mellium.im/xmpp/jid"
 )
 
 // xmpp_configure submits a room's configuration as its owner, the fields
@@ -153,6 +157,79 @@ func TestXMPPRoomKept(t *testing.T) {
 	c.lock.Unlock()
 	if name != "Kept" || !members || member != "member" {
 		t.Errorf("THE POINT: the room read back as name %q, members only %v, bob %q", name, members, member)
+	}
+}
+
+// TestXMPPRoomFanoutFindsEachAccountOnce: what a room sends at once finds
+// each recipient's account once, not once a copy - a message to an account in
+// the room from five sessions, and a joiner told of everyone already in it -
+// and a recipient's block still keeps the room's copies from that recipient
+// alone.
+func TestXMPPRoomFanoutFindsEachAccountOnce(t *testing.T) {
+	// The lookup is counted from before the server starts until after it
+	// stops, so no delivery reads it while it is being swapped.
+	var lock sync.Mutex
+	looked := map[string]int{}
+	saved := xmpp_account_find
+	t.Cleanup(func() { xmpp_account_find = saved })
+	xmpp_account_find = func(to jid.JID) *xmpp_account {
+		lock.Lock()
+		looked[strings.ToLower(to.Bare().String())]++
+		lock.Unlock()
+		return xmpp_account_of(to)
+	}
+	lookups := func(address string) int {
+		lock.Lock()
+		defer lock.Unlock()
+		n := looked[address]
+		delete(looked, address)
+		return n
+	}
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	room := "busy@rooms.example.com"
+	var sessions []*xmpp_raw_client
+	for i := range 5 {
+		c := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "D"+strconv.Itoa(i)), "d"+strconv.Itoa(i))
+		c.send(`<presence xmlns="jabber:client" to="` + room + `/A` + strconv.Itoa(i) + `"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+		c.expect(t, "joined", `from="`+room+`/A`+strconv.Itoa(i)+`"`, `code="110"`)
+		if i == 0 {
+			xmpp_configure(t, c, room, "c1", "muc#roomconfig_persistentroom", "1", "muc#roomconfig_publicroom", "1", "muc#roomconfig_whois", "anyone")
+		}
+		sessions = append(sessions, c)
+	}
+	time.Sleep(200 * time.Millisecond)
+	lookups("alice@example.com")
+	lookups("bob@example.com")
+
+	sessions[1].send(`<message xmlns="jabber:client" to="` + room + `" type="groupchat" id="m1"><body>To all five</body></message>`)
+	for _, c := range sessions {
+		c.expect(t, "the message", `from="`+room+`/A1"`, "To all five")
+	}
+	if n := lookups("alice@example.com"); n != 1 {
+		t.Errorf("THE POINT: a message to five sessions of one account found the account %d times, want once", n)
+	}
+
+	bob := env.raw(t, "bob@example.com", env.mint(t, env.bob, "x2", "Phone"), "phone")
+	bob.send(`<presence xmlns="jabber:client" to="` + room + `/Bob"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	for i := range 5 {
+		bob.expect(t, "told who is in the room", `from="`+room+`/A`+strconv.Itoa(i)+`"`)
+	}
+	bob.expect(t, "joined", `from="`+room+`/Bob"`, `code="110"`)
+	if n := lookups("bob@example.com"); n != 1 {
+		t.Errorf("THE POINT: a joiner told of five occupants and of themselves had their account found %d times, want once", n)
+	}
+
+	// Bob blocks the room: its copies stop reaching him, and only him.
+	bob.send(`<iq xmlns="jabber:client" type="set" id="k1"><block xmlns="urn:xmpp:blocking"><item jid="` + room + `"/></block></iq>`)
+	bob.expect(t, "the block made", `id="k1"`, `type="result"`)
+	sessions[2].send(`<message xmlns="jabber:client" to="` + room + `" type="groupchat" id="m2"><body>Not for bob</body></message>`)
+	for _, c := range sessions {
+		c.expect(t, "THE POINT: the message reaches the account not blocking the room", `from="`+room+`/A2"`, "Not for bob")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if len(bob.heard("Not for bob")) > 0 {
+		t.Error("THE POINT: a copy reached someone blocking the room")
 	}
 }
 

@@ -551,8 +551,9 @@ func (o *conference_outbox) add(s *xmpp_stanza, from string, to string) {
 
 // flush routes what was queued and tells the apps relaying the room.
 func (o *conference_outbox) flush() {
+	fanout := xmpp_fanout_open()
 	for _, send := range o.stanzas {
-		xmpp_route(send.s, send.from, send.to)
+		fanout.route(send.s, send.from, send.to)
 	}
 	if o.relay != "" && len(o.events) > 0 {
 		if user := user_by_uid(o.relay); user != nil {

@@ -1550,8 +1550,15 @@ func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "user not found")
 	}
 
-	db.exec("update users set status='suspended' where uid=?", id)
+	user_suspend(id)
 	return sl.True, nil
+}
+
+// user_suspend suspends a user: their linked accounts' sessions end with them,
+// as they would leave the user's accounts streaming to the apps meanwhile.
+func user_suspend(id string) {
+	db_open("db/users.db").exec("update users set status='suspended' where uid=?", id)
+	linked_stop_user(id)
 }
 
 // mochi.user.activate(uid) -> bool: Activate a suspended user (admin only)
@@ -1589,11 +1596,13 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // user_activate makes a suspended user active again. A server block made
 // while they were suspended passed them over, as user_by_uid answers no one
-// for a suspended user, so it reaches them now (server_blocked_apply).
+// for a suspended user, so it reaches them now (server_blocked_apply); and
+// their linked accounts' sessions, ended with the suspension, start again.
 func user_activate(id string) {
 	db_open("db/users.db").exec("update users set status='active' where uid=?", id)
 	if user := user_by_uid(id); user != nil {
 		server_blocked_apply(user)
+		linked_resume_user(user)
 	}
 }
 

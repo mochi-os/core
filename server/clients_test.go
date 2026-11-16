@@ -1035,6 +1035,226 @@ func TestClientsHistory(t *testing.T) {
 	check("missing events", body["events"].([]any))
 }
 
+// rooms_visible_reference is the history visibility check as it was before
+// rooms_judge: worked out from scratch for each event, reading every member's
+// membership. The judge must give the same answer for every event.
+func rooms_visible_reference(server spec.ServerName, event gomatrixserverlib.PDU) bool {
+	room := event.RoomID().String()
+	current, _ := rooms_current(room)
+	at, ok := rooms_after(event.EventID())
+	if !ok {
+		at = current
+	}
+	visibility := "shared"
+	if id := at[rooms_key(spec.MRoomHistoryVisibility, "")]; id != "" {
+		if e := rooms_event(id); e != nil {
+			if value, err := e.HistoryVisibility(); err == nil {
+				visibility = string(value)
+			}
+		}
+	}
+	if visibility == "world_readable" {
+		return true
+	}
+	present := func(state rooms_state, memberships ...string) bool {
+		for member, membership := range rooms_members(state) {
+			if user, err := spec.NewUserID(member, true); err == nil && user.Domain() == server && slices.Contains(memberships, membership) {
+				return true
+			}
+		}
+		return false
+	}
+	if present(at, spec.Join) || (visibility == "invited" && present(at, spec.Join, spec.Invite)) {
+		return true
+	}
+	return visibility == "shared" && present(current, spec.Join)
+}
+
+// TestRoomsJudgeAgreesWithEachEventsOwnCheck: a page of history is judged
+// once per state its events are read against, and every event gets the
+// answer its own check gives, for a server joined then, one joined now, one
+// joined later, and one never in the room, across every history visibility,
+// members joining, leaving and coming back, and a state event the room
+// rejected; and what backfill hands each server is what that check hands it.
+func TestRoomsJudgeAgreesWithEachEventsOwnCheck(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	first := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	second := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	made, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "public_chat", InitialState: []*event.Event{{Type: event.StateHistoryVisibility, StateKey: new(string), Content: event.Content{Raw: map[string]any{"history_visibility": "shared"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := string(made.RoomID)
+	say := func(text string) {
+		t.Helper()
+		if _, err := a.SendText(ctx, made.RoomID, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	visibility := func(value string) {
+		t.Helper()
+		if status, body := clients_request(t, a, "PUT", "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/state/"+spec.MRoomHistoryVisibility+"/", map[string]any{"history_visibility": value}); status != 200 {
+			t.Fatalf("history visibility %s = %d %v", value, status, body)
+		}
+	}
+	bob, carol := first.user("bob"), second.user("carol")
+	leave := func(r *matrix_remote, user string, id string) {
+		t.Helper()
+		r.push(t, id, r.event(room, user, spec.MRoomMember, &user, map[string]any{"membership": "leave"}))
+	}
+
+	say("shared, before anyone came")
+	visibility("joined")
+	say("joined, before anyone came")
+	matrix_remote_join(t, first, room, bob)
+	say("joined, bob here")
+	first.push(t, "bob-speaks", first.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "bob speaks"}))
+	visibility("invited")
+	say("invited, bob here")
+	matrix_remote_join(t, second, room, carol)
+	say("invited, both here")
+	leave(first, bob, "bob-leaves")
+	say("invited, bob gone")
+	// A state event bob may no longer send, which the room rejects: read
+	// against the state before it, so the history it would open stays shut.
+	empty := ""
+	opened := first.event(room, bob, spec.MRoomHistoryVisibility, &empty, map[string]any{"history_visibility": "world_readable"})
+	first.push(t, "bob-opens", opened)
+	visibility("world_readable")
+	say("world readable")
+	visibility("shared")
+	say("shared again")
+	leave(second, carol, "carol-leaves")
+	say("shared, carol gone")
+	matrix_remote_join(t, first, room, bob)
+	say("shared, bob back")
+	if !rooms_rejected(opened.EventID()) {
+		t.Fatal("CONTROL: the room took a state event from someone who had left it")
+	}
+	// A second room answered in the same breath, sharing its history with
+	// servers joined now, which bob's is in the first room and not this one;
+	// and an event the server never stored, read against the room's state
+	// now.
+	second_room, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "public_chat", InitialState: []*event.Event{{Type: event.StateHistoryVisibility, StateKey: new(string), Content: event.Content{Raw: map[string]any{"history_visibility": "shared"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SendText(ctx, second_room.RoomID, "in the other room"); err != nil {
+		t.Fatal(err)
+	}
+	first.lock.Lock()
+	unstored := first.build(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "never stored"}, first.edge[room], first.state[room])
+	first.lock.Unlock()
+
+	var lists [2][]gomatrixserverlib.PDU
+	bodies := map[string]gomatrixserverlib.PDU{}
+	for i, id := range []string{room, string(second_room.RoomID)} {
+		rows, _ := networks_database().rows("select id from events where room=?", id)
+		for _, row := range rows {
+			if e := rooms_event(row_string(row, "id")); e != nil {
+				lists[i] = append(lists[i], e)
+				if body := rooms_body(e); body != "" {
+					bodies[body] = e
+				}
+			}
+		}
+	}
+	var events []gomatrixserverlib.PDU
+	for i := 0; i < max(len(lists[0]), len(lists[1])); i++ {
+		for _, list := range lists {
+			if i < len(list) {
+				events = append(events, list[i])
+			}
+		}
+	}
+	if len(lists[1]) == 0 || bodies["in the other room"] == nil {
+		t.Fatal("CONTROL: the second room's events are not here")
+	}
+	if found, _ := networks_database().exists("select 1 from events where id=?", unstored.EventID()); found {
+		t.Fatal("CONTROL: the unstored event is stored")
+	}
+	events = append(events, unstored)
+	bodies["never stored"] = unstored
+	var local spec.ServerName
+	for _, e := range events {
+		if e.Type() == spec.MRoomCreate {
+			local = spec.ServerName(strings.SplitN(string(e.SenderID()), ":", 2)[1])
+		}
+	}
+	if local == "" {
+		t.Fatal("CONTROL: the room has no create event here")
+	}
+	stranger := spec.ServerName("stranger.example")
+
+	// The room covers what the check tells apart.
+	for _, c := range []struct {
+		server spec.ServerName
+		body   string
+		want   bool
+	}{
+		{first.name, "shared, before anyone came", true},
+		{first.name, "joined, before anyone came", false},
+		{first.name, "invited, bob gone", false},
+		{second.name, "invited, bob here", false},
+		{second.name, "invited, both here", true},
+		{second.name, "shared, before anyone came", false},
+		{stranger, "world readable", true},
+		{stranger, "shared again", false},
+		{stranger, "invited, bob gone", false},
+		{local, "joined, before anyone came", true},
+		{first.name, "in the other room", false},
+		{local, "in the other room", true},
+		{first.name, "never stored", true},
+		{stranger, "never stored", false},
+	} {
+		e := bodies[c.body]
+		if e == nil {
+			t.Fatalf("CONTROL: no event %q", c.body)
+		}
+		if got := rooms_visible_reference(c.server, e); got != c.want {
+			t.Fatalf("CONTROL: %s sees %q = %v, want %v", c.server, c.body, got, c.want)
+		}
+	}
+
+	reversed := slices.Clone(events)
+	slices.Reverse(reversed)
+	for _, server := range []spec.ServerName{local, first.name, second.name, stranger} {
+		for _, order := range [][]gomatrixserverlib.PDU{events, reversed} {
+			judge := rooms_judging(server)
+			for _, e := range order {
+				if got, want := judge.visible(e), rooms_visible_reference(server, e); got != want {
+					t.Errorf("THE POINT: %s judged %s (%s %q) %v, its own check %v", server, e.EventID(), e.Type(), rooms_body(e), got, want)
+				}
+			}
+		}
+		given := rooms_given(server, events)
+		for i, e := range events {
+			want := json.RawMessage(e.JSON())
+			if !rooms_visible_reference(server, e) {
+				version, _ := gomatrixserverlib.GetRoomVersion(e.Version())
+				want, _ = version.RedactEventJSON(e.JSON())
+			}
+			if i >= len(given) || string(given[i]) != string(want) {
+				t.Errorf("THE POINT: %s is given %s otherwise than its own check gives it", server, e.EventID())
+			}
+		}
+	}
+}
+
+// rooms_body is a message event's body, or "".
+func rooms_body(e gomatrixserverlib.PDU) string {
+	var content struct {
+		Body string `json:"body"`
+	}
+	json.Unmarshal(e.Content(), &content)
+	if e.Type() != "m.room.message" {
+		return ""
+	}
+	return content.Body
+}
+
 // TestClientsKnocking: someone knocks on a room whose rule is to knock and
 // their client is told it waits; the room's members are told of the knock;
 // and once invited they join.

@@ -410,9 +410,11 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 	udb.exec("update users set status='active' where uid=? and status='pending-restore'", uid)
 	db_purge_prefix(filepath.Join("users", uid))
 	// A block made while the user was restoring passed them over; now active,
-	// any later block reaches them itself (server_blocked_add).
+	// any later block reaches them itself (server_blocked_add). Their linked
+	// accounts' sessions start, as an active user's do at start.
 	if user := user_by_uid(uid); user != nil {
 		server_blocked_apply(user)
+		linked_resume_user(user)
 	}
 
 	// Restore is single-shot. On a replication-paired destination a follow

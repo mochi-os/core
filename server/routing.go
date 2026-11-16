@@ -116,13 +116,66 @@ func (a *xmpp_account) mochi() jid.JID {
 // xmpp_route sends a stanza from an address to another: to an account here,
 // or over the link to the other server.
 func xmpp_route(s *xmpp_stanza, from jid.JID, to jid.JID) {
+	(*xmpp_fanout)(nil).route(s, from, to)
+}
+
+// xmpp_account_find is how a delivery finds the account an address names; a
+// variable so tests can count the lookups.
+var xmpp_account_find = xmpp_account_of
+
+// An xmpp_fanout is stanzas sent together - what a room sends for one message
+// or one join, a copy for each occupant's session - delivered with each
+// recipient's account found once and each block decided once per recipient
+// and sender: a joiner is sent every occupant's presence, and an account in
+// a room with several sessions a copy for each. It holds nothing past its
+// fan-out, so an account removed or a block added is seen by the next. A nil
+// fan-out looks everything up for each stanza.
+type xmpp_fanout struct {
+	accounts map[string]*xmpp_account
+	blocks   map[string]bool
+}
+
+func xmpp_fanout_open() *xmpp_fanout {
+	return &xmpp_fanout{accounts: map[string]*xmpp_account{}, blocks: map[string]bool{}}
+}
+
+// route is xmpp_route within the fan-out.
+func (b *xmpp_fanout) route(s *xmpp_stanza, from jid.JID, to jid.JID) {
 	s.set("from", from.String())
 	s.set("to", to.String())
 	if xmpp_local(to.Domainpart()) {
-		xmpp_deliver(s, from, to)
+		b.deliver(s, from, to)
 		return
 	}
 	xmpp_send_remote(s, from, to)
+}
+
+// account is the account an address here names, or nil.
+func (b *xmpp_fanout) account(to jid.JID) *xmpp_account {
+	if b == nil {
+		return xmpp_account_find(to)
+	}
+	key := strings.ToLower(to.Bare().String())
+	if a, found := b.accounts[key]; found {
+		return a
+	}
+	a := xmpp_account_find(to)
+	b.accounts[key] = a
+	return a
+}
+
+// blocked is xmpp_blocked, which turns on the sender's bare address alone.
+func (b *xmpp_fanout) blocked(a *xmpp_account, from jid.JID) bool {
+	if b == nil {
+		return xmpp_blocked(a.user, from)
+	}
+	key := strings.ToLower(a.address.String()) + "\x00" + strings.ToLower(from.Bare().String())
+	if blocked, found := b.blocks[key]; found {
+		return blocked
+	}
+	blocked := xmpp_blocked(a.user, from)
+	b.blocks[key] = blocked
+	return blocked
 }
 
 // xmpp_answer routes the answer to a stanza back to where it came from.
@@ -156,6 +209,11 @@ func xmpp_from_server(s *xmpp_stanza, from jid.JID, to jid.JID) {
 // server's, the notices address, or an account's, which its user's block list
 // guards.
 func xmpp_deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
+	(*xmpp_fanout)(nil).deliver(s, from, to)
+}
+
+// deliver is xmpp_deliver within the fan-out.
+func (b *xmpp_fanout) deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
 	if xmpp_room_base(to.Domainpart()) != "" {
 		xmpp_conference_deliver(s, from, to)
 		return
@@ -174,7 +232,7 @@ func xmpp_deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
 		}
 		return
 	}
-	a := xmpp_account_of(to)
+	a := b.account(to)
 	if a == nil {
 		if s.name != "presence" {
 			xmpp_answer(s, xmpp_failure(s, "service-unavailable", "cancel", ""))
@@ -182,7 +240,7 @@ func xmpp_deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
 		return
 	}
 	own := from.Bare().Equal(a.address)
-	if !own && xmpp_blocked(a.user, from) {
+	if !own && b.blocked(a, from) {
 		if s.name != "presence" {
 			xmpp_answer(s, xmpp_failure(s, "service-unavailable", "cancel", ""))
 		}

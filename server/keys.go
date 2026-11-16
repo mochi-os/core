@@ -1143,6 +1143,24 @@ type signature_key_entry struct {
 var signature_keys = map[string]signature_key_entry{}
 var signature_keys_lock sync.Mutex
 
+// A key not in the cache is fetched once at a time: activities from one
+// actor arriving together wait for the one fetch, under signature_keys_lock,
+// by key id and by whether the fetch is signed and fresh, so a waiter never
+// takes an unsigned fetch's refusal for a signed one's answer. The fetch has
+// a deadline of its own and outlives no caller's interest past it: a key
+// server that never answers holds an inbox request signature_key_timeout,
+// not the client's whole timeout, and the failure is kept as the cache keeps
+// any.
+var signature_key_timeout = 10 * time.Second
+
+type signature_key_call struct {
+	done   chan struct{}
+	public string
+	err    error
+}
+
+var signature_key_calls = map[string]*signature_key_call{}
+
 // signature_key_fetch fetches the PEM public key an ActivityPub keyId names:
 // the actor document at the keyId's URL (fragment aside), whose publicKey
 // carries it. Goes through resolve_fetch, so tests substitute documents. fresh
@@ -1167,6 +1185,40 @@ func signature_key_fetch(ctx context.Context, key_id string, fresh bool) (string
 		}
 	}
 
+	pending := fmt.Sprintf("%s\x00%t\x00%t", key_id, signed, fresh)
+	signature_keys_lock.Lock()
+	call := signature_key_calls[pending]
+	if call == nil {
+		call = &signature_key_call{done: make(chan struct{})}
+		signature_key_calls[pending] = call
+		go func() {
+			// Off the request's goroutine, so out of reach of its recovery:
+			// a panic fails the fetch for its callers, not the server.
+			defer func() {
+				if failure := recover(); failure != nil {
+					call.public, call.err = "", fmt.Errorf("key fetch failed: %v", failure)
+				}
+				signature_keys_lock.Lock()
+				delete(signature_key_calls, pending)
+				signature_keys_lock.Unlock()
+				close(call.done)
+			}()
+			fetch, cancel := context.WithTimeout(context.WithoutCancel(ctx), signature_key_timeout)
+			defer cancel()
+			call.public, call.err = signature_key_keep(fetch, key_id, fresh, signed, entry, found, now)
+		}()
+	}
+	signature_keys_lock.Unlock()
+	select {
+	case <-call.done:
+		return call.public, call.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// signature_key_keep fetches a key and keeps what was learnt of it.
+func signature_key_keep(ctx context.Context, key_id string, fresh bool, signed bool, entry signature_key_entry, found bool, now time.Time) (string, error) {
 	public, err := signature_key_read(ctx, key_id)
 
 	signature_keys_lock.Lock()

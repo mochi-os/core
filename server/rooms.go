@@ -768,6 +768,11 @@ func rooms_members(state rooms_state) map[string]string {
 			ids = append(ids, id)
 		}
 	}
+	return rooms_memberships(ids)
+}
+
+// rooms_memberships are the memberships some member events give, by member.
+func rooms_memberships(ids []any) map[string]string {
 	out := map[string]string{}
 	db := networks_database()
 	for start := 0; start < len(ids); start += 500 {
@@ -3452,16 +3457,71 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	c.JSON(http.StatusOK, map[string]any{"event": json.RawMessage(signed.JSON())})
 }
 
-// rooms_visible says whether a server may see an event: a room readable by
-// anyone, or one the server had someone joined to then, or has now where the
-// room shares its history.
-func rooms_visible(server spec.ServerName, event gomatrixserverlib.PDU) bool {
+// A rooms_judge decides which events of a room a server may read, for one
+// answer of many events (a page of backfill or get_missing_events). The
+// answer depends only on the state an event is read against and the room's
+// state now, and the events between two changes of a room's state are read
+// against the same one, so each is decided once: the state now read once a
+// room, and an event that changes no state answered as the others of its
+// snapshot were. An accepted state event is read against the state it makes,
+// which it alone has, so it is always decided afresh.
+type rooms_judge struct {
+	server spec.ServerName
+	rooms  map[string]*rooms_judged
+}
+
+// rooms_judged is what a judge holds of one room: its state now, whether the
+// server has someone joined in it (read when first needed), and the answers
+// for events that change no state, by the snapshot they are read against (0
+// for the state now, where none is kept).
+type rooms_judged struct {
+	current rooms_state
+	joined  *bool
+	answers map[int64]bool
+}
+
+func rooms_judging(server spec.ServerName) *rooms_judge {
+	return &rooms_judge{server: server, rooms: map[string]*rooms_judged{}}
+}
+
+func (j *rooms_judge) visible(event gomatrixserverlib.PDU) bool {
 	room := event.RoomID().String()
-	current, _ := rooms_current(room)
-	at, ok := rooms_after(event.EventID())
-	if !ok {
-		at = current
+	r := j.rooms[room]
+	if r == nil {
+		r = &rooms_judged{current: rooms_current_view(room), answers: map[int64]bool{}}
+		j.rooms[room] = r
 	}
+	row, _ := networks_database().row("select type, key, rejected, before from events where id=?", event.EventID())
+	before := row_int(row, "before")
+	if before < 0 {
+		before = 0
+	}
+	key, keyed := row["key"].(string)
+	changes := before > 0 && keyed && row_int(row, "rejected") == 0
+	if !changes {
+		if answer, ok := r.answers[before]; ok {
+			return answer
+		}
+	}
+	at := r.current
+	if before > 0 {
+		at = rooms_snapshot_view(before)
+	}
+	if changes {
+		at = maps.Clone(at)
+		at[rooms_key(row_string(row, "type"), key)] = event.EventID()
+	}
+	answer := j.decide(r, at)
+	if !changes {
+		r.answers[before] = answer
+	}
+	return answer
+}
+
+// decide is the rule: world-readable history to anyone; otherwise to a server
+// with someone joined at the event, or invited where the history is shared
+// with the invited, or, where it is shared, joined now.
+func (j *rooms_judge) decide(r *rooms_judged, at rooms_state) bool {
 	visibility := "shared"
 	if id := at[rooms_key(spec.MRoomHistoryVisibility, "")]; id != "" {
 		if e := rooms_event(id); e != nil {
@@ -3473,18 +3533,38 @@ func rooms_visible(server spec.ServerName, event gomatrixserverlib.PDU) bool {
 	if visibility == "world_readable" {
 		return true
 	}
-	present := func(state rooms_state, memberships ...string) bool {
-		for member, membership := range rooms_members(state) {
-			if user, err := spec.NewUserID(member, true); err == nil && user.Domain() == server && slices.Contains(memberships, membership) {
-				return true
-			}
-		}
-		return false
-	}
-	if present(at, spec.Join) || (visibility == "invited" && present(at, spec.Join, spec.Invite)) {
+	if rooms_present(at, j.server, spec.Join) || (visibility == "invited" && rooms_present(at, j.server, spec.Join, spec.Invite)) {
 		return true
 	}
-	return visibility == "shared" && present(current, spec.Join)
+	if visibility != "shared" {
+		return false
+	}
+	if r.joined == nil {
+		joined := rooms_present(r.current, j.server, spec.Join)
+		r.joined = &joined
+	}
+	return *r.joined
+}
+
+// rooms_present says whether a server has a member in a state with one of
+// some memberships, reading only its own members' memberships.
+func rooms_present(state rooms_state, server spec.ServerName, memberships ...string) bool {
+	var ids []any
+	for key, id := range state {
+		member, found := strings.CutPrefix(key, spec.MRoomMember+"\x00")
+		if !found {
+			continue
+		}
+		if user, err := spec.NewUserID(member, true); err == nil && user.Domain() == server {
+			ids = append(ids, id)
+		}
+	}
+	for _, membership := range rooms_memberships(ids) {
+		if slices.Contains(memberships, membership) {
+			return true
+		}
+	}
+	return false
 }
 
 // rooms_hosting says whether a server has someone joined to a room now, which
@@ -3501,8 +3581,8 @@ func rooms_hosting(c *gin.Context, room string, server spec.ServerName) bool {
 // rooms_seen is an event as a server is given it: whole where it may see it,
 // redacted where it may not, as Synapse gives one, so the room's history
 // still joins up.
-func rooms_seen(server spec.ServerName, event gomatrixserverlib.PDU) json.RawMessage {
-	if rooms_visible(server, event) {
+func rooms_seen(judge *rooms_judge, event gomatrixserverlib.PDU) json.RawMessage {
+	if judge.visible(event) {
 		return event.JSON()
 	}
 	version, err := gomatrixserverlib.GetRoomVersion(event.Version())
@@ -3526,7 +3606,7 @@ func rooms_serve_event(c *gin.Context, r *fclient.FederationRequest, id string) 
 	if !rooms_hosting(c, event.RoomID().String(), r.Origin()) {
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"origin": string(r.Destination()), "origin_server_ts": int64(spec.AsTimestamp(time.Now())), "pdus": []json.RawMessage{rooms_seen(r.Origin(), event)}})
+	c.JSON(http.StatusOK, map[string]any{"origin": string(r.Destination()), "origin_server_ts": int64(spec.AsTimestamp(time.Now())), "pdus": []json.RawMessage{rooms_seen(rooms_judging(r.Origin()), event)}})
 }
 
 // rooms_serve_state answers the state of a room before an event, as events or
@@ -3648,9 +3728,10 @@ func rooms_serve_backfill(c *gin.Context, r *fclient.FederationRequest, room str
 
 // rooms_given is events as a server is given them (rooms_seen).
 func rooms_given(server spec.ServerName, events []gomatrixserverlib.PDU) []json.RawMessage {
+	judge := rooms_judging(server)
 	out := make([]json.RawMessage, 0, len(events))
 	for _, event := range events {
-		if raw := rooms_seen(server, event); raw != nil {
+		if raw := rooms_seen(judge, event); raw != nil {
 			out = append(out, raw)
 		}
 	}

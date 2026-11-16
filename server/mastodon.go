@@ -417,18 +417,45 @@ func mastodon_upload(ctx context.Context, l *linked, content []byte, kind string
 	return map[string]any{"id": id, "url": page, "data": media}, nil
 }
 
-// mastodon_refresh_limits reads a server's limits again once a day, for every
-// linked Mastodon account on it.
+// mastodon_limits_age is how old a linked Mastodon account's record of its
+// server's limits may grow before they are read again.
+var mastodon_limits_age = 24 * time.Hour
+
+// mastodon_refresh_limits reads the account's server's limits again where
+// they are older than mastodon_limits_age.
 func mastodon_refresh_limits(ctx context.Context, l *linked) {
-	refreshed, _ := l.data["refreshed"].(float64)
-	if now()-int64(refreshed) < 86400 {
+	if time.Since(time.Unix(as_int64(l.value("refreshed")), 0)) < mastodon_limits_age {
 		return
 	}
-	if limits := mastodon_limits(ctx, l); limits != nil {
+	limits := mastodon_limits(ctx, l)
+	if ctx.Err() != nil {
+		// Cut short (the stream ended): nothing was learnt.
+		return
+	}
+	if limits != nil {
 		l.set("limits", limits)
 	}
 	l.set("refreshed", now())
 	l.save()
+}
+
+// mastodon_limits_kept keeps the account's record of its server's limits
+// fresh while its stream is up: read at once where it is old, then again as
+// it ages. It is the account's own session that does it, so a server with
+// many users reads nothing for an account with no session running, and no
+// timer walks every user to find the ones due.
+func mastodon_limits_kept(ctx context.Context, l *linked) {
+	for {
+		read, cancel := context.WithTimeout(ctx, linked_timeout)
+		mastodon_refresh_limits(read, l)
+		cancel()
+		wait := time.Until(time.Unix(as_int64(l.value("refreshed")), 0).Add(mastodon_limits_age))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(max(wait, mastodon_limits_age/24)):
+		}
+	}
 }
 
 // === Direct messages ===
@@ -483,6 +510,17 @@ func mastodon_run(ctx context.Context, l *linked, s *linked_session) error {
 	conn.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","stream":"direct"}`))
 	s.connected.Store(true)
 	s.outage.Store(nil)
+	// The limits are kept for as long as this stream is up, and no longer.
+	kept, stop := context.WithCancel(ctx)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		mastodon_limits_kept(kept, l)
+	}()
+	defer func() {
+		stop()
+		<-finished
+	}()
 	mastodon_catchup(ctx, l)
 	for {
 		kind, data, err := conn.Read(ctx)

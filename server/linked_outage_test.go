@@ -104,6 +104,135 @@ func TestLinkedBlueskyNamesItsIdentifier(t *testing.T) {
 	}
 }
 
+// mastodon_stream_stub is a Mastodon server whose stream stays open until the
+// test ends, counting the reads of its limits.
+func mastodon_stream_stub(t *testing.T, characters int) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	release := make(chan struct{})
+	reads := &atomic.Int64{}
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("GET /api/v1/instance", func(w http.ResponseWriter, r *http.Request) {
+		answer(w, 200, map[string]any{"urls": map[string]any{"streaming_api": "ws://" + fake_host(server)}})
+	})
+	mux.HandleFunc("GET /api/v2/instance", func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		answer(w, 200, map[string]any{"configuration": map[string]any{"statuses": map[string]any{"max_characters": characters}}})
+	})
+	mux.HandleFunc("GET /api/v1/conversations", func(w http.ResponseWriter, r *http.Request) {
+		answer(w, 200, []any{})
+	})
+	mux.HandleFunc("GET /api/v1/streaming", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"tok"}})
+		if err != nil {
+			return
+		}
+		go func() {
+			for {
+				if _, _, err := conn.Read(context.Background()); err != nil {
+					return
+				}
+			}
+		}()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		conn.Close(websocket.StatusGoingAway, "")
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
+	return server, reads
+}
+
+// mastodon_stream_link links a Mastodon account on a stub server to a user,
+// its limits read when refreshed says.
+func mastodon_stream_link(user *User, id string, server *httptest.Server, refreshed int64) {
+	host := fake_host(server)
+	db_user(user, "user").exec("insert into accounts (id, type, label, identifier, data, created, verified, enabled) values (?, 'mastodon', 'Alice', ?, ?, 1, 1, 1)", id, "@alice@"+host, json_encode(map[string]any{"id": "https://" + host + "/@alice", "server": host, "token": "tok", "account": "a1", "refreshed": refreshed}))
+}
+
+// TestLinkedSessionsFollowSuspension: suspending a user ends their linked
+// accounts' sessions, which would otherwise go on streaming to the apps for
+// someone suspended, and activating them again starts the sessions, where
+// before only a restart did.
+func TestLinkedSessionsFollowSuspension(t *testing.T) {
+	saved := networks_development
+	t.Cleanup(func() { networks_development = saved })
+	networks_development = true
+	alice := create_linked_test_env(t)
+	server, _ := mastodon_stream_stub(t, 500)
+	mastodon_stream_link(alice, "d1", server, now())
+	t.Cleanup(func() { linked_stop_user(alice.UID) })
+	running := func() bool {
+		linked_lock.Lock()
+		defer linked_lock.Unlock()
+		_, found := linked_sessions[linked_session_key(alice.UID, "d1")]
+		return found
+	}
+
+	linked_resume_user(alice)
+	wait(t, "the stream", func() bool { connected, _ := linked_connected(alice.UID, "d1"); return connected })
+	user_suspend(alice.UID)
+	if running() {
+		t.Error("THE POINT: a suspended user's linked account goes on streaming")
+	}
+	user_activate(alice.UID)
+	if !running() {
+		t.Fatal("THE POINT: a user made active again has no session for their linked account until a restart")
+	}
+	wait(t, "the stream again", func() bool { connected, _ := linked_connected(alice.UID, "d1"); return connected })
+}
+
+// TestMastodonLimitsKeptBySession: a linked Mastodon account's own session
+// reads its server's limits when it connects where they are old, and again as
+// they age while the stream stays up; limits read recently are not read again
+// at connect; and the manager starts the sessions and returns, with no hourly
+// walk over every user to find the accounts due.
+func TestMastodonLimitsKeptBySession(t *testing.T) {
+	saved_age, saved_switch := mastodon_limits_age, networks_development
+	t.Cleanup(func() { mastodon_limits_age, networks_development = saved_age, saved_switch })
+	mastodon_limits_age, networks_development = 2*time.Second, true
+	alice := create_linked_test_env(t)
+	old, old_reads := mastodon_stream_stub(t, 777)
+	recent, recent_reads := mastodon_stream_stub(t, 888)
+	mastodon_stream_link(alice, "d1", old, 1)
+	mastodon_stream_link(alice, "d2", recent, now())
+	// The sessions end, and are waited for, before anything they read is put
+	// back.
+	t.Cleanup(func() { linked_stop_user(alice.UID) })
+
+	done := make(chan struct{})
+	go func() {
+		linked_manager()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("THE POINT: the manager did not return once the sessions were started: it walks every user on a timer")
+	}
+	for _, id := range []string{"d1", "d2"} {
+		wait(t, "the stream of "+id, func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	}
+	wait(t, "the old limits read", func() bool { return old_reads.Load() >= 1 })
+	limits, _ := linked_get(alice, "d1").value("limits").(map[string]any)
+	if as_int64(limits["characters"]) != 777 {
+		t.Errorf("THE POINT: the limits read at connect were not kept: %v", limits)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := recent_reads.Load(); n != 0 {
+		t.Errorf("THE POINT: limits read a moment ago were read again at connect (%d reads)", n)
+	}
+	if n := old_reads.Load(); n != 1 {
+		t.Errorf("THE POINT: limits just read were read again before they aged (%d reads)", n)
+	}
+	wait(t, "the limits read again as they aged, the stream still up", func() bool { return old_reads.Load() >= 2 })
+}
+
 // TestMastodonOutage: a Mastodon account whose stream the server refuses
 // answers the status and when it tries again, and no time while it tries;
 // once the stream is open it answers no failure, and when the stream ends,

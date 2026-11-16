@@ -37,8 +37,8 @@ func TestBindIsWriteOnce(t *testing.T) {
 	}
 }
 
-// TestBindHealsAnUnboundHandle: a handle first cached by a raw db_open or the
-// app-system sweep carries no binding, and the next db_bind supplies it.
+// TestBindHealsAnUnboundHandle: a handle first cached by a raw db_open or
+// db_app_system_current carries no binding, and the next db_bind supplies it.
 func TestBindHealsAnUnboundHandle(t *testing.T) {
 	db := &DB{path: "users/user-one/apps/feeds/app.db"}
 	if db.user != nil || db.app != nil {

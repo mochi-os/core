@@ -592,6 +592,68 @@ func TestImageVariantFollowsItsSource(t *testing.T) {
 	}
 }
 
+// TestVariantMadeAgainWhenItsSourceIsReplacedMidRender: a contact's photo
+// fetched again into the same name while its thumbnail renders. The render had
+// already opened the old file, so it read the old picture, and the variant it
+// moved into place afterwards was newer than the new source: the old picture
+// was served until the source changed once more.
+func TestVariantMadeAgainWhenItsSourceIsReplacedMidRender(t *testing.T) {
+	variant_made_cache(t)
+	directory := t.TempDir()
+	source := filepath.Join(directory, "contact.png")
+	if err := os.WriteFile(source, image_variant_colour(t, "png", color.RGBA{255, 0, 0, 255}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(cache_dir, "variants", "contact_thumbnail.png")
+
+	// Every slot held, so the render opens the source and then waits.
+	release := render_pool_fill(t)
+	done := make(chan int, 1)
+	go func() {
+		done <- variant_made(source, "thumbnail", []string{destination}, time.Now().Add(-time.Hour))
+	}()
+	opened := false
+	for deadline := time.Now().Add(5 * time.Second); !opened && time.Now().Before(deadline); {
+		entries, _ := os.ReadDir("/proc/self/fd")
+		for _, entry := range entries {
+			if target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name())); err == nil && target == source {
+				opened = true
+			}
+		}
+		if !opened {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if !opened {
+		release()
+		t.Fatal("setup: the render never opened the source")
+	}
+	replacement := source + ".new"
+	if err := os.WriteFile(replacement, image_variant_colour(t, "png", color.RGBA{0, 255, 0, 255}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, source); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if index := <-done; index != 0 {
+		t.Fatalf("the variant was not made: index %d", index)
+	}
+
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounds := decoded.Bounds()
+	if centre := color.RGBAModel.Convert(decoded.At(bounds.Dx()/2, bounds.Dy()/2)).(color.RGBA); centre.G < 200 || centre.R > 60 {
+		t.Errorf("THE POINT: the variant of a source replaced while it rendered is %v, want the new green", centre)
+	}
+}
+
 // TestVariantRenderJPEGWithoutEndMarker: a JPEG whose data runs straight into
 // a camera's trailer with no end marker, which browsers show whole, gets its
 // variant, decoded whole rather than refused.

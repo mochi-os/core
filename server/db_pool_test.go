@@ -165,11 +165,11 @@ func TestWatchdogRestoresTheBusyTimeout(t *testing.T) {
 	}
 }
 
-// TestSystemSweepReleasesItsHandles: db_app_system_sweep walks every app.db on
-// the host at startup. db_open_work creates handles as in-use, and db_manager
-// evicts only released ones, so a sweep that never releases pins every database
+// TestSystemUpgradeReleasesItsHandles: db_app_system_upgrade walks every app.db
+// of a restored account. db_open_work creates handles as in-use, and db_manager
+// evicts only released ones, so a walk that never releases pins every database
 // it touched for the life of the process.
-func TestSystemSweepReleasesItsHandles(t *testing.T) {
+func TestSystemUpgradeReleasesItsHandles(t *testing.T) {
 	directory := test_data_directory(t)
 	t.Cleanup(func() { db_purge_prefix("") })
 
@@ -183,11 +183,11 @@ func TestSystemSweepReleasesItsHandles(t *testing.T) {
 		if db == nil {
 			t.Fatalf("creating %q", path)
 		}
-		db.close() // created here, not by the sweep; the sweep will reuse it
+		db.close() // created here, not by the walk; the walk will reuse it
 		paths = append(paths, filepath.Join(directory, path))
 	}
 
-	// Drop them from the cache so the sweep is the opener, which is the case the
+	// Drop them from the cache so the walk is the opener, which is the case the
 	// fix is about.
 	databases_lock.Lock()
 	for _, path := range paths {
@@ -195,7 +195,7 @@ func TestSystemSweepReleasesItsHandles(t *testing.T) {
 	}
 	databases_lock.Unlock()
 
-	db_app_system_sweep()
+	db_app_system_upgrade("sweepuser")
 
 	databases_lock.Lock()
 	defer databases_lock.Unlock()
@@ -210,7 +210,7 @@ func TestSystemSweepReleasesItsHandles(t *testing.T) {
 		}
 	}
 	if len(held) > 0 {
-		t.Errorf("the sweep left %d of %d handles marked in use, so db_manager can never evict them: %v", len(held), len(paths), held)
+		t.Errorf("the walk left %d of %d handles marked in use, so db_manager can never evict them: %v", len(held), len(paths), held)
 	}
 }
 
@@ -315,12 +315,12 @@ def database_create():
 	}
 }
 
-// TestSystemSweepRunsTheWholeAppSystemSetup: the sweep marks each handle set
-// up and db_app_system trusts that mark, so the sweep has to run the same
+// TestSystemUpgradeRunsTheWholeAppSystemSetup: the upgrade marks each handle
+// set up and db_app_system trusts that mark, so the upgrade has to run the same
 // setup the open path would. The pending table's column rename is the part
-// that shows: a database the sweep opened first otherwise keeps the old column,
-// and every drain of its buffered rows then fails on the scan.
-func TestSystemSweepRunsTheWholeAppSystemSetup(t *testing.T) {
+// that shows: a database the upgrade opened first otherwise keeps the old
+// column, and every drain of its buffered rows then fails on the scan.
+func TestSystemUpgradeRunsTheWholeAppSystemSetup(t *testing.T) {
 	directory := test_data_directory(t)
 	t.Cleanup(func() { db_purge_prefix("") })
 
@@ -352,23 +352,23 @@ func TestSystemSweepRunsTheWholeAppSystemSetup(t *testing.T) {
 		values ('p', 'k', 1, 'src', 'dst', 'svc', 'ev', 'kept', 'x', 0)`)
 	db.close()
 
-	// Drop it from the cache so the sweep is the opener, as it is at startup.
+	// Drop it from the cache so the upgrade is the opener, as on a restore.
 	databases_lock.Lock()
 	delete(databases, filepath.Join(directory, path))
 	databases_lock.Unlock()
 
-	db_app_system_sweep()
+	db_app_system_upgrade("sweepuser")
 
 	db = db_open(path)
 	if db == nil {
 		t.Fatalf("reopening %q", path)
 	}
 	if old, _ := db.exists("select 1 from pragma_table_info('pending') where name='msg_id'"); old {
-		t.Fatal("the sweep left msg_id in place, and the open path trusts the sweep's mark, so nothing renames it")
+		t.Fatal("the upgrade left msg_id in place, and the open path trusts its mark, so nothing renames it")
 	}
 	row := broadcast_pending_next(db, "p", "k", 1)
 	if row == nil || row.Message != "kept" {
-		t.Fatalf("buffered row after the sweep: %+v, want message %q", row, "kept")
+		t.Fatalf("buffered row after the upgrade: %+v, want message %q", row, "kept")
 	}
 }
 

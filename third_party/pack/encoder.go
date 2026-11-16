@@ -2,8 +2,8 @@
 // 2018 Sourced Technologies, S.L.; licensed under the Apache License 2.0 in
 // LICENSE beside this file.
 //
-// Changed for Mochi: Names and Search, handed to the delta selector, and Reuse,
-// which copies an entry as a pack on disk stores it.
+// Changed for Mochi: Names, Search and Related, handed to the delta selector,
+// and Reuse, which copies an entry as a pack on disk stores it.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -32,6 +32,14 @@ type Encoder struct {
 	// the pack is always sent as it is stored.
 	Names  map[plumbing.Hash]uint32
 	Search func(plumbing.Hash) bool
+
+	// Changed for Mochi: Related limits the search for another delta base,
+	// for an object stored as a delta against a base the pack does not
+	// carry, to one whose base another object of the pack was stored
+	// against too: another version of the same file, which the search can
+	// find. The rest go whole. Without it every such object is searched, as
+	// a repack must, since the pack it writes is kept.
+	Related bool
 
 	// Changed for Mochi: Reuse answers how a pack on disk stores an object,
 	// when it does. An object written as it is stored - whole when stored
@@ -88,6 +96,7 @@ func (e *Encoder) Encode(
 ) (plumbing.Hash, error) {
 	e.selector.names = e.Names
 	e.selector.search = e.Search
+	e.selector.related = e.Related
 	objects, err := e.selector.ObjectsToPack(hashes, packWindow)
 	if err != nil {
 		return plumbing.ZeroHash, err

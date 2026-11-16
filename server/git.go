@@ -5556,6 +5556,7 @@ type git_selection struct {
 	update  *packp.ShallowUpdate
 	edges   []plumbing.Hash // the commits the client holds where the pack's history meets its own
 	thin    bool            // the client will resolve deltas against bases the pack does not carry
+	cut     bool            // the request deepens to a depth, date or exclusion, so history stops short
 }
 
 // git_upload_pack_select decides what a fetch sends. pack is false for an
@@ -5564,6 +5565,7 @@ type git_selection struct {
 func git_upload_pack_select(ctx context.Context, storage storer.Storer, request *git_request, known []plumbing.Hash, pack bool) (*git_selection, error) {
 	selection := &git_selection{
 		thin: request.capabilities.Supports(capability.ThinPack),
+		cut:  request.deepening(),
 	}
 
 	if !request.shallow() {
@@ -6302,6 +6304,13 @@ func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_
 		defer close(stopped)
 		encoder, done := git_encoder(writer, storage)
 		defer done()
+		// History cut short leaves nearly every file stored against an older
+		// version of itself that is not sent. Searching each for another base
+		// ran it against a window of unrelated files, which found almost
+		// nothing, for most of a core-size repository's shallow clone: only
+		// one with another version in the pack is searched (Related). A fetch
+		// keeps the search, which finds the other versions it carries.
+		encoder.Related = selection.cut
 		_, err := encoder.Encode(selection.objects, git_pack_window)
 		writer.CloseWithError(err)
 	}()

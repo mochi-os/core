@@ -898,7 +898,7 @@ func TestUpgradeFileSurvivesAPanickingStep(t *testing.T) {
 
 // TestACraftedSystemDatabaseDoesNotStopTheServer: an app.db whose access table
 // has another shape, as a crafted restore bundle may carry, fails its step and
-// is reported; the restore and the startup sweep that bring it up go on.
+// is reported; the restore that brings it up goes on.
 func TestACraftedSystemDatabaseDoesNotStopTheServer(t *testing.T) {
 	test_data_directory(t)
 	db_open("users/mallory/notes/app.db").exec("create table access (x text)")
@@ -916,24 +916,24 @@ func TestACraftedSystemDatabaseDoesNotStopTheServer(t *testing.T) {
 	}
 }
 
-// TestAppSystemSweepClosesWhatItOpens: the startup sweep runs before anything
-// can evict a handle, so it closes each app.db it opened rather than holding
-// its descriptors.
-func TestAppSystemSweepClosesWhatItOpens(t *testing.T) {
+// TestAppSystemUpgradeClosesWhatItOpens: a restore's upgrade walks every app.db
+// of the account, so it closes each one it opened rather than holding its
+// descriptors.
+func TestAppSystemUpgradeClosesWhatItOpens(t *testing.T) {
 	directory := test_data_directory(t)
 	names := []string{"one", "two", "three"}
 	for _, name := range names {
 		db_open("users/alice/" + name + "/app.db").exec("create table other (a)")
 	}
 	db_purge_prefix("users")
-	db_app_system_sweep()
+	db_app_system_upgrade("alice")
 	for _, name := range names {
 		path := filepath.Join(directory, "users", "alice", name, "app.db")
 		if db_cached(path) {
-			t.Errorf("THE POINT: the sweep left %s open", path)
+			t.Errorf("THE POINT: the upgrade left %s open", path)
 		}
 		if version := db_open("users/alice/" + name + "/app.db").integer("pragma user_version"); version != len(db_system_steps) {
-			t.Errorf("%s is at version %d after the sweep", name, version)
+			t.Errorf("%s is at version %d after the upgrade", name, version)
 		}
 	}
 }
@@ -1047,4 +1047,33 @@ func TestActorsAreIndexedByDomain(t *testing.T) {
 	}
 	db_upgrade_19()
 	judge("an install brought up by step 19")
+}
+
+// TestAppSystemCurrentLeavesAHandleOthersHoldOpen: db_app brings app.db up
+// before an app's migration, on a request, where another opener - an event's
+// broadcast state, an access check - can find the same handle meanwhile. It
+// used to close the handle it had opened whoever else held it, and their next
+// query failed on a closed database.
+func TestAppSystemCurrentLeavesAHandleOthersHoldOpen(t *testing.T) {
+	test_data_directory(t)
+	db_open("users/holder/notes/app.db").exec("create table other (a)")
+	db_purge_prefix("users")
+
+	var held *DB
+	saved := db_system_steps
+	db_system_steps = append(append([]func(*DB) error{}, saved...), func(db *DB) error {
+		// Another opener, finding the handle while the steps run.
+		held, _, _ = db_open_work("users/holder/notes/app.db")
+		return nil
+	})
+	t.Cleanup(func() { db_system_steps = saved })
+
+	db_app_system_current("holder", "notes")
+	if held == nil {
+		t.Fatal("setup: the other opener never ran")
+	}
+	defer held.close()
+	if _, err := held.exists("select name from sqlite_master"); err != nil {
+		t.Errorf("THE POINT: a handle another opener held was closed under it: %v", err)
+	}
 }

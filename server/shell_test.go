@@ -951,3 +951,103 @@ func TestShellMenuEntry(t *testing.T) {
 		t.Errorf("an unbuilt menu has no entry: %q %q", js, css)
 	}
 }
+
+// shell_routed serves the bearer tests' app as a hosted domain's whole site,
+// beside a second domain whose route redirects to another site, for a user
+// signed in with the session it answers.
+func shell_routed(t *testing.T) string {
+	t.Helper()
+	app, session := web_bearer_caller(t)
+	// Declares its own path too, so a token asked for by that name would be
+	// minted for it wherever no route says otherwise.
+	app.internal.Paths = []string{app.id}
+	apps_lock.Lock()
+	saved := apps
+	apps = map[string]*App{app.id: app}
+	apps_lock.Unlock()
+	resolution_invalidate()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		apps = saved
+		apps_lock.Unlock()
+		resolution_invalidate()
+	})
+	for _, name := range []string{"site.test", "away.test"} {
+		if _, err := domain_register(name); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+		db_open("db/domains.db").exec("update domains set verified=1 where domain=?", name)
+	}
+	if _, err := route_create("site.test", "/", "app", app.id, "", "", 0); err != nil {
+		t.Fatalf("route site.test: %v", err)
+	}
+	if _, err := route_create("away.test", "/", "redirect", "https://elsewhere.example", "", "", 0); err != nil {
+		t.Fatalf("route away.test: %v", err)
+	}
+	return session
+}
+
+// TestShellTokenFollowsTheDomainRoute: on a hosted domain whose route covers
+// a page, the page is the route target's, and the shell asks for a token by
+// the page's first segment - "" at /, the root app's. That app's token was
+// minted and handed to the target's page; now it is the target's, and a page
+// on a host that redirects, which is none of ours, gets none.
+func TestShellTokenFollowsTheDomainRoute(t *testing.T) {
+	session := shell_routed(t)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(domains_middleware())
+	r.POST("/_/token", web_shell_token)
+	token := func(host string, app string) (int, map[string]any) {
+		request := httptest.NewRequest("POST", "/_/token", strings.NewReader(`{"app":"`+app+`"}`))
+		request.Host = host
+		request.Header.Set("Content-Type", "application/json")
+		request.AddCookie(&http.Cookie{Name: "session", Value: session})
+		recorder := httptest.NewRecorder()
+		r.ServeHTTP(recorder, request)
+		answer := map[string]any{}
+		_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
+		return recorder.Code, answer
+	}
+
+	for _, app := range []string{"", "feeds"} {
+		if code, answer := token("site.test", app); code != http.StatusOK || answer["app"] != "bearertest" {
+			t.Errorf("THE POINT: a token for the page at /%s of a domain routed to bearertest: %d %v, want bearertest's", app, code, answer["app"])
+		}
+	}
+	for _, app := range []string{"", "bearertest"} {
+		if code, answer := token("away.test", app); code != http.StatusNotFound {
+			t.Errorf("THE POINT: a token for the page at /%s on a host that redirects: %d %v, want none: its pages are not ours", app, code, answer["app"])
+		}
+	}
+	// Control: off any routed host the app's own path is minted its token.
+	if code, answer := token("localhost", "bearertest"); code != http.StatusOK || answer["app"] != "bearertest" {
+		t.Errorf("a token for /bearertest off any routed host: %d %v, want bearertest's", code, answer["app"])
+	}
+}
+
+// TestShellNotServedWhereTheDomainRedirects: a signed-in visit to a host whose
+// route redirects is answered with the redirect. Wrapped in the shell, its
+// frame followed the redirect to whatever site the route names, and a page
+// there could ask the shell for the user's tokens.
+func TestShellNotServedWhereTheDomainRedirects(t *testing.T) {
+	session := shell_routed(t)
+	original := apps_bootstrap_ready
+	apps_bootstrap_ready = true
+	t.Cleanup(func() { apps_bootstrap_ready = original })
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(domains_middleware())
+	r.NoRoute(web_path)
+
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Host = "away.test"
+	request.Header.Set("Accept", "text/html")
+	request.Header.Set("Sec-Fetch-Dest", "document")
+	request.AddCookie(&http.Cookie{Name: "session", Value: session})
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusFound || !strings.HasPrefix(recorder.Header().Get("Location"), "https://elsewhere.example") {
+		t.Errorf("THE POINT: a signed-in visit to a redirecting host answered %d %q, want the redirect itself", recorder.Code, recorder.Header().Get("Location"))
+	}
+}

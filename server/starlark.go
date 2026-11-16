@@ -8,17 +8,23 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"go.starlark.net/resolve"
 	sl "go.starlark.net/starlark"
@@ -281,8 +287,38 @@ func starlark(files []string) *Starlark {
 	return &s
 }
 
+// sl_depth_maximum is how deep a value core converts may nest.
+const sl_depth_maximum = 1000
+
+// sl_cut reports whether container, a list or dictionary being converted
+// within path, is left out, as null: one already on the path, or one deeper
+// than sl_depth_maximum. Starlark lets a list or dictionary hold itself, and
+// followed without a bound such a value recursed until the stack ran out, a
+// fatal error no recover catches: one app's value ended the whole server. A
+// value holding itself twice over branched at every level, so a bound on
+// depth alone would have hung instead.
+func sl_cut(path []sl.Value, container sl.Value) bool {
+	if len(path) >= sl_depth_maximum {
+		warn("Starlark value nested deeper than %d, left out", sl_depth_maximum)
+		return true
+	}
+	for _, p := range path {
+		if p == container {
+			warn("Starlark value that holds itself, the inner one left out")
+			return true
+		}
+	}
+	return false
+}
+
 // Convert a Starlark value to a Go variable
 func sl_decode(value sl.Value) any {
+	return sl_decode_within(value, nil)
+}
+
+// sl_decode_within is sl_decode inside path, the lists and dictionaries that
+// hold value.
+func sl_decode_within(value sl.Value, path []sl.Value) any {
 	//debug("Decoding '%+v', type '%T'", value, value)
 	switch v := value.(type) {
 	case sl.NoneType, nil:
@@ -307,27 +343,42 @@ func sl_decode(value sl.Value) any {
 		return []byte(v)
 
 	case *sl.List:
+		if sl_cut(path, v) {
+			return nil
+		}
+		path = append(path, v)
 		out := make([]any, v.Len())
 		for i := 0; i < v.Len(); i++ {
-			out[i] = sl_decode(v.Index(i))
+			out[i] = sl_decode_within(v.Index(i), path)
 		}
 		return out
 
 	case sl.Tuple:
+		// A tuple cannot hold itself, only through a list or dictionary,
+		// which is where the path catches it; it still counts toward depth.
+		if len(path) >= sl_depth_maximum {
+			warn("Starlark value nested deeper than %d, left out", sl_depth_maximum)
+			return nil
+		}
+		path = append(path, nil)
 		out := make([]any, len(v))
 		for i, e := range v {
-			out[i] = sl_decode(e)
+			out[i] = sl_decode_within(e, path)
 		}
 		return out
 
 	case *sl.Dict:
+		if sl_cut(path, v) {
+			return nil
+		}
+		path = append(path, v)
 		out := make(map[string]any, v.Len())
 		for _, i := range v.Items() {
 			key, ok := sl.AsString(i[0])
 			if !ok {
 				continue
 			}
-			out[key] = sl_decode(i[1])
+			out[key] = sl_decode_within(i[1], path)
 		}
 		return out
 
@@ -335,6 +386,310 @@ func sl_decode(value sl.Value) any {
 		warn("Starlark decode unknown type '%T'", v)
 		return nil
 	}
+}
+
+// sl_json is an action's answer, rendered as JSON straight from its Starlark
+// value: the same bytes json.Marshal(sl_decode(value)) gives, without the tree
+// of Go maps and slices sl_decode builds and the reflection that marshals it,
+// and written as it is made, a piece at a time, rather than whole. A 40,000-row
+// answer of 3.7 MB allocated 43-47 MB and took 45-49 ms that way before a byte
+// was written.
+type sl_json struct {
+	value sl.Value
+}
+
+// sl_json_piece is how much of an answer is held before it is written.
+const sl_json_piece = 32 << 10
+
+// Render writes the answer, or nothing when it holds a value JSON cannot carry
+// (a NaN or an infinity), which gin then records against the request as it
+// did when json.Marshal refused one.
+func (r sl_json) Render(w http.ResponseWriter) error {
+	r.WriteContentType(w)
+	writer := sl_json_writer{data: make([]byte, 0, sl_json_piece), out: w, root: r.value}
+	if err := writer.value(r.value, nil); err != nil {
+		return err
+	}
+	_, err := w.Write(writer.data)
+	return err
+}
+
+// WriteContentType names JSON unless the action named a type itself.
+func (r sl_json) WriteContentType(w http.ResponseWriter) {
+	header := w.Header()
+	if len(header["Content-Type"]) == 0 {
+		header["Content-Type"] = []string{"application/json; charset=utf-8"}
+	}
+}
+
+// sl_json_writer writes a value as encoding/json writes what sl_decode makes of
+// it: a dictionary's string keys only, sorted; a whole number past 64 bits as
+// 0; bytes in base64; and anything else null. It holds the JSON made so far
+// and not yet written, and the entries of every dictionary being written, the
+// innermost last, each sorted in place: one slice for the whole answer, where
+// a slice per dictionary allocated more than the answer's own bytes. With out,
+// a piece is written once it is full; without, the answer is only appended to
+// data.
+type sl_json_writer struct {
+	data    []byte
+	entries []sl_json_entry
+	out     io.Writer
+	root    sl.Value
+	checked bool
+}
+
+type sl_json_entry struct {
+	key   string
+	value sl.Value
+}
+
+// spill writes what is held once a piece is full. The first time, before any
+// byte goes, the whole answer is checked for a value JSON cannot carry: one
+// found later would leave the client a 200 cut short, where an answer that
+// fails before its first byte is no answer at all.
+func (w *sl_json_writer) spill() error {
+	if w.out == nil || len(w.data) < sl_json_piece {
+		return nil
+	}
+	if !w.checked {
+		if err := sl_json_check(w.root, nil); err != nil {
+			return err
+		}
+		w.checked = true
+	}
+	_, err := w.out.Write(w.data)
+	w.data = w.data[:0]
+	return err
+}
+
+// sl_json_check finds what sl_json_writer would refuse, without writing: a
+// NaN or an infinity, in any part of value it would write - which leaves out
+// what sl_cut cuts, as the writer does, within path.
+func sl_json_check(value sl.Value, path []sl.Value) error {
+	switch v := value.(type) {
+	case sl.Float:
+		if f := float64(v); math.IsInf(f, 0) || math.IsNaN(f) {
+			return fmt.Errorf("json: unsupported value: %s", strconv.FormatFloat(f, 'g', -1, 64))
+		}
+	case *sl.List:
+		if sl_cut(path, v) {
+			return nil
+		}
+		path = append(path, v)
+		for i := 0; i < v.Len(); i++ {
+			if err := sl_json_check(v.Index(i), path); err != nil {
+				return err
+			}
+		}
+	case sl.Tuple:
+		if len(path) >= sl_depth_maximum {
+			return nil
+		}
+		path = append(path, nil)
+		for _, e := range v {
+			if err := sl_json_check(e, path); err != nil {
+				return err
+			}
+		}
+	case *sl.Dict:
+		if sl_cut(path, v) {
+			return nil
+		}
+		path = append(path, v)
+		for key, value := range v.Entries() {
+			if _, ok := key.(sl.String); ok {
+				if err := sl_json_check(value, path); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// value writes value, within path, the lists and dictionaries that hold it:
+// what sl_cut cuts is written null, as sl_decode leaves it.
+func (w *sl_json_writer) value(value sl.Value, path []sl.Value) error {
+	switch v := value.(type) {
+	case sl.NoneType, nil:
+		w.data = append(w.data, "null"...)
+
+	case sl.Bool:
+		w.data = strconv.AppendBool(w.data, bool(v))
+
+	case sl.Int:
+		i, _ := v.Int64()
+		w.data = strconv.AppendInt(w.data, i, 10)
+
+	case sl.Float:
+		f := float64(v)
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return fmt.Errorf("json: unsupported value: %s", strconv.FormatFloat(f, 'g', -1, 64))
+		}
+		// As encoding/json writes a float: like %g, with its own exponent
+		// cutoffs and no padding of the exponent.
+		format := byte('f')
+		if abs := math.Abs(f); abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+			format = 'e'
+		}
+		w.data = strconv.AppendFloat(w.data, f, format, -1, 64)
+		if format == 'e' {
+			if n := len(w.data); n >= 4 && w.data[n-4] == 'e' && w.data[n-3] == '-' && w.data[n-2] == '0' {
+				w.data[n-2] = w.data[n-1]
+				w.data = w.data[:n-1]
+			}
+		}
+
+	case sl.String:
+		w.data = sl_json_string(w.data, string(v))
+
+	case sl.Bytes:
+		b := []byte(v)
+		if b == nil {
+			w.data = append(w.data, "null"...)
+			break
+		}
+		w.data = append(w.data, '"')
+		w.data = base64.StdEncoding.AppendEncode(w.data, b)
+		w.data = append(w.data, '"')
+
+	case *sl.List:
+		if sl_cut(path, v) {
+			w.data = append(w.data, "null"...)
+			break
+		}
+		path = append(path, v)
+		w.data = append(w.data, '[')
+		for i := 0; i < v.Len(); i++ {
+			if i > 0 {
+				w.data = append(w.data, ',')
+			}
+			if err := w.value(v.Index(i), path); err != nil {
+				return err
+			}
+			if err := w.spill(); err != nil {
+				return err
+			}
+		}
+		w.data = append(w.data, ']')
+
+	case sl.Tuple:
+		if len(path) >= sl_depth_maximum {
+			warn("Starlark value nested deeper than %d, left out", sl_depth_maximum)
+			w.data = append(w.data, "null"...)
+			break
+		}
+		path = append(path, nil)
+		w.data = append(w.data, '[')
+		for i, e := range v {
+			if i > 0 {
+				w.data = append(w.data, ',')
+			}
+			if err := w.value(e, path); err != nil {
+				return err
+			}
+			if err := w.spill(); err != nil {
+				return err
+			}
+		}
+		w.data = append(w.data, ']')
+
+	case *sl.Dict:
+		if sl_cut(path, v) {
+			w.data = append(w.data, "null"...)
+			break
+		}
+		path = append(path, v)
+		start := len(w.entries)
+		defer func() { w.entries = w.entries[:start] }()
+		for key, value := range v.Entries() {
+			if text, ok := key.(sl.String); ok {
+				w.entries = append(w.entries, sl_json_entry{key: string(text), value: value})
+			}
+		}
+		end := len(w.entries)
+		slices.SortFunc(w.entries[start:end], func(a, b sl_json_entry) int {
+			return strings.Compare(a.key, b.key)
+		})
+		w.data = append(w.data, '{')
+		for i := start; i < end; i++ {
+			// Indexed afresh each time: a dictionary inside this one adds its
+			// entries past end, which may move the slice.
+			entry := w.entries[i]
+			if i > start {
+				w.data = append(w.data, ',')
+			}
+			w.data = sl_json_string(w.data, entry.key)
+			w.data = append(w.data, ':')
+			if err := w.value(entry.value, path); err != nil {
+				return err
+			}
+			if err := w.spill(); err != nil {
+				return err
+			}
+		}
+		w.data = append(w.data, '}')
+
+	default:
+		warn("Starlark decode unknown type '%T'", v)
+		w.data = append(w.data, "null"...)
+	}
+	return nil
+}
+
+// sl_json_string appends text as a JSON string escaped as encoding/json
+// escapes it: HTML's <, > and & too, U+2028 and U+2029, and each byte that is
+// not UTF-8 as U+FFFD.
+func sl_json_string(data []byte, text string) []byte {
+	const hex = "0123456789abcdef"
+	data = append(data, '"')
+	start := 0
+	for i := 0; i < len(text); {
+		if b := text[i]; b < utf8.RuneSelf {
+			if b >= 0x20 && b != '"' && b != '\\' && b != '<' && b != '>' && b != '&' {
+				i++
+				continue
+			}
+			data = append(data, text[start:i]...)
+			switch b {
+			case '\\', '"':
+				data = append(data, '\\', b)
+			case '\b':
+				data = append(data, '\\', 'b')
+			case '\f':
+				data = append(data, '\\', 'f')
+			case '\n':
+				data = append(data, '\\', 'n')
+			case '\r':
+				data = append(data, '\\', 'r')
+			case '\t':
+				data = append(data, '\\', 't')
+			default:
+				data = append(data, '\\', 'u', '0', '0', hex[b>>4], hex[b&0xF])
+			}
+			i++
+			start = i
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(text[i:])
+		if c == utf8.RuneError && size == 1 {
+			data = append(data, text[start:i]...)
+			data = append(data, `\ufffd`...)
+			i += size
+			start = i
+			continue
+		}
+		if c == '\u2028' || c == '\u2029' {
+			data = append(data, text[start:i]...)
+			data = append(data, '\\', 'u', '2', '0', '2', hex[c&0xF])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	data = append(data, text[start:]...)
+	return append(data, '"')
 }
 
 // Decode Starlark value to a string

@@ -398,8 +398,8 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 
 	// The bundle's app.db files come from whichever version wrote them; bring
 	// them to this server's before the account activates - a pre-library bundle's
-	// attachment stores are exported and dropped. This is the one path that adds
-	// app.db files to a running server, which the startup sweep cannot cover.
+	// attachment stores are exported and dropped - rather than as each is first
+	// opened, since an app may already hold a handle on a file this replaced.
 	db_app_system_upgrade(uid)
 
 	// Migrations run lazily on first app access via db_open's forward

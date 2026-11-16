@@ -409,3 +409,85 @@ def database_create():
 		t.Fatalf("aborted create persisted %d tables, want 0", n)
 	}
 }
+
+// TestAppDatabaseCreatedAfterItsSystemSteps: an app's create and upgrade
+// functions read what app.db's steps moved out of it - the attachment export -
+// and take its absence as "no rows". A sweep of every app.db before the
+// listener opened kept that order, on every start; db_app keeps it itself.
+func TestAppDatabaseCreatedAfterItsSystemSteps(t *testing.T) {
+	app, av := lifecycle_test_app(t, "")
+	u := &User{UID: "orderuser"}
+	legacy := db_open("users/orderuser/lifecycletest/app.db")
+	legacy.exec("create table attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
+	legacy.exec("insert into attachments ( id, object, name, size, created ) values ( ?, ?, ?, ?, ? )", "0123456789abcdef0123456789abcdef", "post/1", "photo.jpg", 1234, 1700000000)
+	db_purge_prefix("users")
+
+	export := filepath.Join(data_dir, "users", "orderuser", "lifecycletest", "files", attachment_export_file)
+	exported := false
+	av.Database.Create.Function = ""
+	av.Database.create_function = func(db *DB) {
+		exported = file_exists(export)
+		db.exec("create table seen ( id integer )")
+	}
+	if db := db_app(u, app); db == nil {
+		t.Fatal("db_app returned nil")
+	}
+	if !exported {
+		t.Error("THE POINT: the app's database was created before app.db's steps exported its attachments, so its migration would find none")
+	}
+}
+
+// TestAppUpgradeWaitsForAppSystemSteps: an app's migration reads what app.db's
+// steps moved out of it, and takes its absence as "no rows". While the step
+// that writes the attachment export keeps failing, the migration waits, as one
+// held by mochi.db.abort does: run anyway, it read nothing and its version was
+// consumed for good, losing the attachments it was to adopt.
+func TestAppUpgradeWaitsForAppSystemSteps(t *testing.T) {
+	app, av := lifecycle_test_app(t, `
+def database_create():
+    mochi.db.execute("create table seen (version integer not null)")
+
+def database_upgrade(version):
+    mochi.db.execute("insert into seen (version) values (?)", version)
+`)
+	u := &User{UID: "waituser"}
+	if db := db_app(u, app); db == nil {
+		t.Fatal("db_app returned nil creating the database")
+	}
+
+	legacy := db_open("users/waituser/lifecycletest/app.db")
+	legacy.exec("create table attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
+	legacy.exec("insert into attachments ( id, object, name, size, created ) values ( ?, ?, ?, ?, ? )", "0123456789abcdef0123456789abcdef", "post/1", "photo.jpg", 1234, 1700000000)
+	// The export cannot be written while its directory is a file.
+	files := filepath.Join(data_dir, "users", "waituser", "lifecycletest", "files")
+	if err := os.WriteFile(files, []byte("in the way"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	db_purge_prefix("users")
+
+	av.Database.Schema = 2
+	av.Database.Upgrade.Function = "database_upgrade"
+	db := db_app(u, app)
+	if db == nil {
+		t.Fatal("db_app returned nil with the upgrade waiting")
+	}
+	if schema := db_app_schema_get(db); schema != 1 {
+		t.Errorf("THE POINT: the upgrade ran to %d while app.db's export step was failing, so it read no attachments", schema)
+	}
+
+	// Once the step can run, so does the upgrade.
+	if err := os.Remove(files); err != nil {
+		t.Fatal(err)
+	}
+	db_purge_prefix("users")
+	db = db_app(u, app)
+	if db == nil {
+		t.Fatal("db_app returned nil once the step could run")
+	}
+	if schema := db_app_schema_get(db); schema != 2 {
+		t.Errorf("the upgrade did not run once app.db's steps had: schema %d", schema)
+	}
+	if !file_exists(filepath.Join(files, attachment_export_file)) {
+		t.Error("the export the upgrade reads was not written")
+	}
+}

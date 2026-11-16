@@ -970,8 +970,8 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 	}
 }
 
-// TestAttachmentExportSweep: app.db's second step, run by the startup sweep. A
-// store with rows exports then drops, an empty one drops with no file, a
+// TestAttachmentExportSweep: app.db's second step, run by the first opener of
+// each app.db (db_app_system_current). A store with rows exports then drops, an empty one drops with no file, a
 // missing table is untouched, an existing export is kept, a second pass is a
 // no-op.
 func TestAttachmentExportSweep(t *testing.T) {
@@ -1008,7 +1008,8 @@ func TestAttachmentExportSweep(t *testing.T) {
 	os.MkdirAll(kept_files, 0755)
 	os.WriteFile(filepath.Join(kept_files, attachment_export_file), []byte("[]"), 0644)
 
-	db_app_system_sweep()
+	db_app_system_upgrade("u1")
+	db_app_system_upgrade("u2")
 
 	// u1/rows: exported, dropped, variants gone, original kept.
 	data, err := os.ReadFile(filepath.Join(files, attachment_export_file))
@@ -1070,7 +1071,8 @@ func TestAttachmentExportSweep(t *testing.T) {
 
 	// A second pass has nothing to do and changes nothing.
 	os.Remove(filepath.Join(files, attachment_export_file))
-	db_app_system_sweep()
+	db_app_system_upgrade("u1")
+	db_app_system_upgrade("u2")
 	if file_exists(filepath.Join(files, attachment_export_file)) {
 		t.Error("a second pass rewrote an export from a table that no longer exists")
 	}

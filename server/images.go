@@ -558,8 +558,36 @@ func variant_made(source string, kind string, destinations []string, modified ti
 			previous += information.Size()
 		}
 	}
-	result, err := variant_render(source, kind, destinations...)
-	if err != nil || result == "" {
+	result := ""
+	for attempt := 0; result == ""; attempt++ {
+		before, err := os.Stat(source)
+		if err != nil {
+			return -1
+		}
+		made, err := variant_render(source, kind, destinations...)
+		if err != nil || made == "" {
+			return -1
+		}
+		// A source written again while it rendered may have been read as the
+		// bytes that write replaced, and the variant, moved into place after
+		// the write, would look current until the source changed once more.
+		// Made again from the new source; one still changing gets none. Its
+		// time is what variant_fresh judges a write by, so it is what moved.
+		after, err := os.Stat(source)
+		if err == nil && after.ModTime().Equal(before.ModTime()) {
+			result = made
+			break
+		}
+		// Made again over the first in place, not removed first: a caller
+		// that took the stale one's name meanwhile is served the old picture
+		// once rather than a file that is gone.
+		if err == nil && attempt == 0 {
+			continue
+		}
+		for _, destination := range destinations {
+			_ = os.Remove(destination)
+		}
+		cache_admit(-previous)
 		return -1
 	}
 	index := -1

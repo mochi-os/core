@@ -885,23 +885,28 @@ func delegation_check(domain_name, path string, owner string) bool {
 	return false
 }
 
+// domain_serving is the route that serves path on host, as requests there are
+// routed: none when its owner is no longer active. The owner names the account
+// whose data this hostname publishes. Suspension leaves the route in place and
+// purge deletes only the rows that user_purge_local reaches, so without this
+// the hostname keeps serving after its owner is gone: web.go cannot resolve
+// the owner, so every storage-backed action on the hostname answers 401 in
+// place of the owner's pages. Declining to route is the reversible answer,
+// which suspension needs it to be, and leaves core's own endpoints on the host
+// working. A route naming nobody is left alone: it never resolved an owner in
+// the first place, so it is not the account-is-gone case this guards.
+func domain_serving(host, path string) *route_match {
+	match := domain_match(host, path)
+	if match != nil && match.route.Owner != "" && !user_active(match.route.Owner) {
+		return nil
+	}
+	return match
+}
+
 // domains_middleware returns gin middleware for domain routing
 func domains_middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		match := domain_match(c.Request.Host, c.Request.URL.Path)
-		// The owner names the account whose data this hostname publishes.
-		// Suspension leaves the route in place and purge deletes only the rows
-		// that user_purge_local reaches, so without this the hostname keeps
-		// serving after its owner is gone: web.go cannot resolve the owner, so
-		// every storage-backed action on the hostname answers 401 in place of
-		// the owner's pages. Declining to route is the reversible answer, which
-		// suspension needs it to be, and leaves core's own endpoints on the
-		// host working. A route naming nobody is left
-		// alone: it never resolved an owner in the first place, so it is not
-		// the account-is-gone case this guards.
-		if match != nil && match.route.Owner != "" && !user_active(match.route.Owner) {
-			match = nil
-		}
+		match := domain_serving(c.Request.Host, c.Request.URL.Path)
 		if match != nil {
 			c.Set("domain_route", match.route)
 			c.Set("domain_method", match.route.Method)

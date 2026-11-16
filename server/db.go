@@ -923,6 +923,11 @@ func db_app(u *User, app *App) *DB {
 		return db
 	}
 
+	// The app's create and upgrade functions may read what app.db's steps
+	// moved out of it - system_upgrade_2's attachment export, whose absence
+	// they take as "no rows" - so that file is brought to its version first.
+	system := db_app_system_current(u.UID, app.id)
+
 	// Get schema version from user_version pragma
 	schema := db_app_schema_get(db)
 
@@ -957,7 +962,15 @@ func db_app(u *User, app *App) *DB {
 	// held records that a step called mochi.db.abort(). The schema stayed where
 	// it was, so the handle must not be marked ready below.
 	held := false
-	if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
+	upgrading := schema < av.Database.Schema && av.Database.Upgrade.Function != ""
+	if upgrading && !system {
+		// An app.db step still to be tried again (a failed export) would
+		// leave a migration reading its absence as "no rows", and the version
+		// that read nothing is consumed for good: the upgrade waits, as one
+		// held by mochi.db.abort does, and is tried with the step.
+		warn("App %q version %q database upgrade held: app.db for user %q is not yet at its version", av.app.id, av.Version, u.UID)
+		held = true
+	} else if upgrading {
 		for version := schema + 1; version <= av.Database.Schema; version++ {
 			debug("Database %q upgrading to schema version %d", path, version)
 			if err := av.starlark_db(db, u, av.Database.Upgrade.Function, sl_encode_tuple(version), version); err != nil {
@@ -1054,27 +1067,9 @@ func system_upgrade_1(db *DB) error {
 	return nil
 }
 
-// db_app_system_sweep brings every app.db on the server to its current version
-// at startup, before any request: a step may move data an app's own migration
-// then reads, as system_upgrade_2 writes the attachment export an app takes the
-// absence of as "no rows".
-func db_app_system_sweep() {
-	users, err := os.ReadDir(filepath.Join(data_dir, "users"))
-	if err != nil {
-		return
-	}
-	count := 0
-	for _, u := range users {
-		if u.IsDir() {
-			count += db_app_system_upgrade(u.Name())
-		}
-	}
-	debug("App-system sweep: %d app.db files checked", count)
-}
-
 // db_app_system_upgrade brings one user's app.db files to their current
-// version, returning how many it looked at: the sweep at startup, and a restore,
-// the one path that adds app.db files to a running server.
+// version, returning how many it looked at: a restore, which adds them to a
+// running server whose apps may already hold handles on the files it replaced.
 func db_app_system_upgrade(uid string) int {
 	apps, err := os.ReadDir(filepath.Join(data_dir, "users", uid))
 	if err != nil {
@@ -1089,9 +1084,9 @@ func db_app_system_upgrade(uid string) int {
 		if !file_exists(filepath.Join(data_dir, path)) {
 			continue
 		}
-		// Scoped so the handle is closed on every exit: the sweep walks every
-		// app.db on the host before anything can evict a handle, and each one
-		// left open holds its descriptors.
+		// Scoped so the handle is closed on every exit: the account is not
+		// yet active, so nothing else holds these, and each one left open
+		// would hold its descriptors until evicted.
 		func() {
 			db, _, reused := db_open_work(path)
 			if db == nil {
@@ -1103,6 +1098,33 @@ func db_app_system_upgrade(uid string) int {
 		}()
 	}
 	return count
+}
+
+// db_app_system_current brings a user's app.db for an app, when there is one,
+// to its current version (db_system_steps), and reports whether it is there:
+// true with no file, false while a step that failed is still to be tried
+// again. The handle is released, not closed: on a request another opener may
+// hold the same one - an event's broadcast state, an access check - and
+// closing it under them failed their next query.
+//
+// Every opener of app.db runs the steps (db_app_system), and db_app runs them
+// before an app's own create or upgrade function, the one reader of what a
+// step moves elsewhere. A sweep of every app.db before the listener opened
+// used to guarantee that order instead, at 0.6-0.7 ms a file on every start
+// - seconds on a server of thousands of accounts - for files a release had
+// usually already brought up to date.
+func db_app_system_current(uid string, app string) bool {
+	path := fmt.Sprintf("users/%s/%s/app.db", uid, app)
+	if !file_exists(filepath.Join(data_dir, path)) {
+		return true
+	}
+	db, _, _ := db_open_work(path)
+	if db == nil {
+		return false
+	}
+	defer db.close()
+	db_upgrade_file(db, path, db_system_steps)
+	return db.integer("pragma user_version") >= len(db_system_steps)
 }
 
 // attachment_export_file is the JSON list at the root of an app's file storage

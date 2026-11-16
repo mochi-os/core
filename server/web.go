@@ -53,11 +53,42 @@ var (
 func web_server(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           web_drain(handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+}
+
+// web_drain_maximum is how much of a request's body is read and dropped once
+// its handler is done with it, as net/http reads it on a connection it keeps.
+// Past it the connection is closed as net/http closes one whose client sent
+// more than a limit: its sending side first, so the answer still arrives.
+const web_drain_maximum = 256 << 10
+
+// web_drain_wait is how long the drain waits for a body still on its way.
+const web_drain_wait = 2 * time.Second
+
+// web_drain reads what a handler left of its request's body before the server
+// closes the connection. net/http does so itself only on a connection it
+// keeps: on one the client asked to close, it closed with the body unread, and
+// the kernel answers unread bytes with a reset that cuts the answer off in
+// flight. A forums view of 10,500 rows, whose action takes its input from its
+// path and leaves the form sent with it unread, reached Python clients cut
+// short so about one time in twenty, though the server logged a 200. An
+// upgraded connection belongs to its handler, so nothing is read from it, and
+// a client that asked to be told to continue sends no body until it is: one
+// answered without being told waited out the drain.
+func web_drain(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := r.Body
+		next.ServeHTTP(w, r)
+		if body == nil || body == http.NoBody || r.Header.Get("Upgrade") != "" || r.Header.Get("Expect") != "" {
+			return
+		}
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(web_drain_wait))
+		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, body, web_drain_maximum))
+	})
 }
 
 // Default ceiling on simultaneously accepted connections: half the fd budget
@@ -1017,7 +1048,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 		if !c.Writer.Written() {
 			if result != sl.None {
-				c.JSON(http.StatusOK, sl_decode(result))
+				c.Render(http.StatusOK, sl_json{value: result})
 			} else if !starlark_serving_get(s.thread) && !web_status_deliberate(c.Writer.Status()) {
 				// NoRoute pre-sets 404 - override when a fire-and-forget action wrote no
 				// response. NOT when a file was served: ServeContent may have set 304 with

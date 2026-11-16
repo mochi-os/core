@@ -4,7 +4,8 @@
 //
 // Changed for Mochi: objects sort by type, path name hash and size, as git
 // sorts them, an object stored whole is searched for a delta base only when
-// Search says so, and a cycle of reused deltas is broken.
+// Search says so, one whose stored base is not packed only when Related
+// allows, and a cycle of reused deltas is broken.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -34,6 +35,10 @@ type deltaSelector struct {
 	storer storer.EncodedObjectStorer
 	names  map[plumbing.Hash]uint32
 	search func(plumbing.Hash) bool
+	// related, and how many of the objects being packed are stored as deltas
+	// against each base they do not include.
+	related bool
+	missing map[plumbing.Hash]int
 }
 
 func newDeltaSelector(s storer.EncodedObjectStorer) *deltaSelector {
@@ -152,6 +157,12 @@ func (dw *deltaSelector) fixAndBreakChains(objectsToPack []*ObjectToPack) error 
 	for _, otp := range objectsToPack {
 		m[otp.Hash()] = otp
 	}
+	dw.missing = make(map[plumbing.Hash]int)
+	for _, otp := range objectsToPack {
+		if do, ok := otp.Object.(plumbing.DeltaObject); ok && m[do.BaseHash()] == nil {
+			dw.missing[do.BaseHash()]++
+		}
+	}
 
 	// Changed for Mochi: the objects whose base chain is being followed. See
 	// fixAndBreakChainsOne.
@@ -181,14 +192,22 @@ func (dw *deltaSelector) fixAndBreakChainsOne(objectsToPack map[plumbing.Hash]*O
 	if !ok {
 		// if this is not a DeltaObject, then we cannot retrieve its base,
 		// so we have to break the delta chain here.
-		return dw.undeltify(otp)
+		return dw.undeltify(otp, true)
 	}
 
 	base, ok := objectsToPack[do.BaseHash()]
 	if !ok {
 		// The base of the delta is not in our list of objects to pack, so
 		// we break the chain.
-		return dw.undeltify(otp)
+		//
+		// Changed for Mochi: with related, searched for another base only
+		// when another object here was stored against the same one. In a
+		// shallow clone nearly every file is stored against an older
+		// version of itself, which is not sent, and none has another
+		// version in the pack: the search ran each against a window of
+		// unrelated files, finding almost nothing, for most of the time
+		// the clone took.
+		return dw.undeltify(otp, !dw.related || dw.missing[do.BaseHash()] > 1)
 	}
 
 	// Changed for Mochi: an object held in more than one pack is read from
@@ -200,7 +219,7 @@ func (dw *deltaSelector) fixAndBreakChainsOne(objectsToPack map[plumbing.Hash]*O
 	walking[otp] = true
 	defer delete(walking, otp)
 	if walking[base] {
-		return dw.undeltify(otp)
+		return dw.undeltify(otp, true)
 	}
 
 	if err := dw.fixAndBreakChainsOne(objectsToPack, walking, base); err != nil {
@@ -232,7 +251,9 @@ func (dw *deltaSelector) restoreOriginal(otp *ObjectToPack) error {
 
 // undeltify undeltifies an *ObjectToPack by retrieving the original object from
 // the storer and resetting it.
-func (dw *deltaSelector) undeltify(otp *ObjectToPack) error {
+//
+// Changed for Mochi: search says whether to look for another base for it.
+func (dw *deltaSelector) undeltify(otp *ObjectToPack, search bool) error {
 	if err := dw.restoreOriginal(otp); err != nil {
 		return err
 	}
@@ -240,8 +261,8 @@ func (dw *deltaSelector) undeltify(otp *ObjectToPack) error {
 	otp.Object = otp.Original
 	otp.Depth = 0
 	// Changed for Mochi: its stored delta cannot be sent, so look for
-	// another base.
-	otp.search = true
+	// another base, if asked.
+	otp.search = search
 	return nil
 }
 

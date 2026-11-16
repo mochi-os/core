@@ -205,3 +205,80 @@ func TestEncodeKeepsReusedDeltas(t *testing.T) {
 	}
 	cycle_encode(t, store, a, c, b)
 }
+
+// related_deltas encodes objects with nothing stored whole searched, so only
+// what Related decides is, and answers how many go as deltas, having checked
+// the pack gives every object back.
+func related_deltas(t *testing.T, store *cycle_storer, related bool, objects ...plumbing.EncodedObject) int {
+	t.Helper()
+	var hashes []plumbing.Hash
+	for _, object := range objects {
+		hashes = append(hashes, object.Hash())
+	}
+	var buffer bytes.Buffer
+	encoder := NewEncoder(&buffer, store, false)
+	encoder.Search = func(plumbing.Hash) bool { return false }
+	encoder.Related = related
+	if _, err := encoder.Encode(hashes, 10); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	scanner := packfile.NewScanner(bytes.NewReader(buffer.Bytes()))
+	_, count, err := scanner.Header()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deltas := 0
+	for range count {
+		header, err := scanner.NextObjectHeader()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Type == plumbing.OFSDeltaObject || header.Type == plumbing.REFDeltaObject {
+			deltas++
+		}
+		if _, _, err := scanner.NextObject(io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := memory.NewStorage()
+	parser, err := packfile.NewParserWithStorage(packfile.NewScanner(bytes.NewReader(buffer.Bytes())), read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Parse(); err != nil {
+		t.Fatalf("the pack written does not parse: %v", err)
+	}
+	for _, object := range objects {
+		if got, err := read.EncodedObject(plumbing.AnyObject, object.Hash()); err != nil || got.Size() != object.Size() {
+			t.Errorf("object %s did not come back whole from the pack", object.Hash())
+		}
+	}
+	return deltas
+}
+
+// A shallow clone sends nearly every file without the older version it is
+// stored against, and searching each for another base, against a window of
+// unrelated files, took most of the clone and found almost nothing. With
+// Related, one is searched only when another object of the pack was stored
+// against the same base: another version of its file, which the search finds.
+func TestEncodeSearchesABaselessDeltaOnlyBesideItsRelative(t *testing.T) {
+	store := &cycle_storer{Storage: memory.NewStorage(), deltas: map[plumbing.Hash]plumbing.EncodedObject{}}
+	text := strings.Repeat("a line of a file that changes a little between versions\n", 200)
+	old := cycle_blob(t, store.Storage, text+"old\n")
+	current := cycle_blob(t, store.Storage, text+"current\n")
+	newer := cycle_blob(t, store.Storage, text+"newer\n")
+	copied := cycle_blob(t, store.Storage, text+"copied elsewhere\n")
+	store.deltas[current.Hash()] = cycle_stored(t, old, current)
+	store.deltas[newer.Hash()] = cycle_stored(t, old, newer)
+
+	if deltas := related_deltas(t, store, true, current, copied); deltas != 0 {
+		t.Errorf("THE POINT: alone without its base, an object was searched and sent as one of %d deltas", deltas)
+	}
+	if deltas := related_deltas(t, store, true, current, newer, copied); deltas == 0 {
+		t.Errorf("THE POINT: two objects stored against one base the pack does not carry were not searched against each other")
+	}
+	if deltas := related_deltas(t, store, false, current, copied); deltas != 1 {
+		t.Errorf("without Related, an object without its base went as %d deltas, want 1: it is searched, as a repack needs", deltas)
+	}
+}

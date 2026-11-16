@@ -138,6 +138,14 @@ func web_should_serve_shell(c *gin.Context) bool {
 		return false
 	}
 
+	// A host whose route redirects serves no page of ours: the redirect is
+	// answered where the browser asked, at the top. Wrapped in the shell, the
+	// frame followed it to whatever site the route names, and a page there
+	// could ask the shell for the user's tokens, id and name.
+	if method, _ := c.Get("domain_method"); method == "redirect" {
+		return false
+	}
+
 	// User must be authenticated
 	session := web_cookie_get(c, "session", "")
 	if session == "" {
@@ -329,11 +337,18 @@ func web_shell_token(c *gin.Context) {
 
 	// Resolve the app path to an app, or, for a direct entity URL
 	// (/<fingerprint>), the entity to the app for its class: the shell names
-	// the URL's first segment, and that page is served by the class's app.
-	a := app_for_path(user, input.App)
-	if a == nil {
-		if e := entity_by_any(input.App); e != nil {
-			a = class_app_for(user_owning_entity(e.ID), e.Class)
+	// the URL's first segment, and that page is served by the class's app. On
+	// a hosted domain whose route covers that path, the page is the route
+	// target's whatever the segment names, so the token is minted for it:
+	// minted for the app the segment named, the root app's at /, it was one
+	// app's token in another app's page.
+	a, routed := shell_route_app(user, c.Request.Host, "/"+input.App)
+	if !routed {
+		a = app_for_path(user, input.App)
+		if a == nil {
+			if e := entity_by_any(input.App); e != nil {
+				a = class_app_for(user_owning_entity(e.ID), e.Class)
+			}
 		}
 	}
 	if a == nil {
@@ -363,6 +378,27 @@ func web_shell_token(c *gin.Context) {
 		result["identity"] = gin.H{"id": identity.ID, "name": identity.Name}
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// shell_route_app is the app whose page a hosted domain's route serves at path
+// on host, as web_path serves it - the route's app, or the app for its
+// entity's class - and whether a route serves the path at all. A path a route
+// serves is its target's or no app's: a redirect serves no page of ours, and a
+// target that is gone leaves an error page, and neither is given a token.
+func shell_route_app(user *User, host string, path string) (*App, bool) {
+	match := domain_serving(host, path)
+	if match == nil {
+		return nil, false
+	}
+	switch match.route.Method {
+	case "app":
+		return app_by_any(user, match.route.Target), true
+	case "entity":
+		if e := entity_by_any(match.route.Target); e != nil {
+			return class_app_for(user_owning_entity(e.ID), e.Class), true
+		}
+	}
+	return nil, true
 }
 
 // shell_timezone is the zone a shell reports in its boot request's body,

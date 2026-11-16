@@ -12,8 +12,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,9 +24,14 @@ import (
 	"testing"
 	"time"
 
+	"core/third_party/pack"
+
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/storage/memory"
 )
 
 // git_work drives a working copy for the fixtures below. Dates are fixed so
@@ -547,5 +554,114 @@ func TestGitPlainShallowFetchStopsAtTheBoundary(t *testing.T) {
 		if sent[hash] {
 			t.Errorf("THE POINT: %s, behind the client's declared boundary, was sent", hash)
 		}
+	}
+}
+
+// shallow_stored hands objects back as the stored deltas deltas names, as a
+// repository's packs do.
+type shallow_stored struct {
+	*memory.Storage
+	deltas map[plumbing.Hash]plumbing.EncodedObject
+}
+
+func (s *shallow_stored) DeltaObject(kind plumbing.ObjectType, hash plumbing.Hash) (plumbing.EncodedObject, error) {
+	if delta, found := s.deltas[hash]; found {
+		return delta, nil
+	}
+	return s.EncodedObject(kind, hash)
+}
+
+// shallow_delta is a stored delta: its own bytes, and the object it rebuilds
+// from its base.
+type shallow_delta struct {
+	plumbing.EncodedObject
+	base   plumbing.Hash
+	actual plumbing.Hash
+	size   int64
+}
+
+func (d *shallow_delta) BaseHash() plumbing.Hash   { return d.base }
+func (d *shallow_delta) ActualHash() plumbing.Hash { return d.actual }
+func (d *shallow_delta) ActualSize() int64         { return d.size }
+
+// shallow_object stores an object and answers it as stored.
+func shallow_object(t *testing.T, store *shallow_stored, value interface {
+	Encode(plumbing.EncodedObject) error
+}) plumbing.EncodedObject {
+	t.Helper()
+	encoded := store.NewEncodedObject()
+	if err := value.Encode(encoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetEncodedObject(encoded); err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// shallow_blob stores a file's contents.
+func shallow_blob(t *testing.T, store *shallow_stored, contents string) plumbing.EncodedObject {
+	t.Helper()
+	blob := store.NewEncodedObject()
+	blob.SetType(plumbing.BlobObject)
+	writer, err := blob.Writer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(writer, contents); err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
+	if _, err := store.SetEncodedObject(blob); err != nil {
+		t.Fatal(err)
+	}
+	return blob
+}
+
+// TestGitShallowCloneSendsBaselessFilesWhole: a shallow clone sends nearly
+// every file without the older version it is stored against, and each was
+// searched for another base against a window of unrelated files, for most of
+// the clone's time, finding almost nothing. Such a file goes whole now unless
+// another version of it is in the pack; a fetch, whose other versions the
+// search finds, still searches.
+func TestGitShallowCloneSendsBaselessFilesWhole(t *testing.T) {
+	store := &shallow_stored{Storage: memory.NewStorage(), deltas: map[plumbing.Hash]plumbing.EncodedObject{}}
+	text := strings.Repeat("a line of a file that changes a little between versions\n", 200)
+	old := shallow_blob(t, store, text+"old\n")
+	current := shallow_blob(t, store, text+"current\n")
+	copied := shallow_blob(t, store, text+"copied elsewhere\n")
+	delta, err := pack.GetDelta(old, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.deltas[current.Hash()] = &shallow_delta{EncodedObject: delta, base: old.Hash(), actual: current.Hash(), size: current.Size()}
+
+	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Unix(1700000000, 0)}
+	tree := shallow_object(t, store, &object.Tree{Entries: []object.TreeEntry{{Name: "file", Mode: filemode.Regular, Hash: old.Hash()}}})
+	first := shallow_object(t, store, &object.Commit{Author: signature, Committer: signature, Message: "first\n", TreeHash: tree.Hash()}).Hash()
+	tree = shallow_object(t, store, &object.Tree{Entries: []object.TreeEntry{{Name: "copy", Mode: filemode.Regular, Hash: copied.Hash()}, {Name: "file", Mode: filemode.Regular, Hash: current.Hash()}}})
+	second := shallow_object(t, store, &object.Commit{Author: signature, Committer: signature, Message: "second\n", TreeHash: tree.Hash(), ParentHashes: []plumbing.Hash{first}}).Hash()
+	if err := store.SetReference(plumbing.NewHashReference("refs/heads/main", second)); err != nil {
+		t.Fatal(err)
+	}
+
+	deltas := func(request *git_request, known []plumbing.Hash) int {
+		t.Helper()
+		selection, err := git_upload_pack_select(context.Background(), store, request, known, true)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		var buffer bytes.Buffer
+		if err := git_upload_pack_send(&git_band{target: &buffer}, store, selection); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		_, deltas := store_count(t, buffer.Bytes())
+		return deltas
+	}
+	if sent := deltas(&git_request{capabilities: capability.NewList(), wants: []plumbing.Hash{second}, depth: 1, done: true}, nil); sent != 0 {
+		t.Errorf("THE POINT: a depth-1 clone searched a file whose stored base it does not send, and sent %d deltas", sent)
+	}
+	if sent := deltas(&git_request{capabilities: capability.NewList(), wants: []plumbing.Hash{second}, haves: []plumbing.Hash{first}, done: true}, []plumbing.Hash{first}); sent != 1 {
+		t.Errorf("a fetch sent %d deltas, want 1: the file it sends without its stored base is still searched, and finds its copy", sent)
 	}
 }

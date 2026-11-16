@@ -7,11 +7,18 @@
 package main
 
 import (
+	"encoding/json"
+	"math"
+	"math/big"
+	"math/rand"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"go.starlark.net/resolve"
 	sl "go.starlark.net/starlark"
 )
@@ -486,4 +493,183 @@ def cpu_hog():
 	}
 
 	t.Logf("Step limit worked: elapsed=%v, error=%v", elapsed, err)
+}
+
+// sl_json_append is value as sl_json_writer writes it whole.
+func sl_json_append(data []byte, value sl.Value) ([]byte, error) {
+	w := sl_json_writer{data: data}
+	err := w.value(value, nil)
+	return w.data, err
+}
+
+// sl_json_values are Starlark values an action may answer with, each shape the
+// encoder treats on its own.
+func sl_json_values(t *testing.T) []sl.Value {
+	t.Helper()
+	var values []sl.Value
+	for b := 0; b < 256; b++ {
+		values = append(values, sl.String(string([]byte{byte(b)})), sl.String("a"+string([]byte{byte(b)})+"z"))
+	}
+	for _, text := range []string{"", "plain", "<script>&amp;</script>", "line\u2028separator\u2029", "\xff\xfe", "\xe2\x82", "\xf0\x9f\x98", "café ☕ 😀", "tab\tnew\nline\r\b\f", "quote\" back\\", "\x7f", "\u0000"} {
+		values = append(values, sl.String(text))
+	}
+	random := rand.New(rand.NewSource(1))
+	for range 2000 {
+		data := make([]byte, random.Intn(24))
+		random.Read(data)
+		values = append(values, sl.String(data))
+	}
+	for _, f := range []float64{0, math.Copysign(0, -1), 1, -1.5, 0.1, 1.0 / 3, 123.456, 1e-6, 9.99e-7, 1e-7, 1.5e-10, 1e20, 1e21, 1.5e21, 5e-324, math.MaxFloat64, -math.MaxFloat64, 1e100, 12345678912345678} {
+		values = append(values, sl.Float(f))
+	}
+	huge := new(big.Int).Lsh(big.NewInt(1), 70)
+	for _, i := range []sl.Value{sl.MakeInt(0), sl.MakeInt(-1), sl.MakeInt64(math.MaxInt64), sl.MakeInt64(math.MinInt64), sl.MakeBigInt(huge), sl.MakeBigInt(new(big.Int).Neg(huge))} {
+		values = append(values, i)
+	}
+	values = append(values, sl.None, sl.True, sl.False, sl.Bytes(""), sl.Bytes("abc\xff"), sl.NewList(nil), sl.Tuple{}, sl.NewDict(0), sl.NewSet(1))
+
+	row := sl.NewDict(8)
+	row.SetKey(sl.String("zeta"), sl.MakeInt(1))
+	row.SetKey(sl.String("alpha"), sl.String("<b>"))
+	row.SetKey(sl.MakeInt(7), sl.String("a key that is not a string is left out"))
+	row.SetKey(sl.String("Émile"), sl.Float(2.5))
+	row.SetKey(sl.String("a\u2028b"), sl.None)
+	row.SetKey(sl.String("Alpha"), sl.NewList([]sl.Value{sl.True, sl.Tuple{sl.MakeInt(1), sl.String("x")}, sl.NewDict(0)}))
+	row.SetKey(sl.String("\xff"), sl.Bytes("raw"))
+	values = append(values, row, sl.NewList([]sl.Value{row, row}), sl.Tuple{row, sl.NewList([]sl.Value{sl.None})})
+	return append(values, sl_held_values(t)...)
+}
+
+// sl_held_values are values that hold themselves - a list, and a dictionary
+// twice over, which branches at every level - and one nested past the depth
+// core follows.
+func sl_held_values(t *testing.T) []sl.Value {
+	t.Helper()
+	globals, err := sl.ExecFile(&sl.Thread{}, "held.star", `
+listed = []
+listed.append(listed)
+keyed = {"name": "outer"}
+keyed["left"] = keyed
+keyed["right"] = [keyed, (keyed,)]
+deep = []
+for i in range(1500):
+    deep = [deep]
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []sl.Value{globals["listed"], globals["keyed"], globals["deep"]}
+}
+
+// TestSlDecodeLeavesOutAValueThatHoldsItself: Starlark lets a list or a
+// dictionary hold itself. Followed without a bound, such a value recursed
+// until the stack ran out - a fatal error no recover catches, so one app's
+// value ended the whole server - and one held twice over branched at every
+// level. The inner one is left out, as null; so is anything nested past the
+// depth core follows.
+func TestSlDecodeLeavesOutAValueThatHoldsItself(t *testing.T) {
+	held := sl_held_values(t)
+	if got := sl_decode(held[0]); !reflect.DeepEqual(got, []any{nil}) {
+		t.Errorf("THE POINT: a list holding itself decoded as %v, want [nil]", got)
+	}
+	want := map[string]any{"name": "outer", "left": nil, "right": []any{nil, []any{nil}}}
+	if got := sl_decode(held[1]); !reflect.DeepEqual(got, want) {
+		t.Errorf("THE POINT: a dictionary holding itself twice over decoded as %v, want %v", got, want)
+	}
+	depth := 0
+	for value := sl_decode(held[2]); value != nil; depth++ {
+		list, ok := value.([]any)
+		if !ok || len(list) != 1 {
+			break
+		}
+		value = list[0]
+	}
+	if depth != sl_depth_maximum {
+		t.Errorf("a value nested 1,500 deep decoded %d deep, want cut at %d", depth, sl_depth_maximum)
+	}
+}
+
+// TestActionAnswerJSONMatchesMarshal: an action's answer is written straight
+// from its Starlark value, not through sl_decode's tree of Go values and
+// json.Marshal, which allocated thirteen times a large answer's size. The bytes
+// must be the very ones json.Marshal(sl_decode(value)) gave: pages, the Android
+// client and other servers parse them, and HTML escaping keeps an answer
+// rendered into a page from closing its script.
+func TestActionAnswerJSONMatchesMarshal(t *testing.T) {
+	for _, value := range sl_json_values(t) {
+		want, refused := json.Marshal(sl_decode(value))
+		got, failure := sl_json_append(nil, value)
+		if (refused != nil) != (failure != nil) {
+			t.Errorf("%s: error %v, json.Marshal's %v", value.String(), failure, refused)
+			continue
+		}
+		if refused == nil && string(got) != string(want) {
+			t.Errorf("THE POINT: %s is written as %q, json.Marshal wrote %q", value.String(), got, want)
+		}
+	}
+	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		list := sl.NewList([]sl.Value{sl.String("before"), sl.Float(f)})
+		if _, err := sl_json_append(nil, list); err == nil {
+			t.Errorf("%v was written, though JSON has no such number", f)
+		}
+	}
+}
+
+// TestActionAnswerRendersAsJSONDid: through gin, the answer carries the same
+// status, type and body as c.JSON gave it, keeps a type the action set
+// itself, and a NaN writes nothing and is recorded against the request.
+func TestActionAnswerRendersAsJSONDid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	render := func(value sl.Value, typed bool, old bool) (*httptest.ResponseRecorder, *gin.Context) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+		if typed {
+			c.Header("Content-Type", "text/plain")
+		}
+		if old {
+			c.JSON(http.StatusOK, sl_decode(value))
+		} else {
+			c.Render(http.StatusOK, sl_json{value: value})
+		}
+		c.Writer.WriteHeaderNow()
+		return recorder, c
+	}
+	for _, value := range sl_json_values(t)[:40] {
+		for _, typed := range []bool{false, true} {
+			want, _ := render(value, typed, true)
+			got, _ := render(value, typed, false)
+			if got.Code != want.Code || got.Body.String() != want.Body.String() || got.Header().Get("Content-Type") != want.Header().Get("Content-Type") {
+				t.Errorf("%s (typed %v): %d %q %q, c.JSON gave %d %q %q", value.String(), typed, got.Code, got.Header().Get("Content-Type"), got.Body.String(), want.Code, want.Header().Get("Content-Type"), want.Body.String())
+			}
+		}
+	}
+	// Larger than one piece, so written in several.
+	rows := make([]sl.Value, 0, 5000)
+	for i := range 5000 {
+		row := sl.NewDict(3)
+		row.SetKey(sl.String("id"), sl.MakeInt(i))
+		row.SetKey(sl.String("name"), sl.String(strings.Repeat("<name> ", i%7)))
+		row.SetKey(sl.String("score"), sl.Float(float64(i)/7))
+		rows = append(rows, row)
+	}
+	large := sl.NewList(rows)
+	want, _ := render(large, false, true)
+	got, _ := render(large, false, false)
+	if want.Body.Len() <= 2*sl_json_piece || got.Body.String() != want.Body.String() || got.Code != want.Code {
+		t.Errorf("THE POINT: an answer of %d bytes, written in pieces, came out as %d bytes unlike c.JSON's", want.Body.Len(), got.Body.Len())
+	}
+
+	// A value JSON cannot carry fails the answer before a byte of it goes, in a
+	// small answer and in one past the first piece alike.
+	for _, broken := range []sl.Value{
+		sl.NewList([]sl.Value{sl.String("before"), sl.Float(math.NaN())}),
+		sl.NewList(append(append([]sl.Value{}, rows...), sl.Float(math.Inf(1)))),
+	} {
+		want, old := render(broken, false, true)
+		got, c := render(broken, false, false)
+		if got.Code != want.Code || got.Body.Len() != 0 || want.Body.Len() != 0 || len(c.Errors) != len(old.Errors) || !c.IsAborted() {
+			t.Errorf("THE POINT: an answer holding a NaN or an infinity: %d with %d bytes and %d errors, c.JSON gave %d with %d bytes and %d", got.Code, got.Body.Len(), len(c.Errors), want.Code, want.Body.Len(), len(old.Errors))
+		}
+	}
 }

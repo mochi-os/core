@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -191,7 +192,26 @@ type AppVersion struct {
 	starlark_once    sync.Once              `json:"-"`
 	starlark_globals sl.StringDict          `json:"-"`
 	starlark_failed  []string               `json:"-"`
-	app_json_mtime   time.Time              `json:"-"`
+	// A development server's compiled globals, kept while the files they were
+	// compiled from are unchanged.
+	starlark_compiled atomic.Pointer[starlark_compilation] `json:"-"`
+	app_json_mtime    time.Time                            `json:"-"`
+}
+
+// starlark_compilation is what one compile of a version's files gave, and the
+// state of each file it read.
+type starlark_compilation struct {
+	files   []starlark_source
+	globals sl.StringDict
+	failed  []string
+}
+
+// starlark_source is a file as a compile found it: an edit changes its size or,
+// once the file has settled, its modification time.
+type starlark_source struct {
+	path     string
+	size     int64
+	modified int64
 }
 
 type Icon struct {
@@ -729,6 +749,17 @@ var (
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}
 	apps_lock            = &sync.Mutex{}
+
+	// apps_dev_failed holds the directories of the development apps that
+	// failed to load, under apps_lock. Such an app is still the one under
+	// development, and apps_pin_default_services must not bind its services
+	// to a published copy: a binding outlives the failure that prompted it,
+	// so a server once started with a core too old for its development apps
+	// routed their services to stale published copies for good. Each pass
+	// reads their manifests again, so one repaired since is taken at its
+	// word, and while one cannot be read at all its services are unknown and
+	// the pass pins nothing.
+	apps_dev_failed []string
 
 	// internal_services maps a core service name to its built-in handler.
 	// Populated once at startup when an internal app calls service(), never
@@ -1945,6 +1976,19 @@ func apps_pin_default_services(defaults []DefaultApp) {
 	dev := map[string]bool{}
 
 	apps_lock.Lock()
+	failed := slices.Clone(apps_dev_failed)
+	apps_lock.Unlock()
+	for _, base := range failed {
+		services, read := app_manifest_services(base)
+		if !read {
+			return
+		}
+		for _, s := range services {
+			dev[s] = true
+		}
+	}
+
+	apps_lock.Lock()
 	for _, a := range apps {
 		av := a.active_locked(nil)
 		if av == nil {
@@ -2277,6 +2321,28 @@ func app_resolve_paths(av *AppVersion, id string) {
 }
 
 // Load development apps from dev_apps_dir (unversioned)
+// app_manifest_services answers the services an app's app.json declares,
+// read on their own so an app that fails to load for another reason (a core
+// too old for it, an invalid field) still says what it provides, and whether
+// the manifest could be read at all.
+func app_manifest_services(base string) ([]string, bool) {
+	raw, err := os.ReadFile(base + "/app.json")
+	if err != nil {
+		return nil, false
+	}
+	data, err := hujson.Standardize(raw)
+	if err != nil {
+		return nil, false
+	}
+	var manifest struct {
+		Services []string `json:"services"`
+	}
+	if json.Unmarshal(data, &manifest) != nil {
+		return nil, false
+	}
+	return manifest.Services, true
+}
+
 func apps_load_dev() {
 	ids, err := file_list(dev_apps_dir)
 	if err != nil {
@@ -2304,6 +2370,9 @@ func apps_load_dev() {
 		av, err := app_read(id, base)
 		if err != nil {
 			info("Dev app load error for %q: %v", id, err)
+			apps_lock.Lock()
+			apps_dev_failed = append(apps_dev_failed, base)
+			apps_lock.Unlock()
 			continue
 		}
 
@@ -2668,7 +2737,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 // Get a Starlark interpreter for an app version
 func (av *AppVersion) starlark() *Starlark {
 	if dev_reload {
-		return starlark(av.Execute)
+		return av.starlark_development()
 	}
 	av.starlark_once.Do(func() {
 		s := starlark(av.Execute)
@@ -2682,6 +2751,63 @@ func (av *AppVersion) starlark() *Starlark {
 		globals: av.starlark_globals,
 		failed:  av.starlark_failed,
 	}
+}
+
+// starlark_settle is how old every file must be before a compile of it is
+// kept. A file's modification time comes from the kernel's coarse clock, so two
+// writes a millisecond apart can carry one time, and a file the size it was
+// before reads as unchanged: the harness patches and restores app files that
+// fast. A file older than this was last written before the clock last moved,
+// so any later write gives it a newer time.
+const starlark_settle = time.Second
+
+// starlark_development answers an interpreter on a development server, where
+// an app's files are edited while it runs. The globals compiled from them are
+// kept until a file changes, as production keeps them for the process: every
+// call looks at each file, following lib/ symlinks to the shared library, and
+// compiles again when the list or any file's size or modification time moved.
+// The files are looked at before the compile reads them, so an edit landing
+// during a compile is seen on the next call, and a compile is kept only once
+// every file it read has settled.
+func (av *AppVersion) starlark_development() *Starlark {
+	files := av.Execute
+	looked := time.Now()
+	sources, complete := starlark_sources(files)
+	if kept := av.starlark_compiled.Load(); complete && kept != nil && slices.Equal(kept.files, sources) {
+		return &Starlark{thread: &sl.Thread{Name: "main"}, globals: kept.globals, failed: kept.failed}
+	}
+	s := starlark(files)
+	if complete && starlark_settled(sources, looked) {
+		av.starlark_compiled.Store(&starlark_compilation{files: sources, globals: s.globals, failed: s.failed})
+	}
+	return s
+}
+
+// starlark_settled reports whether every file was last written at least
+// starlark_settle before looked.
+func starlark_settled(sources []starlark_source, looked time.Time) bool {
+	limit := looked.Add(-starlark_settle).UnixNano()
+	for _, source := range sources {
+		if source.modified > limit {
+			return false
+		}
+	}
+	return true
+}
+
+// starlark_sources answers each file's state, and false when one cannot be
+// read: a missing file is compiled again on every call, so its error is
+// logged until it is put back.
+func starlark_sources(files []string) ([]starlark_source, bool) {
+	sources := make([]starlark_source, 0, len(files))
+	for _, file := range files {
+		stat, err := os.Stat(file)
+		if err != nil {
+			return nil, false
+		}
+		sources = append(sources, starlark_source{path: file, size: stat.Size(), modified: stat.ModTime().UnixNano()})
+	}
+	return sources, true
 }
 
 // Reload app.json and labels from disk (for development).

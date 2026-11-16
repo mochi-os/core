@@ -692,9 +692,10 @@ run: $(bin)/mochi-server
 
 # test is the fast pass (CGO disabled, no race detector); test-race adds the
 # race detector, needs cgo, and is roughly 8x slower. Run test-race before
-# committing a change to shared mutable state.
+# committing a change to shared mutable state. The timeout is per package and
+# is there to catch a hang: core/server alone takes about four minutes.
 test:
-	CGO_ENABLED=0 go test -count=1 -timeout 180s ./...
+	CGO_ENABLED=0 go test -count=1 -timeout 600s ./...
 
 test-race:
 	CGO_ENABLED=1 go test -race -count=1 -timeout 600s ./...

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1139,6 +1140,82 @@ func TestAppsPinDefaultServices(t *testing.T) {
 	// Resolution honors the pin: svc1 routes to the canonical app, not the imposter.
 	if r := app_for_service(nil, "svc1"); r == nil || r.id != canonical {
 		t.Errorf("app_for_service(svc1) = %v, want canonical %q", r, canonical)
+	}
+}
+
+// A development app that fails to load - a core too old for it, as a plain
+// build without its version is - is still the app under development, and its
+// services must not be pinned to a published copy: the binding is kept, and
+// routed every later call of those services to the copy after the core was
+// fixed.
+func TestAppsPinSkipsADevelopmentAppThatFailedToLoad(t *testing.T) {
+	create_test_routing_env(t)
+	saved_directory, saved_failed := dev_apps_dir, apps_dev_failed
+	t.Cleanup(func() { dev_apps_dir, apps_dev_failed = saved_directory, saved_failed })
+	dev_apps_dir, apps_dev_failed = t.TempDir(), nil
+	base := filepath.Join(dev_apps_dir, "late")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"version": "1.0", "services": ["svclate"], "require": {"version": {"minimum": "999.0"}}}`
+	if err := os.WriteFile(filepath.Join(base, "app.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	apps_load_dev()
+	if _, loaded := apps["late"]; loaded {
+		t.Fatal("the development app loaded; the test needs one that fails to")
+	}
+
+	published := "p" + strings.Repeat("a", 49)
+	av := &AppVersion{Version: "1.0", Services: []string{"svclate", "svcother"}}
+	apps[published] = &App{id: published, versions: map[string]*AppVersion{"1.0": av}, latest: av}
+	apps_pin_default_services([]DefaultApp{{ID: published}})
+
+	if got := apps_service_get("svclate"); got != "" {
+		t.Errorf("a failed development app's service was pinned to %q", got)
+	}
+	if got := apps_service_get("svcother"); got != published {
+		t.Errorf("a service no development app declares = %q, want it pinned to %q", got, published)
+	}
+}
+
+// A development app whose app.json cannot be read says nothing of its
+// services, so nothing is pinned until a pass finds it readable.
+func TestAppsPinNothingWhileADevelopmentManifestIsUnreadable(t *testing.T) {
+	create_test_routing_env(t)
+	saved_directory, saved_failed := dev_apps_dir, apps_dev_failed
+	t.Cleanup(func() { dev_apps_dir, apps_dev_failed = saved_directory, saved_failed })
+	dev_apps_dir, apps_dev_failed = t.TempDir(), nil
+	base := filepath.Join(dev_apps_dir, "broken")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "app.json"), []byte(`{"version": "1.0", "services": ["svcbroken"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	apps_load_dev()
+
+	published := "p" + strings.Repeat("b", 49)
+	av := &AppVersion{Version: "1.0", Services: []string{"svcbroken", "svcother"}}
+	apps[published] = &App{id: published, versions: map[string]*AppVersion{"1.0": av}, latest: av}
+	apps_pin_default_services([]DefaultApp{{ID: published}})
+
+	for _, service := range []string{"svcbroken", "svcother"} {
+		if got := apps_service_get(service); got != "" {
+			t.Errorf("%s was pinned to %q while a development manifest could not be read", service, got)
+		}
+	}
+
+	// Repaired, though still failing to load: the next pass takes its word.
+	if err := os.WriteFile(filepath.Join(base, "app.json"), []byte(`{"version": "1.0", "services": ["svcbroken"], "require": {"version": {"minimum": "999.0"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	apps_pin_default_services([]DefaultApp{{ID: published}})
+	if got := apps_service_get("svcbroken"); got != "" {
+		t.Errorf("the repaired development app's service was pinned to %q", got)
+	}
+	if got := apps_service_get("svcother"); got != published {
+		t.Errorf("once the manifest can be read, svcother = %q, want it pinned to %q", got, published)
 	}
 }
 
@@ -2591,5 +2668,186 @@ func TestCleanupKeepsThePublishersVersions(t *testing.T) {
 	}
 	if _, kept := a.versions["2.4"]; !kept {
 		t.Error("THE POINT: the version the publisher's production track names was removed, so the next daily check downloads it again")
+	}
+}
+
+// development_version is an app version on a development server, its source
+// in one file whose path it answers, written a minute ago so it has settled.
+func development_version(t *testing.T, source string) (*AppVersion, string) {
+	t.Helper()
+	saved := dev_reload
+	t.Cleanup(func() { dev_reload = saved })
+	dev_reload = true
+	path := starlark_file(t, t.TempDir(), "app.star", source)
+	development_touch(t, path, time.Now().Add(-time.Minute))
+	return &AppVersion{Version: "1.0", Execute: []string{path}}, path
+}
+
+// development_value is a module-level integer as a fresh interpreter sees it.
+func development_value(t *testing.T, av *AppVersion, name string) int {
+	t.Helper()
+	value, ok := av.starlark().globals[name].(sl.Int)
+	if !ok {
+		t.Fatalf("%s is not an integer in the globals", name)
+	}
+	number, _ := value.Int64()
+	return int(number)
+}
+
+// development_kept reports whether a compile is kept for the version's files
+// as they are now.
+func development_kept(av *AppVersion) bool {
+	kept := av.starlark_compiled.Load()
+	sources, complete := starlark_sources(av.Execute)
+	return kept != nil && complete && slices.Equal(kept.files, sources)
+}
+
+// development_touch sets a file's modification time, so a test can move it on
+// or put it back.
+func development_touch(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("setting the time of %s: %v", path, err)
+	}
+}
+
+// A development server compiled an app's whole Starlark for every action,
+// event and hook: 15-30 ms under every dev-instance timing.
+func TestDevelopmentKeepsTheCompileWhileTheFilesAreUnchanged(t *testing.T) {
+	av, _ := development_version(t, "VALUE = 1\n\ndef f():\n    return VALUE\n")
+	first, second := av.starlark(), av.starlark()
+	if first.globals["f"] == nil || first.globals["f"] != second.globals["f"] {
+		t.Error("an unchanged app was compiled again: the second interpreter's f is not the first's")
+	}
+	if first.thread == second.thread {
+		t.Error("two interpreters share one thread")
+	}
+}
+
+func TestDevelopmentCompilesAgainWhenAFileChanges(t *testing.T) {
+	av, path := development_version(t, "VALUE = 1\n")
+	if development_value(t, av, "VALUE") != 1 {
+		t.Fatal("the first compile did not read the file")
+	}
+	stat, _ := os.Stat(path)
+	// The same size: only the time says it changed.
+	if err := os.WriteFile(path, []byte("VALUE = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	development_touch(t, path, stat.ModTime().Add(time.Second))
+	if development_value(t, av, "VALUE") != 2 {
+		t.Error("an edit of the same size, with a new time, was not compiled")
+	}
+	// The time put back: only the size says it changed.
+	stat, _ = os.Stat(path)
+	if err := os.WriteFile(path, []byte("VALUE = 30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	development_touch(t, path, stat.ModTime())
+	if development_value(t, av, "VALUE") != 30 {
+		t.Error("an edit of another size, with the old time, was not compiled")
+	}
+}
+
+// An app's lib/ holds symlinks to the shared library, which is edited where it
+// lives.
+func TestDevelopmentFollowsALinkToTheSharedLibrary(t *testing.T) {
+	av, path := development_version(t, "VALUE = 1\n")
+	shared := starlark_file(t, t.TempDir(), "attachments.star", "SHARED = 1\n")
+	development_touch(t, shared, time.Now().Add(-time.Minute))
+	link := filepath.Join(filepath.Dir(path), "attachments.star")
+	if err := os.Symlink(shared, link); err != nil {
+		t.Fatal(err)
+	}
+	av.Execute = []string{link, path}
+	if development_value(t, av, "SHARED") != 1 {
+		t.Fatal("the library was not compiled")
+	}
+	// The link itself is new; the file it names has settled.
+	first, second := av.starlark(), av.starlark()
+	if first.globals["VALUE"] == nil || first.globals["SHARED"] == nil {
+		t.Fatal("the globals lack a file's definitions")
+	}
+	if first.thread == second.thread {
+		t.Fatal("two interpreters share a thread")
+	}
+	if !development_kept(av) {
+		t.Error("an app reaching a settled library through a new link was not kept: the link was looked at, not the file it names")
+	}
+	stat, _ := os.Stat(shared)
+	if err := os.WriteFile(shared, []byte("SHARED = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	development_touch(t, shared, stat.ModTime().Add(time.Second))
+	if development_value(t, av, "SHARED") != 2 {
+		t.Error("an edit of the linked library was not compiled")
+	}
+}
+
+// The harness patches an app file and puts it back within a millisecond, and
+// the kernel's coarse clock can give both writes one time: a file written the
+// same size within one tick reads as unchanged by its size and time alone.
+func TestDevelopmentKeepsNoCompileOfAFileStillBeingWritten(t *testing.T) {
+	av, path := development_version(t, "VALUE = 1\n")
+	when := time.Now()
+	development_touch(t, path, when)
+	if development_value(t, av, "VALUE") != 1 {
+		t.Fatal("the first compile did not read the file")
+	}
+	if err := os.WriteFile(path, []byte("VALUE = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	development_touch(t, path, when)
+	if development_value(t, av, "VALUE") != 2 {
+		t.Error("a write the same size in the same clock tick was missed: the compile of a file still being written was kept")
+	}
+}
+
+// app.json's execute list is reloaded on its own; a file added to it is read.
+func TestDevelopmentCompilesAgainWhenTheFileListChanges(t *testing.T) {
+	av, path := development_version(t, "VALUE = 1\n")
+	av.starlark()
+	added := starlark_file(t, filepath.Dir(path), "more.star", "MORE = 1\n")
+	av.Execute = []string{path, added}
+	if development_value(t, av, "MORE") != 1 {
+		t.Error("a file added to the execute list was not compiled")
+	}
+}
+
+// A file that fails keeps failing visibly: a missing one is compiled, and its
+// error logged, on every call until it is back; one that does not load is
+// remembered as failed with the globals it left.
+func TestDevelopmentKeepsNoCompileOfAMissingFile(t *testing.T) {
+	log_tables_reset(t)
+	defer log_tables_reset(t)
+	capture := log_captured(t)
+	av, path := development_version(t, "VALUE = 1\n")
+	missing := filepath.Join(filepath.Dir(path), "missing.star")
+	av.Execute = []string{path, missing}
+	av.starlark()
+	av.starlark()
+	reported := 0
+	for _, line := range capture.lines {
+		if strings.Contains(line, "missing.star") {
+			reported++
+		}
+	}
+	if reported != 2 {
+		t.Errorf("a missing file was reported %d times over two calls, want 2", reported)
+	}
+	starlark_file(t, filepath.Dir(path), "missing.star", "BACK = 1\n")
+	if development_value(t, av, "BACK") != 1 {
+		t.Error("the file put back was not compiled")
+	}
+}
+
+func TestDevelopmentKeepsAFailedFileNamed(t *testing.T) {
+	log_tables_reset(t)
+	defer log_tables_reset(t)
+	log_captured(t)
+	av, _ := development_version(t, "VALUE = undefined_name_here\n")
+	av.starlark()
+	if failed := av.starlark().failed; len(failed) != 1 || failed[0] != "app.star" {
+		t.Errorf("the kept interpreter names %v as failed, want [app.star]", failed)
 	}
 }

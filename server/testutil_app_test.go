@@ -8,6 +8,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,11 +109,56 @@ func test_bare_directory(t testing.TB) string {
 	storage_figures.Clear()
 	// A presence change goes out after the request that made it, and must
 	// not outlive the databases it reads.
+	directory := data_dir
 	t.Cleanup(func() {
 		presence_settle()
+		// A worker sending a destination's queue holds the networks database
+		// it started with until the queue is empty, and one backing off from
+		// a remote the test has closed would wake in a later test on a
+		// database closed below.
+		if test_federation_workers() > 0 {
+			federation_workers_drain()
+		}
+		// A worker still running holds databases it opened, and its next
+		// write to a closed one would panic the whole binary: such a test's
+		// databases are left open, as every test's were before.
+		if test_federation_workers() == 0 && delivery_live.Load() == 0 {
+			test_databases_close(directory)
+		}
 		data_dir = previous
 	})
 	return data_dir
+}
+
+// test_federation_workers counts the destinations with a worker running.
+func test_federation_workers() int {
+	federation_workers_lock.Lock()
+	defer federation_workers_lock.Unlock()
+	return len(federation_workers)
+}
+
+// test_databases_close closes every handle open on a database under
+// directory, as db_evict closes an idle one. The process-wide cache keeps a
+// handle until db_manager evicts it, which no test runs, so each test's
+// databases outlived it, two connection pools each on files t.TempDir had
+// already removed: the suite held over 17,000 of them and 4 GB by its middle.
+// Runs before the directory is removed and before data_dir is put back.
+func test_databases_close(directory string) {
+	prefix := directory + string(os.PathSeparator)
+	var closing []*DB
+	databases_lock.Lock()
+	for key, db := range databases {
+		if strings.HasPrefix(db.path, prefix) {
+			closing = append(closing, db)
+			delete(databases, key)
+		}
+	}
+	databases_lock.Unlock()
+	for _, db := range closing {
+		db.stmts_close()
+		db.internal.Close()
+		db.starlark.Close()
+	}
 }
 
 // test_network_databases lays the server-wide databases whose openers lay
@@ -214,4 +261,79 @@ func setup_directory_test_schema() *DB {
 		message text not null default '', expires text not null default '',
 		signature text not null default '', primary key (entity, peer))`)
 	return directory
+}
+
+// A test's databases close with it: the process-wide cache kept every one, two
+// connection pools each on a removed file, and the suite needed 14 GB.
+func TestATestsDatabasesCloseWithIt(t *testing.T) {
+	var directory string
+	t.Run("opens", func(t *testing.T) {
+		directory = test_data_directory(t)
+		db_open("db/thing.db").exec("create table things (name text)")
+		networks_database().exec("select 1")
+	})
+	databases_lock.Lock()
+	defer databases_lock.Unlock()
+	for _, db := range databases {
+		if strings.HasPrefix(db.path, directory+string(os.PathSeparator)) {
+			t.Errorf("%s is still open after its test ended", db.path)
+		}
+	}
+}
+
+// A destination's worker waiting out its backoff holds the networks database
+// it started with; it must end with its test, or it wakes in a later one on a
+// database the first test's end has closed.
+func TestAFederationWorkerEndsWithItsTest(t *testing.T) {
+	t.Run("sends", func(t *testing.T) {
+		test_data_directory(t)
+		db := networks_database()
+		db.exec("insert into destinations (name, failures, retry) values ('later.example', 1, ?)", now()+3600)
+		db.exec("insert into outbox (destination, origin, kind, body, created) values ('later.example', 'here.example', 'pdu', '{}', ?)", now())
+		federation_worker_start("later.example")
+	})
+	federation_workers_lock.Lock()
+	running := len(federation_workers)
+	federation_workers_lock.Unlock()
+	if running != 0 {
+		t.Errorf("%d federation worker(s) outlived their test", running)
+	}
+}
+
+// Only the ending test's databases close: an enclosing test's stay usable.
+func TestAnEnclosingTestsDatabasesStayOpen(t *testing.T) {
+	test_data_directory(t)
+	outer := db_open("db/outer.db")
+	outer.exec("create table kept (name text)")
+	t.Run("inner", func(t *testing.T) {
+		test_data_directory(t)
+		db_open("db/inner.db").exec("create table gone (name text)")
+	})
+	if exists, err := outer.exists("select name from sqlite_master where name='kept'"); err != nil || !exists {
+		t.Errorf("the enclosing test's database was closed by its subtest's end: %v", err)
+	}
+}
+
+// A delivery worker still running when its test ends holds databases it
+// opened; closing them under it would panic the binary on its next write.
+func TestAStillRunningWorkersDatabasesStayOpen(t *testing.T) {
+	var directory string
+	delivery_live.Add(1)
+	t.Run("delivers", func(t *testing.T) {
+		directory = test_data_directory(t)
+		db_open("db/thing.db").exec("create table things (name text)")
+	})
+	delivery_live.Add(-1)
+	open := false
+	databases_lock.Lock()
+	for _, db := range databases {
+		if strings.HasPrefix(db.path, directory+string(os.PathSeparator)) {
+			open = true
+		}
+	}
+	databases_lock.Unlock()
+	if !open {
+		t.Error("a running worker's databases were closed under it")
+	}
+	test_databases_close(directory)
 }

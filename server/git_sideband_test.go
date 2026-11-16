@@ -15,14 +15,20 @@ import (
 	"bytes"
 	"io"
 	"math/rand"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband"
 )
 
@@ -249,5 +255,252 @@ func TestGitBytes(t *testing.T) {
 		if got := git_bytes(c.bytes); got != c.want {
 			t.Errorf("git_bytes(%d) = %q, want %q", c.bytes, got, c.want)
 		}
+	}
+}
+
+// git_zero is an endless pack of zeros.
+type git_zero struct{}
+
+func (git_zero) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+// git_band_serve serves handler at /pack with git_idle a second. The server's
+// connections send through a small buffer, so a client that stops reading stops
+// the server's writes within kilobytes rather than the megabytes loopback
+// buffers otherwise absorb.
+func git_band_serve(t *testing.T, handler gin.HandlerFunc) *httptest.Server {
+	t.Helper()
+	original := git_idle
+	git_idle = time.Second
+	t.Cleanup(func() { git_idle = original })
+
+	engine := gin.New()
+	engine.GET("/pack", handler)
+	server := httptest.NewUnstartedServer(engine)
+	server.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if tcp, ok := conn.(*net.TCPConn); ok && state == http.StateNew {
+			tcp.SetWriteBuffer(32 << 10)
+		}
+	}
+	server.Start()
+	// Close waits for running handlers, so the connections go first: a handler
+	// still blocked writing is what a failing test leaves behind.
+	t.Cleanup(server.Close)
+	t.Cleanup(server.CloseClientConnections)
+	return server
+}
+
+// git_band_server serves a pack of size bytes through git_band_open, with or
+// without a side band, and reports how its send ended.
+func git_band_server(t *testing.T, size int64, multiplexed bool) (*httptest.Server, <-chan error) {
+	t.Helper()
+	result := make(chan error, 1)
+	server := git_band_serve(t, func(c *gin.Context) {
+		capabilities := capability.NewList()
+		if multiplexed {
+			capabilities.Set(capability.Sideband64k)
+		}
+		band := git_band_open(c.Writer, capabilities)
+		_, err := band.send(io.LimitReader(git_zero{}, size))
+		band.close()
+		result <- err
+	})
+	return server, result
+}
+
+// git_band_request asks server for its pack over a connection of its own that
+// receives through a small buffer, and returns the connection unread.
+func git_band_request(t *testing.T, server *httptest.Server) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.(*net.TCPConn).SetReadBuffer(32 << 10)
+	if _, err := conn.Write([]byte("GET /pack HTTP/1.1\r\nHost: test\r\n\r\n")); err != nil {
+		t.Fatalf("sending the request: %v", err)
+	}
+	return conn
+}
+
+// TestGitBandGivesUpOnAClientThatStopsReading: the listener has no
+// WriteTimeout, so a fetching client that stayed connected and read nothing
+// held the request's goroutine and repository for as long as it liked. Each
+// write now waits git_idle, with a side band and without.
+func TestGitBandGivesUpOnAClientThatStopsReading(t *testing.T) {
+	for name, multiplexed := range map[string]bool{"side band": true, "raw pack": false} {
+		t.Run(name, func(t *testing.T) {
+			server, result := git_band_server(t, 64<<20, multiplexed)
+			git_band_request(t, server)
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Error("a 64 MB pack reached a client that read none of it")
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("upload-pack is still writing 15s after a 1s git_idle to a client that stopped reading")
+			}
+		})
+	}
+}
+
+// TestGitBandKeepsGoingWhileTheClientReads guards the bound's shape: per write,
+// so a slow clone that keeps reading is never cut, however long the pack takes.
+// 16 MB through 32 KB buffers read every 10ms takes a few seconds against the
+// 1s git_idle.
+func TestGitBandKeepsGoingWhileTheClientReads(t *testing.T) {
+	server, result := git_band_server(t, 16<<20, true)
+	conn := git_band_request(t, server)
+	go func() {
+		buffer := make([]byte, 64<<10)
+		for {
+			time.Sleep(10 * time.Millisecond)
+			if _, err := conn.Read(buffer); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("a pack to a slow client that kept reading failed: %v; git_idle must bound each write, not the pack", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the pack had not finished 30s after it started")
+	}
+}
+
+// git_pausing is a pack that pauses after its first piece, as the encoder does
+// while it deltifies the next objects.
+type git_pausing struct {
+	sent  int
+	pause time.Duration
+}
+
+func (g *git_pausing) Read(p []byte) (int, error) {
+	if g.sent >= 2 {
+		return 0, io.EOF
+	}
+	if g.sent == 1 {
+		time.Sleep(g.pause)
+	}
+	g.sent++
+	n := min(len(p), 32<<10)
+	clear(p[:n])
+	return n, nil
+}
+
+// TestGitBandWaitsWhileThePackIsChosen: over HTTP/2 a write deadline left set
+// resets the stream when it passes, written to or not. The band reports
+// "Enumerating objects" before the server spends as long as it needs choosing
+// the objects, and the encoder can take as long again between pieces of the
+// pack, so a clone whose selection or deltification took longer than git_idle
+// was cut. The deadline now spans each write and flush only.
+func TestGitBandWaitsWhileThePackIsChosen(t *testing.T) {
+	original := git_idle
+	git_idle = time.Second
+	t.Cleanup(func() { git_idle = original })
+
+	result := make(chan error, 1)
+	engine := gin.New()
+	engine.GET("/pack", func(c *gin.Context) {
+		capabilities := capability.NewList()
+		capabilities.Set(capability.Sideband64k)
+		band := git_band_open(c.Writer, capabilities)
+		band.message("Enumerating objects: 1, done.\n")
+		time.Sleep(1500 * time.Millisecond)
+		_, err := band.send(&git_pausing{pause: 1500 * time.Millisecond})
+		band.close()
+		result <- err
+	})
+	server := httptest.NewUnstartedServer(engine)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	t.Cleanup(server.CloseClientConnections)
+
+	response, err := server.Client().Get(server.URL + "/pack")
+	if err != nil {
+		t.Fatalf("fetching the pack: %v", err)
+	}
+	defer response.Body.Close()
+	if response.ProtoMajor != 2 {
+		t.Fatalf("the pack came over HTTP/%d.%d; the test needs HTTP/2", response.ProtoMajor, response.ProtoMinor)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Errorf("reading a pack whose objects took longer than git_idle to choose failed after %d bytes: %v", len(body), err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Errorf("the band's send failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler had not finished 10s after the pack was asked for")
+	}
+}
+
+// TestGitBandFlushGivesUpOnAClientThatStopsReading: a progress line goes into
+// the response's buffer and reaches the connection on the flush, so it is the
+// flush that waits on a client that stopped reading. With the deadline lifted
+// after each write, the flush needs its own.
+func TestGitBandFlushGivesUpOnAClientThatStopsReading(t *testing.T) {
+	done := make(chan struct{})
+	server := git_band_serve(t, func(c *gin.Context) {
+		capabilities := capability.NewList()
+		capabilities.Set(capability.Sideband64k)
+		band := git_band_open(c.Writer, capabilities)
+		for i := 0; i < 100000; i++ {
+			band.message("Counting objects: %d\r", i)
+		}
+		close(done)
+	})
+	git_band_request(t, server)
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("progress lines are still being flushed 15s after a 1s git_idle to a client that stopped reading")
+	}
+}
+
+// git_deadline_recorder is a response that records the write deadline it was
+// last given.
+type git_deadline_recorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+func (r *git_deadline_recorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadline = deadline
+	return nil
+}
+
+// TestGitBandLeavesTheEndBounded: net/http writes the last of a response - the
+// buffered tail, the chunked terminator, the final DATA frame - after the
+// handler returns, so a deadline lifted after the band's last write left that
+// tail waiting on a client that stopped reading for as long as it liked.
+func TestGitBandLeavesTheEndBounded(t *testing.T) {
+	for name, multiplexed := range map[string]bool{"side band": true, "raw pack": false} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &git_deadline_recorder{ResponseRecorder: httptest.NewRecorder()}
+			c, _ := gin.CreateTestContext(recorder)
+			capabilities := capability.NewList()
+			if multiplexed {
+				capabilities.Set(capability.Sideband64k)
+			}
+			band := git_band_open(c.Writer, capabilities)
+			if _, err := band.send(io.LimitReader(git_zero{}, 64<<10)); err != nil {
+				t.Fatalf("sending the pack: %v", err)
+			}
+			band.close()
+			if !recorder.deadline.After(time.Now()) {
+				t.Errorf("the response ends with write deadline %v; the tail net/http writes after the handler has none", recorder.deadline)
+			}
+		})
 	}
 }

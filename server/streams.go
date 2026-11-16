@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -69,29 +70,119 @@ type Stream struct {
 // can be told apart from a failure reading the source. io.Copy returns one
 // error for both sides, so a vanished peer and an unreadable file are the same
 // value to its caller; only this wrapper's own Write can record the remote's.
+//
+// With idle set, each piece (stream_piece) waits at most that long for the far
+// end to take it, the pieces cut here because one Write may carry a whole
+// upload, which one deadline would cut off while it was still moving.
 type stream_destination struct {
 	writer io.Writer
+	idle   time.Duration
 	failed error
 }
 
+// stream_piece is how much of a write waits under one deadline.
+const stream_piece = 32 << 10
+
 func (d *stream_destination) Write(p []byte) (int, error) {
-	n, err := d.writer.Write(p)
-	if err != nil {
-		d.failed = err
+	deadline, _ := d.writer.(interface{ SetWriteDeadline(time.Time) error })
+	if d.idle <= 0 || deadline == nil {
+		n, err := d.writer.Write(p)
+		if err != nil {
+			d.failed = err
+		}
+		return n, err
 	}
-	return n, err
+	written := 0
+	for written < len(p) {
+		_ = deadline.SetWriteDeadline(time.Now().Add(d.idle))
+		n, err := d.writer.Write(p[written:min(written+stream_piece, len(p))])
+		written += n
+		if err != nil {
+			d.failed = err
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 // send copies source to the remote, marking the stream abandoned if it was the
 // remote that gave out. The error is returned unchanged either way: whether the
 // transfer failed is the caller's business, and which end failed is the log's.
-func (s *Stream) send(source io.Reader) (int64, error) {
-	destination := &stream_destination{writer: s.writer}
+//
+// A transfer that fails, at either end, resets the stream: the closing write
+// its caller defers would otherwise end the body cleanly, and the far end would
+// take what had arrived for the whole of it.
+//
+// A body served to a requester is sent with idle zero, no write deadline: a
+// peer's stream gives the sender credit only after its reader has drained a
+// large share of the window - half of up to 16 MB on yamux, a quarter of up to
+// 10 MB on QUIC - so a deadline on each write times the gaps between credits,
+// not whether the reader has stopped, and cuts off a relay feeding a slow
+// browser that is still reading. The call bounds the transfer instead
+// (stream_bound). An upload is sent with idle (write_raw).
+func (s *Stream) send(source io.Reader, idle time.Duration) (int64, error) {
+	if s == nil || s.writer == nil {
+		return 0, fmt.Errorf("stream not open for writing")
+	}
+	destination := &stream_destination{writer: s.writer, idle: idle}
+	if idle > 0 {
+		defer stream_deadline_clear(s.writer)
+	}
 	n, err := io.Copy(destination, source)
-	if err != nil && destination.failed != nil {
-		s.abandoned = true
+	if err != nil {
+		if destination.failed != nil {
+			s.abandoned = true
+		}
+		s.reset()
 	}
 	return n, err
+}
+
+// stream_deadline_clear lifts a write deadline, so it does not linger to cut a
+// later write that sets none of its own.
+func stream_deadline_clear(writer io.Writer) {
+	if w, ok := writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = w.SetWriteDeadline(time.Time{})
+	}
+}
+
+// error_stream_reset is what the far end of a self-loop reads from a stream
+// reset part way.
+var error_stream_reset = errors.New("stream reset")
+
+// reset ends the stream so the far end reads an error rather than the end of
+// the body. Safe while another goroutine is blocked writing to it, which it
+// unblocks.
+func (s *Stream) reset() {
+	if s != nil && s.writer != nil {
+		stream_reset(s.writer)
+	}
+}
+
+// stream_reset resets a peer's stream (libp2p Reset), closes the self-loop's
+// pipe with an error, and closes anything else.
+func stream_reset(writer io.Writer) {
+	switch w := writer.(type) {
+	case *stream_writer:
+		stream_reset(w.inner)
+	case interface{ Reset() error }:
+		_ = w.Reset()
+	case interface{ CloseWithError(error) error }:
+		_ = w.CloseWithError(error_stream_reset)
+	case io.Closer:
+		_ = w.Close()
+	}
+}
+
+// stream_bound ties a builtin's bulk transfer to its call. The transfer takes
+// the transfer bound, since it is moving bytes rather than computing, and at the
+// call's time limit the stream is reset under it: a write blocked on a peer
+// that stopped reading ignores the thread's cancellation, so without the reset
+// the call is abandoned still blocked, and mailed to the operator as a failure.
+// The caller defers the returned stop.
+func stream_bound(t *sl.Thread, s *Stream) func() bool {
+	starlark_transfer_set(t)
+	return context.AfterFunc(starlark_context(t), s.reset)
 }
 
 var (
@@ -260,10 +351,10 @@ func (s *Stream) close() {
 }
 
 // idle bounds the wait for a raw read of a stream's body, as read_within bounds
-// a segment's: a relay reads the body in many pieces, and each may wait the
-// stream's read timeout for its bytes, no longer. Without it a relay whose far
-// end stalls holds its goroutine for as long as the far end keeps the stream
-// open, past the call that started it.
+// a segment's: a body is read in many pieces, and each may wait the stream's
+// read timeout for its bytes, no longer. Without it a reader whose far end
+// stalls holds its goroutine for as long as the far end keeps the stream open,
+// past the call that started it. raw_reader applies it to every read.
 func (s *Stream) idle() {
 	if s == nil || s.reader == nil {
 		return
@@ -352,14 +443,30 @@ func (s *Stream) read_content() (map[string]any, error) {
 	return content, nil
 }
 
-// Get a reader for raw data after CBOR reads (includes any buffered data from decoder)
+// Get a reader for raw data after CBOR reads (includes any buffered data from
+// decoder). Every read through it waits the stream's read timeout for its
+// bytes, no longer (idle), so no caller can forget to: a far end that stalls
+// part way through a body ends the read rather than holding its caller for as
+// long as it keeps the stream open, and one that keeps sending at any speed is
+// never cut off.
 func (s *Stream) raw_reader() io.Reader {
-	if s.decoder == nil {
-		return s.reader
+	var reader io.Reader = s.reader
+	if s.decoder != nil {
+		// Decoder's Buffered() returns any data read but not yet decoded
+		reader = io.MultiReader(s.decoder.Buffered(), s.reader)
 	}
-	// Decoder's Buffered() returns any data read but not yet decoded
-	buffered := s.decoder.Buffered()
-	return io.MultiReader(buffered, s.reader)
+	return &stream_idle_reader{stream: s, reader: reader}
+}
+
+// stream_idle_reader bounds each read of a stream's raw body (raw_reader).
+type stream_idle_reader struct {
+	stream *Stream
+	reader io.Reader
+}
+
+func (r *stream_idle_reader) Read(p []byte) (int, error) {
+	r.stream.idle()
+	return r.reader.Read(p)
 }
 
 // Write a CBOR encoded segment to a stream
@@ -403,7 +510,7 @@ func (s *Stream) write_file(path string) (int64, error) {
 	}
 	defer f.Close()
 
-	n, err := s.send(f)
+	n, err := s.send(f, 0)
 	if err != nil {
 		return 0, fmt.Errorf("stream error sending file segment: %v", err)
 	}
@@ -411,7 +518,14 @@ func (s *Stream) write_file(path string) (int64, error) {
 	return n, nil
 }
 
-// Write a raw, unencoded or pre-encoded, segment
+// Write a raw, unencoded or pre-encoded, segment. It goes as a transfer,
+// through send: data may be a whole upload (market's comptroller_upload sends a
+// digital asset in one write.raw), which one write deadline cut off while it was
+// still moving. Each piece waits at most the stream's write timeout. An upload's
+// receiver writes it to storage, handing credit back as fast as bytes arrive,
+// so a piece that waits that long means the receiver has stopped - as one that
+// answers before reading does: over yamux its close drops the rest unread
+// without telling the sender, who would otherwise wait out the whole call.
 func (s *Stream) write_raw(data []byte) error {
 	if s == nil || s.writer == nil {
 		return fmt.Errorf("stream not open for writing")
@@ -422,22 +536,9 @@ func (s *Stream) write_raw(data []byte) error {
 	if timeout <= 0 {
 		timeout = 30
 	}
-
-	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	if w, ok := s.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		_ = w.SetWriteDeadline(deadline)
-		defer w.SetWriteDeadline(time.Time{})
+	if _, err := s.send(bytes.NewReader(data), time.Duration(timeout)*time.Second); err != nil {
+		return fmt.Errorf("stream error writing raw segment: %w", err)
 	}
-
-	_, err := s.writer.Write(data)
-	if err != nil {
-		// The bytes are already in hand, so the remote is the only thing that
-		// can fail here.
-		s.abandoned = true
-		return fmt.Errorf("stream error writing raw segment: %v", err)
-	}
-
-	// debug("Stream %d wrote raw segment", s.id)
 	return nil
 }
 
@@ -654,6 +755,15 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		remaining = int64(maximum) + 1
 	}
 	limited := io.LimitReader(reader, remaining)
+
+	// From here the call is moving bytes, not computing: the transfer bound,
+	// as for write.file, so a large upload that is still arriving is not cut at
+	// the compute bound. And the copy ends with its call - given up on at the
+	// time limit, its stream is closed under it, as mochi.cache.write's is -
+	// since a sender trickling bytes renews each read's deadline for ever.
+	starlark_transfer_set(t)
+	stop := context.AfterFunc(starlark_context(t), s.close)
+	defer stop()
 	n, err := io.Copy(&storage_meter{writer: f, owner: user.UID}, limited)
 	f.Close()
 
@@ -697,6 +807,8 @@ func (s *Stream) sl_write_raw(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "data must be bytes")
 	}
 
+	stop := stream_bound(t, s) // bulk bytes, not computation - see sl_write_file
+	defer stop()
 	err := s.write_raw([]byte(data))
 	if err != nil {
 		return sl_error(fn, err)
@@ -764,10 +876,12 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 
 	// From here the call is only moving bytes, so it takes the transfer bound, not
 	// the compute one: a slow peer would otherwise hit the 90-second timeout
-	// inside io.Copy, which ignores cancellation.
-	starlark_transfer_set(t)
+	// inside io.Copy, which ignores cancellation. And it ends with its call
+	// (stream_bound).
+	stop := stream_bound(t, s)
+	defer stop()
 
-	n, err := s.send(f)
+	n, err := s.send(f, 0)
 	if err != nil {
 		// The cause is carried, not flattened: a peer that went away and a
 		// disk that would not read reported the same fixed string, so the
@@ -799,9 +913,10 @@ func (s *Stream) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 	defer f.Close()
 
-	starlark_transfer_set(t) // bulk bytes, not computation - see sl_write_file
+	stop := stream_bound(t, s) // bulk bytes, not computation - see sl_write_file
+	defer stop()
 
-	n, err := s.send(f)
+	n, err := s.send(f, 0)
 	if err != nil {
 		return sl_error(fn, "unable to send cache entry: %v", err)
 	}
@@ -832,7 +947,8 @@ func (s *Stream) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "file not found")
 	}
 
-	starlark_transfer_set(t) // bulk bytes, not computation - see sl_write_file
+	stop := stream_bound(t, s) // bulk bytes, not computation - see sl_write_file
+	defer stop()
 
 	n, err := s.write_file(file)
 	if err != nil {

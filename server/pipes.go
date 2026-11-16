@@ -94,8 +94,13 @@ func (w *pipe_writer) Write(p []byte) (int, error) {
 		err error
 	}, 1)
 
+	// The write may outlive this call, so it writes a copy: p belongs to the
+	// caller once this returns, and a segment's encoder hands its buffer back
+	// to a pool, where the next encoding would overwrite bytes still on their
+	// way to the reader.
+	data := append([]byte(nil), p...)
 	go func() {
-		n, err := w.PipeWriter.Write(p)
+		n, err := w.PipeWriter.Write(data)
 		done <- struct {
 			n   int
 			err error

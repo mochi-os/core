@@ -89,7 +89,8 @@ func writer_body(t *testing.T, name string) string {
 func TestEveryStreamWriterTakesTheTransferBudget(t *testing.T) {
 	for _, name := range stream_writers {
 		body := writer_body(t, name)
-		if !strings.Contains(body, "starlark_transfer_set(t)") {
+		// stream_bound takes the transfer bound and ends the transfer with its call.
+		if !strings.Contains(body, "stream_bound(t, s)") {
 			t.Errorf("%s does not mark its call as a transfer, so it runs on the 90s compute budget; a file large enough, or a receiver slow enough, times out inside io.Copy - which does not check for cancellation, so the call is abandoned rather than stopped", name)
 		}
 	}
@@ -101,7 +102,7 @@ func TestEveryStreamWriterTakesTheTransferBudget(t *testing.T) {
 func TestTheMarkComesAfterValidation(t *testing.T) {
 	for _, name := range stream_writers {
 		body := writer_body(t, name)
-		mark := strings.Index(body, "starlark_transfer_set(t)")
+		mark := strings.Index(body, "stream_bound(t, s)")
 		if mark < 0 {
 			continue // reported by the gate above
 		}

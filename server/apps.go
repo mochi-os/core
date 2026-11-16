@@ -1053,20 +1053,6 @@ func app_has_version(id, version string) bool {
 // app_download_locks holds a mutex per release zip being downloaded.
 var app_download_locks sync.Map
 
-// app_download_body reads a release's bytes from its stream, each read bounded
-// by the stream's read timeout: a publisher that stalls without closing held
-// the download, and every later download of the version behind its lock, for
-// as long as it kept the stream open.
-type app_download_body struct {
-	stream *Stream
-	reader io.Reader
-}
-
-func (b *app_download_body) Read(p []byte) (int, error) {
-	b.stream.idle()
-	return b.reader.Read(p)
-}
-
 // app_download_offset is how much of a release an interrupted download left at
 // partial, to ask the publisher for the rest: 0 when there is none.
 func app_download_offset(partial string) int64 {
@@ -1217,7 +1203,7 @@ func app_download_version(id, version string, peer ...string) bool {
 		return false
 	}
 
-	if !app_download_receive(zip, offset, response, &app_download_body{stream: s, reader: s.raw_reader()}) {
+	if !app_download_receive(zip, offset, response, s.raw_reader()) {
 		debug("App %q download of version %q interrupted; kept what arrived to resume from", id, version)
 		return false
 	}

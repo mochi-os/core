@@ -1321,9 +1321,7 @@ const stream_maximum_default = object_maximum
 type stream_limit_reader struct {
 	reader    io.Reader
 	remaining int64
-	// stream, when set, bounds each read's wait (Stream.idle).
-	stream   *Stream
-	exceeded bool
+	exceeded  bool
 	// client and app key the byte budgets this relay is charged against. Empty
 	// client disables metering, for relays with no HTTP caller to attribute.
 	client string
@@ -1341,7 +1339,6 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 		// "had more to give", which is the difference between a complete asset
 		// and a truncated one.
 		var probe [1]byte
-		r.stream.idle()
 		if n, _ := r.reader.Read(probe[:]); n > 0 {
 			r.exceeded = true
 		}
@@ -1355,7 +1352,6 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 		// A stream that has already ended is whole, not cut short: the read
 		// that spent the budget may have been its last.
 		var probe [1]byte
-		r.stream.idle()
 		if n, err := r.reader.Read(probe[:]); n == 0 && err == io.EOF {
 			return 0, io.EOF
 		}
@@ -1365,7 +1361,6 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 	if int64(len(p)) > r.remaining {
 		p = p[:r.remaining]
 	}
-	r.stream.idle()
 	n, err := r.reader.Read(p)
 	r.remaining -= int64(n)
 	if r.client != "" && n > 0 {
@@ -1461,7 +1456,6 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	limited := &stream_limit_reader{
 		reader:    stream.raw_reader(),
 		remaining: maximum,
-		stream:    stream,
 		client:    client,
 		app:       app_id,
 	}
@@ -1578,7 +1572,7 @@ func stream_keep(t *sl.Thread, stream *Stream, cache string, maximum, size int64
 	}
 	stop := context.AfterFunc(starlark_context(t), stream.close)
 	defer stop()
-	limited := &stream_limit_reader{reader: stream.raw_reader(), remaining: maximum, stream: stream, client: client, app: app}
+	limited := &stream_limit_reader{reader: stream.raw_reader(), remaining: maximum, client: client, app: app}
 	n, err := io.Copy(tee.file, limited)
 	tee.finish(err == nil && !limited.exceeded && !limited.spent && (size < 0 || n == size))
 }

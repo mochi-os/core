@@ -4146,6 +4146,11 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	var dest io.Writer
 	if stream != nil {
 		defer stream.close_write()
+		// A transfer to a peer, ending with its call (stream_bound) and reset
+		// below if it fails, so the far end cannot take part of an archive for
+		// the whole of it.
+		stop := stream_bound(t, stream)
+		defer stop()
 		dest = stream.writer
 	} else {
 		action, ok := t.Local("action").(*Action)
@@ -4169,6 +4174,9 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		err = git_archive_write_targz(w, tree, prefix, mtime)
 	case "tar.bz2":
 		err = git_archive_write_tarbz2(w, tree, prefix, mtime)
+	}
+	if err != nil && stream != nil {
+		stream.reset()
 	}
 	if err != nil && !is_client_disconnect(err) {
 		return sl_error(fn, "failed to write archive: %v", err)
@@ -6942,21 +6950,55 @@ func git_walk_paths(storage storer.EncodedObjectStorer, commits []plumbing.Hash,
 // multiplexed into pkt-lines across pack, progress and error channels.
 type git_band struct {
 	writer   gin.ResponseWriter
-	muxer    *sideband.Muxer // nil when the client asked for no side band
-	target   io.Writer       // the muxer when there is one, the writer when there is not
-	progress bool            // false when the client sent no-progress
+	idle     *git_idle_writer // the writer, its deadline moved on per write
+	muxer    *sideband.Muxer  // nil when the client asked for no side band
+	target   io.Writer        // the muxer when there is one, the idle writer when there is not
+	progress bool             // false when the client sent no-progress
+}
+
+// git_idle is how long one write of a pack may wait for the client to take it
+// before the connection is cut. The listener sets no WriteTimeout, which would
+// cut a large pack short, so without it a client that stays connected and reads
+// nothing holds the request's goroutine and repository for as long as it likes.
+// It is long because over HTTP/2 the client grants credit in steps - curl's
+// window is 10 MB, refilled as half of it is read - so a write can wait out a
+// whole step behind a slow reader that is still reading; at fifteen minutes only
+// one slower than about 6 KB/s is cut. A var so a test can shorten it.
+var git_idle = 15 * time.Minute
+
+// git_idle_writer bounds each write of an upload-pack response by git_idle,
+// lifting the deadline when the write returns: over HTTP/2 a deadline left set
+// resets the stream when it passes, written to or not, which would cut a clone
+// while the server is still choosing the objects for its pack.
+type git_idle_writer struct {
+	writer     io.Writer
+	controller *http.ResponseController
+}
+
+func (w *git_idle_writer) Write(p []byte) (int, error) {
+	_ = w.controller.SetWriteDeadline(time.Now().Add(git_idle))
+	defer w.controller.SetWriteDeadline(time.Time{})
+	return w.writer.Write(p)
+}
+
+// flush pushes out what the response holds buffered, bounded as a write is.
+func (w *git_idle_writer) flush(flusher http.Flusher) {
+	_ = w.controller.SetWriteDeadline(time.Now().Add(git_idle))
+	defer w.controller.SetWriteDeadline(time.Time{})
+	flusher.Flush()
 }
 
 // git_band_open picks the side band the client asked for, if any. A client only
 // asks for what git_upload_pack_advertise offered, so an old client that knows
 // only the 1000-byte form still gets one.
 func git_band_open(writer gin.ResponseWriter, capabilities *capability.List) *git_band {
-	band := &git_band{writer: writer, target: writer}
+	idle := &git_idle_writer{writer: writer, controller: http.NewResponseController(writer)}
+	band := &git_band{writer: writer, idle: idle, target: idle}
 	switch {
 	case capabilities.Supports(capability.Sideband64k):
-		band.muxer = sideband.NewMuxer(sideband.Sideband64k, writer)
+		band.muxer = sideband.NewMuxer(sideband.Sideband64k, idle)
 	case capabilities.Supports(capability.Sideband):
-		band.muxer = sideband.NewMuxer(sideband.Sideband, writer)
+		band.muxer = sideband.NewMuxer(sideband.Sideband, idle)
 	default:
 		return band
 	}
@@ -7000,7 +7042,7 @@ func (b *git_band) message(format string, a ...any) {
 		return
 	}
 	b.muxer.WriteChannel(sideband.ProgressMessage, []byte(fmt.Sprintf(format, a...)))
-	b.writer.Flush()
+	b.idle.flush(b.writer)
 }
 
 // fail sends an error the client can print. It ignores no-progress: that
@@ -7012,17 +7054,23 @@ func (b *git_band) fail(format string, a ...any) {
 		return
 	}
 	b.muxer.WriteChannel(sideband.ErrorMessage, []byte(fmt.Sprintf(format, a...)))
-	b.writer.Flush()
+	b.idle.flush(b.writer)
 }
 
 // close terminates a multiplexed response. The side band is a pkt-line stream
 // and needs its flush packet to end; a raw packfile ends at the end of the body.
+// Either way the last of the response - what the server still holds buffered,
+// the chunked terminator, the final DATA frame - goes out after the handler
+// returns, so the deadline is left set for it; net/http lifts it when the
+// response ends.
 func (b *git_band) close() {
-	if b.muxer == nil {
-		return
+	if b.muxer != nil {
+		pktline.NewEncoder(b.idle).Flush()
+		b.idle.flush(b.writer)
 	}
-	pktline.NewEncoder(b.writer).Flush()
-	b.writer.Flush()
+	if b.idle != nil {
+		_ = b.idle.controller.SetWriteDeadline(time.Now().Add(git_idle))
+	}
 }
 
 // git_bytes renders a byte count for a progress message, in the units git's own

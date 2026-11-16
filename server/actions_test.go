@@ -1180,12 +1180,13 @@ func (r *write_stream_deadlined) Close() error { return nil }
 
 // TestRelayReadsWaitTheStreamTimeout: every read of a relay's body is bounded
 // by the stream's read timeout, so a relay whose far end stalls ends rather
-// than holding its goroutine past the call that started it.
+// than holding its goroutine past the call that started it. The relay reads
+// through raw_reader, as sl_write_stream's does, which is where the bound is.
 func TestRelayReadsWaitTheStreamTimeout(t *testing.T) {
 	reader := &write_stream_deadlined{Reader: strings.NewReader("AVATAR")}
 	stream := &Stream{reader: reader}
 	stream.timeout.read = 7
-	limited := &stream_limit_reader{reader: reader, remaining: 64, stream: stream}
+	limited := &stream_limit_reader{reader: stream.raw_reader(), remaining: 64}
 	before := time.Now()
 	if _, err := io.ReadAll(limited); err != nil {
 		t.Fatalf("reading: %v", err)

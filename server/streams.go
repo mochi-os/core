@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +65,14 @@ type Stream struct {
 	abandoned     bool
 	on_close      func() // Called once when stream is closed (e.g. release semaphore)
 	on_close_once sync.Once
+	// requester marks a stream this side opened, whose far end answers; only
+	// a requester's close may reset it (abandon). answered records that the
+	// answer has begun - a segment read, or the body opened - since this side
+	// last wrote, settled that a close has made the decision. Atomic, as close
+	// can run on the goroutine a call's cancellation starts.
+	requester bool
+	answered  atomic.Bool
+	settled   atomic.Bool
 }
 
 // stream_destination wraps the remote end of a copy so that a failure there
@@ -124,6 +133,7 @@ func (s *Stream) send(source io.Reader, idle time.Duration) (int64, error) {
 	if s == nil || s.writer == nil {
 		return 0, fmt.Errorf("stream not open for writing")
 	}
+	s.answered.Store(false) // what is written now is the far end's to read (abandon)
 	destination := &stream_destination{writer: s.writer, idle: idle}
 	if idle > 0 {
 		defer stream_deadline_clear(s.writer)
@@ -325,11 +335,57 @@ func (s *Stream) close_write() {
 	}
 }
 
+// abandon resets the stream when closing it gives up on an answer the far end
+// may still be sending. Over yamux a close tells the sender nothing - it is a
+// local CloseRead, and data arriving after it is dropped unread - so a responder
+// writing a body the requester gave up on stays blocked until its call's limit;
+// a reset stops it. A reset discards whatever the far end holds unread, so only
+// a requester resets - a responder's far end holds the answer it has just
+// written - and only once the answer has begun since it last wrote, before which
+// the far end may hold its request or upload. And only while the answer has not
+// ended, so a request that has had its whole answer closes quietly. Decided once,
+// by the first close.
+func (s *Stream) abandon() {
+	if s == nil || !s.requester || s.settled.Swap(true) {
+		return
+	}
+	if s.answered.Load() && !s.ended() {
+		s.reset()
+	}
+}
+
+// stream_end_wait is how long the check for the end of an answer waits: long
+// enough for an end already on its way, not for one still to be sent.
+const stream_end_wait = 10 * time.Millisecond
+
+// ended reports whether the far end has finished sending: nothing is held
+// unread, and a read finds the end at once. What a read here takes is being
+// given up on anyway.
+func (s *Stream) ended() bool {
+	if s.reader == nil {
+		return true
+	}
+	probe := make([]byte, 1)
+	if s.decoder != nil {
+		if n, _ := s.decoder.Buffered().Read(probe); n > 0 {
+			return false
+		}
+	}
+	r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error })
+	if !ok {
+		return false
+	}
+	_ = r.SetReadDeadline(time.Now().Add(stream_end_wait))
+	n, err := s.reader.Read(probe)
+	return n == 0 && errors.Is(err, io.EOF)
+}
+
 // Close only the read direction of a stream (if supported), otherwise close entirely
 func (s *Stream) close_read() {
 	if s == nil || s.reader == nil {
 		return
 	}
+	s.abandon()
 	if cr, ok := s.reader.(interface{ CloseRead() error }); ok {
 		cr.CloseRead()
 	} else {
@@ -339,6 +395,7 @@ func (s *Stream) close_read() {
 
 // close closes both the reader and writer of the stream
 func (s *Stream) close() {
+	s.abandon()
 	if s.reader != nil {
 		s.reader.Close()
 	}
@@ -404,6 +461,7 @@ func (s *Stream) read_within(v any, limit time.Duration) error {
 		// closed without answering) apart from decode corruption.
 		return fmt.Errorf("stream %d unable to read segment: %w", s.id, err)
 	}
+	s.answered.Store(true)
 
 	// debug("Stream %d read segment: %+v", s.id, v)
 	return nil
@@ -455,6 +513,7 @@ func (s *Stream) raw_reader() io.Reader {
 		// Decoder's Buffered() returns any data read but not yet decoded
 		reader = io.MultiReader(s.decoder.Buffered(), s.reader)
 	}
+	s.answered.Store(true)
 	return &stream_idle_reader{stream: s, reader: reader}
 }
 
@@ -475,6 +534,7 @@ func (s *Stream) write(v any) error {
 		return fmt.Errorf("stream not open for writing")
 	}
 	// debug("Stream %d writing segment: %+v", s.id, v)
+	s.answered.Store(false) // what is written now is the far end's to read (abandon)
 
 	timeout := s.timeout.write
 	if timeout <= 0 {

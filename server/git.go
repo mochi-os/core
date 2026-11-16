@@ -4144,14 +4144,17 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	var dest io.Writer
+	var destination *stream_destination
 	if stream != nil {
 		defer stream.close_write()
 		// A transfer to a peer, ending with its call (stream_bound) and reset
 		// below if it fails, so the far end cannot take part of an archive for
-		// the whole of it.
+		// the whole of it. Written through a destination, as send does, so a
+		// requester that went away is told from a failure here.
 		stop := stream_bound(t, stream)
 		defer stop()
-		dest = stream.writer
+		destination = &stream_destination{writer: stream.writer}
+		dest = destination
 	} else {
 		action, ok := t.Local("action").(*Action)
 		if !ok || action == nil {
@@ -4176,6 +4179,9 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		err = git_archive_write_tarbz2(w, tree, prefix, mtime)
 	}
 	if err != nil && stream != nil {
+		if destination.failed != nil {
+			stream.abandoned = true
+		}
 		stream.reset()
 	}
 	if err != nil && !is_client_disconnect(err) {

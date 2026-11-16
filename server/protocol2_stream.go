@@ -292,6 +292,7 @@ func stream_self_loop(from, to, service, event, from_app string, services []stri
 	r2, w2 := io.Pipe()
 	far := stream_rw(&pipe_reader{PipeReader: r1}, &pipe_writer{PipeWriter: w2})
 	near := stream_rw(&pipe_reader{PipeReader: r2}, &pipe_writer{PipeWriter: w1})
+	near.requester = true
 
 	open := &Frame{
 		Type: frame_type_open, ID: uid(), From: from, To: to,
@@ -418,6 +419,7 @@ func stream_open(ctx context.Context, peer, from, to, service, event, from_app s
 
 	// Raw bytes from here on; metered before the content, which is the app's.
 	st := stream_rw(io.ReadCloser(rawstream), io.WriteCloser(rawstream))
+	st.requester = true
 	st.meter(from_app)
 
 	// The content may leave before this stream's proof only for a peer that

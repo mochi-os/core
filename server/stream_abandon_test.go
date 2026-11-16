@@ -320,8 +320,14 @@ func TestBulkWritersEndWithTheirCall(t *testing.T) {
 	}
 	// The archive writes to the stream itself rather than through send, so it
 	// resets on failure itself.
-	if !strings.Contains(function_body(t, "git.go", "func api_git_archive("), "stream.reset()") {
+	archive := function_body(t, "git.go", "func api_git_archive(")
+	if !strings.Contains(archive, "stream.reset()") {
 		t.Error("api_git_archive does not reset its stream when the archive fails, so the far end takes part of an archive for the whole of it")
+	}
+	// And it tells a requester that went away from a failure of its own, as
+	// send does, or a cancelled download mails the operator.
+	if !strings.Contains(archive, "stream.abandoned = true") {
+		t.Error("api_git_archive does not mark its stream abandoned when the requester went away, so a cancelled download is warned and mailed")
 	}
 }
 

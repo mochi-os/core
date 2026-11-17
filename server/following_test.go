@@ -135,6 +135,42 @@ func TestActivityPubInboxSigning(t *testing.T) {
 	}
 }
 
+// TestActivityPubUnmentionedReply: a public reply to an account's post that
+// does not mention the account reaches it all the same, as Mastodon sends it
+// to that account's inbox addressed only to the public and the replier's
+// followers, whether its inReplyTo is an id or an object. A reply to a post
+// on another server, or to an account's address on another domain, is for
+// nobody here.
+func TestActivityPubUnmentionedReply(t *testing.T) {
+	_, bob := create_activitypub_test_env(t)
+	reply := func(id string, answered any) map[string]any {
+		return map[string]any{"@context": activitystreams, "id": id, "type": "Create", "actor": bob.id, "to": []string{activitystreams_public}, "cc": []string{bob.id + "/followers"},
+			"object": map[string]any{"id": id + "/note", "type": "Note", "attributedTo": bob.id, "content": "<p>A reply</p>", "inReplyTo": answered, "to": []string{activitystreams_public}, "cc": []string{bob.id + "/followers"}}}
+	}
+	queued := func() int64 {
+		n, _ := networks_database().row("select count(*) as n from inbound where account='f1' and type='Create'")
+		return row_int(n, "n")
+	}
+	for i, answered := range []any{"https://example.com/~f1/p1", map[string]any{"id": "https://example.com/~f1/p2", "type": "Note"}} {
+		before := queued()
+		if w := signed_post(t, bob, "/~/inbox", reply(fmt.Sprintf("https://remote.example/creates/r%d", i), answered), nil); w.Code != http.StatusAccepted {
+			t.Fatalf("reply %d: %d %s", i, w.Code, w.Body.String())
+		}
+		if queued() != before+1 {
+			t.Errorf("reply %d to the account's post was not queued for it", i)
+		}
+	}
+	before := queued()
+	for i, answered := range []string{"https://other.example/u/eve/notes/8", "https://elsewhere.example/~f1/p3"} {
+		if w := signed_post(t, bob, "/~/inbox", reply(fmt.Sprintf("https://remote.example/creates/o%d", i), answered), nil); w.Code != http.StatusAccepted {
+			t.Fatalf("reply elsewhere %d: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	if queued() != before {
+		t.Error("a reply to a post that is not the account's was queued for it")
+	}
+}
+
 // TestActivityPubDeletes: a Delete names only the public. A reply from
 // someone the account does not follow is kept as a copy, on its author's host
 // and of a sensible length, through which the reply's Delete reaches the

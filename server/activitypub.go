@@ -1585,6 +1585,11 @@ func activitypub_targets(remote string, activity map[string]any) []*actor {
 				consider(address)
 			}
 		}
+		// A reply is for the account whose post or comment it answers,
+		// mentioned or not: Mastodon sends a public reply to that account's
+		// inbox addressed to no one but the public and the replier's
+		// followers.
+		consider(activitypub_actor_of(object["inReplyTo"]))
 	}
 	return targets
 }

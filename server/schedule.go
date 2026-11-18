@@ -487,6 +487,11 @@ func schedule_run_event(se *ScheduledEvent) {
 		debug("schedule: app %q not found for event %s", se.App, se.Event)
 		return
 	}
+	// A development app's manifest is read again, as for a web request or an
+	// event, so a raised schema is migrated before its new code queries it.
+	if dev_reload && app.latest != nil {
+		app.latest.reload()
+	}
 
 	// Get the active version for this user
 	av := app.active(user)

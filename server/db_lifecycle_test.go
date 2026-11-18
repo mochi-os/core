@@ -293,7 +293,7 @@ def database_upgrade(version):
 	// app's code. Re-reading user_version cannot show this: it is 2 whether the
 	// step retried and aborted again or was never retried at all, so ready is
 	// the only assertion that separates the two.
-	if db_ready(db) {
+	if db_ready(db, av.Database.Schema) {
 		t.Error("the handle is ready after an aborted migration; every later db_app then takes the fast path and runs the app's new-version code against the old schema until the process restarts")
 	}
 
@@ -303,7 +303,7 @@ def database_upgrade(version):
 	if v := db2.integer("pragma user_version"); v != 2 {
 		t.Fatalf("user_version = %d after retry, want 2 (a persistently aborting step never advances)", v)
 	}
-	if db_ready(db2) {
+	if db_ready(db2, av.Database.Schema) {
 		t.Error("the retry marked the handle ready even though the step aborted again")
 	}
 }

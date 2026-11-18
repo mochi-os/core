@@ -2760,6 +2760,10 @@ func (av *AppVersion) starlark() *Starlark {
 // so any later write gives it a newer time.
 const starlark_settle = time.Second
 
+// starlark_settle_maximum bounds how long a database open waits for a
+// development app's files to settle.
+const starlark_settle_maximum = 3 * starlark_settle
+
 // starlark_development answers an interpreter on a development server, where
 // an app's files are edited while it runs. The globals compiled from them are
 // kept until a file changes, as production keeps them for the process: every
@@ -2792,6 +2796,25 @@ func starlark_settled(sources []starlark_source, looked time.Time) bool {
 		}
 	}
 	return true
+}
+
+// settled reports whether a development app's manifest and Starlark files were
+// all last written at least starlark_settle ago, so a schema they declare is
+// migrated by the code that declares it.
+func (av *AppVersion) settled() bool {
+	files := append([]string{av.base + "/app.json"}, av.Execute...)
+	sources, complete := starlark_sources(files)
+	return complete && starlark_settled(sources, time.Now())
+}
+
+// settle waits until the app's files have settled, for at most
+// starlark_settle_maximum: a file dated in the future, or a manifest gone,
+// never settles, and the open then goes on as it did before the wait.
+func (av *AppVersion) settle() {
+	deadline := time.Now().Add(starlark_settle_maximum)
+	for !av.settled() && time.Now().Before(deadline) {
+		time.Sleep(starlark_settle / 10)
+	}
 }
 
 // starlark_sources answers each file's state, and false when one cannot be

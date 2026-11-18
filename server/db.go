@@ -69,10 +69,13 @@ type DB struct {
 	// lock(path).
 	retry int64
 	// ready is set once db_app has finished database_create/upgrade on this
-	// handle; the reused fast-path requires it so a concurrent opener waits rather
-	// than querying a schema that does not exist yet (#227). Guarded by
-	// databases_lock.
-	ready bool
+	// handle, and schema is the app schema it brought the file to; the reused
+	// fast-path requires both, so a concurrent opener waits rather than querying
+	// a schema that does not exist yet (#227), and a development app whose
+	// reloaded manifest raised its schema is migrated on its next open rather
+	// than at the next restart. Guarded by databases_lock.
+	ready  bool
+	schema int
 	// closed is the unix timestamp when this handle was last marked
 	// idle, or 0 while in use. Always read and written under
 	// databases_lock - same primitive that guards the cache map this
@@ -893,7 +896,17 @@ func db_app(u *User, app *App) *DB {
 		return nil
 	}
 
-	if av.Database.File == "" {
+	// The manifest's database block is read once, under the lock reload()
+	// writes it under: a development reload landing mid-open could otherwise
+	// raise the schema between the create's stamp and the ready mark, and the
+	// handle would be marked ready at a schema its file never reached. A raise
+	// after this copy leaves the handle at the lower schema, and the next open
+	// sees the difference and migrates.
+	apps_lock.Lock()
+	database := av.Database
+	apps_lock.Unlock()
+
+	if database.File == "" {
 		warn("App %q asked for database, but no database file specified", app.id)
 		return nil
 	}
@@ -908,7 +921,7 @@ func db_app(u *User, app *App) *DB {
 	// Fast path: a reused handle whose schema this process has verified. Gated on
 	// ready, not reuse alone - a concurrent opener can get the handle mid-creation
 	// (#227).
-	if reused && db_ready(db) {
+	if reused && db_ready(db, database.Schema) {
 		return db
 	}
 
@@ -919,7 +932,7 @@ func db_app(u *User, app *App) *DB {
 
 	// Re-check under the lock: the creator may have finished (or failed —
 	// in which case this opener retries the creation itself) while we waited.
-	if db_ready(db) {
+	if db_ready(db, database.Schema) {
 		return db
 	}
 
@@ -935,34 +948,45 @@ func db_app(u *User, app *App) *DB {
 	// We always check actual database state rather than relying on file creation status,
 	// because multiple goroutines may race to create the same database file.
 	has_tables, _ := db.exists("select name from sqlite_master where type='table'")
+
+	// A development app's files are read as they are written, and a checkout
+	// writes app.json before the Starlark beside it: a step run from code that
+	// does not declare it yet does nothing and is consumed for good. Its
+	// schema work waits until every file has gone unwritten for
+	// starlark_settle, as a kept compile does. It waits rather than returning:
+	// a handle handed back without its tables would let an action run halfway.
+	if (!has_tables || schema != database.Schema) && dev_reload && av.base != "" {
+		av.settle()
+	}
+
 	if !has_tables {
 		debug("Database app creating %q", path)
 
-		if av.Database.Create.Function != "" {
+		if database.Create.Function != "" {
 			// starlark_db stamps user_version inside the same transaction as
 			// the app's DDL, so a crash at any point leaves an empty file
 			// (rolled back) rather than a partial schema the has_tables
 			// check above would mistake for a complete one (#227).
-			if err := av.starlark_db(db, u, av.Database.Create.Function, nil, av.Database.Schema); err != nil {
+			if err := av.starlark_db(db, u, database.Create.Function, nil, database.Schema); err != nil {
 				warn("App %q version %q database create error: %v", av.app.id, av.Version, err)
 				return nil
 			}
-		} else if av.Database.create_function != nil {
+		} else if database.create_function != nil {
 			// Go create functions are core-internal and idempotent; they keep
 			// the plain pool path.
-			av.Database.create_function(db)
-			db_app_schema_set(db, av.Database.Schema)
+			database.create_function(db)
+			db_app_schema_set(db, database.Schema)
 		} else {
-			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
+			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, database.File)
 			return nil
 		}
-		schema = av.Database.Schema
+		schema = database.Schema
 	}
 
 	// held records that a step called mochi.db.abort(). The schema stayed where
 	// it was, so the handle must not be marked ready below.
 	held := false
-	upgrading := schema < av.Database.Schema && av.Database.Upgrade.Function != ""
+	upgrading := schema < database.Schema && database.Upgrade.Function != ""
 	if upgrading && !system {
 		// An app.db step still to be tried again (a failed export) would
 		// leave a migration reading its absence as "no rows", and the version
@@ -971,9 +995,9 @@ func db_app(u *User, app *App) *DB {
 		warn("App %q version %q database upgrade held: app.db for user %q is not yet at its version", av.app.id, av.Version, u.UID)
 		held = true
 	} else if upgrading {
-		for version := schema + 1; version <= av.Database.Schema; version++ {
+		for version := schema + 1; version <= database.Schema; version++ {
 			debug("Database %q upgrading to schema version %d", path, version)
-			if err := av.starlark_db(db, u, av.Database.Upgrade.Function, sl_encode_tuple(version), version); err != nil {
+			if err := av.starlark_db(db, u, database.Upgrade.Function, sl_encode_tuple(version), version); err != nil {
 				// A migration that called mochi.db.abort() is blocked on
 				// something transient, not broken: leave the version where it
 				// was and stop, so the same step retries verbatim next time
@@ -991,10 +1015,10 @@ func db_app(u *User, app *App) *DB {
 			}
 			audit_app_schema_migrated(av.app.id, version-1, version)
 		}
-	} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
-		for version := schema; version > av.Database.Schema; version-- {
+	} else if schema > database.Schema && database.Downgrade.Function != "" {
+		for version := schema; version > database.Schema; version-- {
 			debug("Database %q downgrading from schema version %d", path, version)
-			if err := av.starlark_db(db, u, av.Database.Downgrade.Function, sl_encode_tuple(version), version-1); err != nil {
+			if err := av.starlark_db(db, u, database.Downgrade.Function, sl_encode_tuple(version), version-1); err != nil {
 				warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
 				db_app_schema_set(db, version-1)
 			}
@@ -1014,7 +1038,7 @@ func db_app(u *User, app *App) *DB {
 	// the reused-and-ready fast path instead, and the app's new-version code
 	// then runs against the old schema until the process restarts.
 	if !held {
-		db_ready_set(db)
+		db_ready_set(db, database.Schema)
 	}
 
 	return db
@@ -1928,18 +1952,20 @@ func (db *DB) close() {
 	databases_lock.Unlock()
 }
 
-// db_ready reports whether db_app has finished schema create/upgrade and the
-// infra tables on this handle (#227). See the DB.ready field comment.
-func db_ready(db *DB) bool {
+// db_ready reports whether db_app has finished schema create/upgrade on this
+// handle (#227), bringing it to the given app schema. See the DB.ready field
+// comment.
+func db_ready(db *DB, schema int) bool {
 	databases_lock.Lock()
-	r := db.ready
+	r := db.ready && db.schema == schema
 	databases_lock.Unlock()
 	return r
 }
 
-func db_ready_set(db *DB) {
+func db_ready_set(db *DB, schema int) {
 	databases_lock.Lock()
 	db.ready = true
+	db.schema = schema
 	databases_lock.Unlock()
 }
 

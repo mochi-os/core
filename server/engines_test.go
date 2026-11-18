@@ -305,6 +305,38 @@ func TestAppsForFunction(t *testing.T) {
 	}
 }
 
+// TestAppsForFunctionSkipsTheTwin: a development app and the published app it
+// was published as are one app, and only the one their path opens takes a
+// function, as only its storage holds the user's data; binding the path to
+// the published app turns it round, and an app with no twin still answers.
+func TestAppsForFunctionSkipsTheTwin(t *testing.T) {
+	create_test_routing_env(t)
+	user := &User{UID: "u1", Username: "user1@example.com"}
+	roster := map[string]AppFunction{"xmpp/roster": {Function: "function_xmpp_roster"}}
+	development := icons_app(t, "people", true, "people")
+	published := icons_app(t, "1PublishedPeopleAppEntityIdentifier0000000000000", false, "people")
+	solo := icons_app(t, "solo", false, "solo")
+	for _, a := range []*App{development, published, solo} {
+		a.latest.Functions = roster
+	}
+	resolution_invalidate()
+	called := func() string {
+		ids := []string{}
+		for _, a := range apps_for_function(user, "xmpp/roster") {
+			ids = append(ids, a.id)
+		}
+		return strings.Join(ids, " ")
+	}
+	if got, want := called(), "people solo"; got != want {
+		t.Errorf("apps_for_function = [%s], want [%s]", got, want)
+	}
+	user.set_path_app("people", published.id)
+	resolution_invalidate()
+	if got, want := called(), published.id+" solo"; got != want {
+		t.Errorf("with the path bound to the published app, apps_for_function = [%s], want [%s]", got, want)
+	}
+}
+
 // TestNetworksDormant: with the development switch off, every path the
 // networks' engines answer is not found, as before any of them existed, its
 // preflight too; and with the switch on, a network the owner has switched off

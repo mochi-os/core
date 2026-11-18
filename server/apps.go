@@ -1455,19 +1455,32 @@ func app_for_path_fallback(user *User, path string) *App {
 // by; an engine answering a fixed core path has no route to follow and asks
 // here which apps answer, say, "activitypub/receive". Ordered as
 // app_select_best orders a single choice: development apps first, then by
-// install time, ties on the id.
+// install time, ties on the id. Of a development app and the published app
+// declaring the same path, only the one that path opens answers (see
+// app_twin): the other's storage does not hold the user's data.
 func apps_for_function(user *User, name string) []*App {
+	type candidate struct {
+		app     *App
+		version *AppVersion
+	}
+	var candidates []candidate
 	apps_lock.Lock()
-	defer apps_lock.Unlock()
-
-	var found []*App
 	for _, a := range apps {
 		av := a.active_locked(user)
 		if av == nil {
 			continue
 		}
 		if _, declared := av.Functions[name]; declared {
-			found = append(found, a)
+			candidates = append(candidates, candidate{a, av})
+		}
+	}
+	apps_lock.Unlock()
+
+	// app_for_path takes apps_lock, so twins are found once it is released.
+	var found []*App
+	for _, c := range candidates {
+		if app_twin(c.app, c.version, user) == nil {
+			found = append(found, c.app)
 		}
 	}
 	sort.SliceStable(found, func(i, j int) bool {
@@ -3171,18 +3184,28 @@ func app_icon_data(av *AppVersion, name string) string {
 // published as, and only the one the path opens is shown. Two published apps
 // contesting a path are different apps, and both stay.
 func app_twinned(a *App, av *AppVersion, user *User, shown map[*App]bool) bool {
+	twin := app_twin(a, av, user)
+	return twin != nil && shown[twin]
+}
+
+// app_twin is the app an app gives way to: the one opening the path this one
+// declares, where one of the two is a development app, as a development
+// checkout and the app it was published as are. Nil where this app opens its
+// own path, declares none, or shares it only with other published apps.
+// Takes apps_lock through app_for_path.
+func app_twin(a *App, av *AppVersion, user *User) *App {
 	paths := av.declared
 	if len(paths) == 0 {
 		paths = av.Paths
 	}
 	if len(paths) == 0 {
-		return false
+		return nil
 	}
 	serving := app_for_path(user, paths[0])
-	if serving == nil || serving == a || !shown[serving] {
-		return false
+	if serving == nil || serving == a || !(serving.development || a.development) {
+		return nil
 	}
-	return serving.development || a.development
+	return serving
 }
 
 // mochi.app.package.get(file) -> dict: Read app info from a .zip file without installing

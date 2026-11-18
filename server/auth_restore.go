@@ -1022,11 +1022,17 @@ func restore_primary_entity(account export_account) string {
 // newer than this server supports (bundle user_version > app.json.schema),
 // or "" if every app is restorable. Reads user_version without db_open so
 // no migration — and crucially no auto-downgrade — fires.
+//
+// A database is judged by the app whose directory holds it, <app>/db/<file>:
+// a development app and its published twin share a file name but not a
+// schema. One in a directory no installed app has is judged by its file
+// name, against the lowest schema of the apps using that name.
 func restore_schema_guard(bundle string) (string, error) {
 	type limit struct {
 		name   string
 		schema int
 	}
+	by_app := map[string]limit{}
 	by_file := map[string]limit{}
 	apps_lock.Lock()
 	for _, a := range apps {
@@ -1034,7 +1040,11 @@ func restore_schema_guard(bundle string) (string, error) {
 		if av != nil && av.Database.File != "" {
 			// Human app name (e.g. "Chess"), not the raw entity id, for
 			// the user-facing schema-mismatch error.
-			by_file[av.Database.File] = limit{a.label(nil, av, av.Label), av.Database.Schema}
+			l := limit{a.label(nil, av, av.Label), av.Database.Schema}
+			by_app[a.id+"/"+av.Database.File] = l
+			if current, ok := by_file[av.Database.File]; !ok || l.schema < current.schema {
+				by_file[av.Database.File] = l
+			}
 		}
 	}
 	apps_lock.Unlock()
@@ -1050,7 +1060,10 @@ func restore_schema_guard(bundle string) (string, error) {
 		if filepath.Base(filepath.Dir(path)) != "db" {
 			return nil
 		}
-		l, ok := by_file[d.Name()]
+		l, ok := by_app[filepath.Base(filepath.Dir(filepath.Dir(path)))+"/"+d.Name()]
+		if !ok {
+			l, ok = by_file[d.Name()]
+		}
 		if !ok {
 			return nil
 		}

@@ -984,6 +984,61 @@ func TestRestoreGuardJudgesOnlyAppDatabases(t *testing.T) {
 	}
 }
 
+// TestRestoreSchemaGuardJudgesEachTwinByItsOwnSchema: a development app and
+// its published twin share a database file name but not a schema, so each
+// database in a bundle is judged by the app whose directory holds it; one in
+// a directory no app here has is judged against the lowest of them.
+func TestRestoreSchemaGuardJudgesEachTwinByItsOwnSchema(t *testing.T) {
+	test_bare_directory(t)
+	twin := func(id string, development bool, schema int) *App {
+		av := &AppVersion{Version: "1.0", Label: id}
+		av.Database.File = "people.db"
+		av.Database.Schema = schema
+		a := &App{id: id, development: development, internal: av}
+		av.app = a
+		return a
+	}
+	apps_lock.Lock()
+	saved := apps
+	apps = map[string]*App{"people": twin("people", true, 5), "1PublishedPeople": twin("1PublishedPeople", false, 3)}
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		apps = saved
+		apps_lock.Unlock()
+	})
+	judged := func(relative string, version int) string {
+		bundle := t.TempDir()
+		path := filepath.Join(bundle, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		d, err := sql.Open("sqlite3", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(fmt.Sprintf("create table t (a); pragma user_version=%d", version)); err != nil {
+			t.Fatal(err)
+		}
+		d.Close()
+		refused, _ := restore_schema_guard(bundle)
+		return refused
+	}
+	// Without the fix the map's order picks which twin's schema a shared
+	// file name gets, so each case is asked often enough to meet both.
+	for range 64 {
+		if refused := judged("people/db/people.db", 5); refused != "" {
+			t.Fatalf("the development app's own schema 5 database was refused as %q", refused)
+		}
+		if refused := judged("1PublishedPeople/db/people.db", 5); refused == "" {
+			t.Fatal("a schema 5 database for the published twin, which supports 3, was not refused")
+		}
+		if refused := judged("elsewhere/db/people.db", 4); refused == "" {
+			t.Fatal("a schema 4 database no app here owns was not judged against the lowest schema, 3")
+		}
+	}
+}
+
 // actors_plans answers how networks.db plans each lookup of a hosted account
 // by its address, keyed by the function that makes it.
 func actors_plans(t *testing.T) map[string]string {

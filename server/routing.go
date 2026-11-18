@@ -220,6 +220,12 @@ func (b *xmpp_fanout) deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
 	}
 	if to.Localpart() == "" {
 		if s.name == "iq" {
+			if kind := s.get("type"); kind == "result" || kind == "error" {
+				// An answer to the server's own request, such as the ping that
+				// confirms a change to a subscription (xmpp_confirmed).
+				xmpp_answered(s)
+				return
+			}
 			xmpp_answer(s, xmpp_iq_server(s))
 		}
 		return

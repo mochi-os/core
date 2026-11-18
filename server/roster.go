@@ -208,15 +208,46 @@ func xmpp_roster_remove(a *xmpp_account, contact jid.JID) {
 		return
 	}
 	if item.subscription == "to" || item.subscription == "both" || item.ask {
-		xmpp_route(xmpp_make("presence", "", "type", "unsubscribe"), a.address, contact)
+		xmpp_subscription_send(a, "unsubscribe", contact)
 	}
 	if item.subscription == "from" || item.subscription == "both" || item.pending {
-		xmpp_route(xmpp_make("presence", "", "type", "unsubscribed"), a.address, contact)
+		xmpp_subscription_send(a, "unsubscribed", contact)
 		xmpp_presence_withdraw(a, contact)
 	}
 	db_user_brief(a.user, "networks").exec("delete from roster where account=? and address=?", a.id, address)
 	xmpp_roster_push(a, address)
 	xmpp_people(a, address, "remove")
+}
+
+// xmpp_subscription_send tells a contact of a change to the subscription
+// between them. A contact here is told at once. One on another server is told
+// through the delivery queue, which sends the change, pings that server over
+// the same link, and keeps the change until the ping is answered: a link that
+// is down, or one that drops what was written to it, loses it otherwise for
+// good, and the two servers go on disagreeing. A later change to the same side
+// of the subscription replaces one still waiting; the row's inbox names the
+// contact and the side, "#to" for the account's view of the contact and
+// "#from" for the contact's view of the account. Its host is the contact's
+// domain under "xmpp:", so a server failing on XMPP is not counted against
+// the same domain's fediverse deliveries, or the other way round.
+func xmpp_subscription_send(a *xmpp_account, kind string, contact jid.JID) {
+	contact = contact.Bare()
+	if xmpp_local(contact.Domainpart()) {
+		xmpp_route(xmpp_make("presence", "", "type", kind), a.address, contact)
+		return
+	}
+	side := "to"
+	if kind == "subscribed" || kind == "unsubscribed" {
+		side = "from"
+	}
+	address := strings.ToLower(contact.String())
+	inbox := "xmpp:" + address + "#" + side
+	host := "xmpp:" + strings.ToLower(contact.Domainpart())
+	body := xmpp_make("presence", "", "type", kind, "from", a.address.String(), "to", address).text(xmpp_ns_server)
+	db := networks_database()
+	db.exec("delete from deliveries where network='xmpp' and account=? and inbox=?", a.id, inbox)
+	db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created, address) values (?, ?, ?, 'xmpp', ?, ?, ?, ?, ?, ?)", uid(), a.user.UID, a.id, inbox, host, body, delivery_held(db, host), now(), address)
+	delivery_wake()
 }
 
 // xmpp_presence_send sends a contact the account's presence: each client's
@@ -293,10 +324,14 @@ func xmpp_subscription_out(a *xmpp_account, kind string, contact jid.JID) {
 		}
 	}
 	xmpp_roster_save(a, item)
-	xmpp_route(xmpp_make("presence", "", "type", kind), a.address, contact)
+	xmpp_subscription_send(a, kind, contact)
 	switch kind {
 	case "subscribed":
-		xmpp_presence_send(a, contact)
+		// A contact on another server is sent the presence once the approval
+		// has reached it (delivery_xmpp).
+		if xmpp_local(contact.Domainpart()) {
+			xmpp_presence_send(a, contact)
+		}
 	case "unsubscribed":
 		xmpp_presence_withdraw(a, contact)
 	}
@@ -321,8 +356,10 @@ func xmpp_subscription_in(a *xmpp_account, kind string, contact jid.JID, s *xmpp
 	switch kind {
 	case "subscribe":
 		if friend || (item != nil && (item.subscription == "from" || item.subscription == "both")) {
-			xmpp_route(xmpp_make("presence", "", "type", "subscribed"), a.address, contact)
-			xmpp_presence_send(a, contact)
+			xmpp_subscription_send(a, "subscribed", contact)
+			if xmpp_local(contact.Domainpart()) {
+				xmpp_presence_send(a, contact)
+			}
 			return
 		}
 		if item == nil {

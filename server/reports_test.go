@@ -600,6 +600,12 @@ func TestReportsHosts(t *testing.T) {
 	}
 	networks_database().exec("insert into destinations (name, failures, retry) values ('matrix.example', 2, 40)")
 	networks_database().exec("insert into outbox (destination, kind, body, created) values ('matrix.example', 'pdu', '{}', 1)")
+	// Subscription changes waiting for chat.example's answer, and for a server
+	// with no link open, are XMPP's, not fediverse hosts.
+	db.exec("insert into hosts (host, failures, success, failure, next, error) values ('xmpp:chat.example', 2, 0, 20, 50, 'chat.example did not answer')")
+	for _, host := range []string{"xmpp:chat.example", "xmpp:chat.example", "xmpp:quiet.example"} {
+		db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created) values (?, 'u', 'x1', 'xmpp', ?, ?, '<presence/>', 0, 1)", uid(), "xmpp:someone@"+host[5:]+"#to", host)
+	}
 	peer := xmpp_peer_of("example.com", "chat.example")
 	peer.lock.Lock()
 	peer.failures = 1
@@ -633,11 +639,25 @@ func TestReportsHosts(t *testing.T) {
 	found := false
 	for _, entry := range xmpp["links"].([]any) {
 		if link := entry.(map[string]any); link["server"] == "chat.example" {
-			found = link["domain"] == "example.com" && link["up"] == false && link["failures"] == 1 && link["waiting"] == 1
+			found = link["domain"] == "example.com" && link["up"] == false && link["failures"] == 2 && link["next"] == int64(50) && link["waiting"] == int64(3)
 		}
 	}
 	if !found {
 		t.Errorf("THE POINT: links = %v", xmpp["links"])
+	}
+	quiet := false
+	for _, entry := range xmpp["links"].([]any) {
+		if link := entry.(map[string]any); link["server"] == "quiet.example" {
+			quiet = link["domain"] == "" && link["up"] == false && link["waiting"] == int64(1)
+		}
+	}
+	if !quiet {
+		t.Errorf("THE POINT: subscription changes waiting for a server with no link open are not listed with XMPP: %v", xmpp["links"])
+	}
+	for host := range hosts {
+		if strings.HasPrefix(host, "xmpp:") {
+			t.Errorf("THE POINT: XMPP's %s is listed as a fediverse host", host)
+		}
 	}
 }
 

@@ -1448,3 +1448,84 @@ func TestActivityPubRSS(t *testing.T) {
 		t.Errorf("an unknown handle's web feed: %d", w.Code)
 	}
 }
+
+// TestActivityPubForwardedDeleteDropped: a Delete signed by another server
+// than its actor's is that server forwarding it from a thread there. Refused
+// with 401, the forwarder sent it again and again (wasabi: 108 a day from
+// mastodon.social); it is taken and dropped, with nothing fetched on its word
+// and nothing taken back: the actor's own server sends its Delete of anything
+// it sent here. Another activity signed so is still refused.
+func TestActivityPubForwardedDeleteDropped(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	log := &inbound_log{}
+	log.install(t)
+	object := "https://other.example/u/mallory/notes/1"
+	networks_database().exec("insert into copies (object, account, actor, created) values (?, 'f1', 'https://other.example/u/mallory', 1)", object)
+	var fetched []string
+	saved := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		fetched = append(fetched, address)
+		return saved(ctx, address, accept)
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+
+	forwarded := map[string]any{"@context": activitystreams, "id": object + "#delete", "type": "Delete", "actor": "https://other.example/u/mallory", "object": map[string]any{"id": object, "type": "Tombstone"}, "to": []string{"https://www.w3.org/ns/activitystreams#Public"}}
+	if w := signed_post(t, bob, "/~/inbox", forwarded, nil); w.Code != http.StatusAccepted {
+		t.Errorf("THE POINT: a forwarded Delete was answered %d, which its forwarder sends again", w.Code)
+	}
+	for _, address := range fetched {
+		if strings.Contains(address, "other.example") {
+			t.Errorf("THE POINT: the forwarded Delete had %s fetched", address)
+		}
+	}
+	if found, _ := networks_database().exists("select 1 from copies where object=?", object); !found {
+		t.Error("THE POINT: the forwarded Delete took back the actor's copy")
+	}
+	if events := log.matching(func(e map[string]any) bool { return e["kind"] == "Delete" }); len(events) != 0 {
+		t.Errorf("THE POINT: the forwarded Delete reached the apps: %v", events)
+	}
+
+	claimed := map[string]any{"@context": activitystreams, "id": object + "#update", "type": "Update", "actor": "https://other.example/u/mallory", "object": map[string]any{"id": object, "type": "Note", "content": "Changed"}}
+	if w := signed_post(t, bob, "/~f1/inbox", claimed, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("another activity signed by a key on another host: %d", w.Code)
+	}
+	_ = alice
+}
+
+// TestActivityPubForwardedDeleteDeferred: a forwarded Delete that also carries
+// the actor's own signature, whose key could not be read for now, is put off
+// to be sent again, as any such request is, not taken and dropped.
+func TestActivityPubForwardedDeleteDeferred(t *testing.T) {
+	_, bob := create_activitypub_test_env(t)
+	key := "https://other.example/u/carmen#main-key"
+	saved := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if strings.HasPrefix(address, "https://other.example/") {
+			return nil, &resolve_refusal{Status: http.StatusServiceUnavailable}
+		}
+		return saved(ctx, address, accept)
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+
+	object := "https://other.example/u/carmen/notes/1"
+	body := []byte(json_encode(map[string]any{"@context": activitystreams, "id": object + "#delete", "type": "Delete", "actor": "https://other.example/u/carmen", "object": object, "to": []string{"https://www.w3.org/ns/activitystreams#Public"}}))
+	r := httptest.NewRequest("POST", "https://example.com/~/inbox", bytes.NewReader(body))
+	r.Header.Set("Content-Type", activitypub_type)
+	digest := sha256.Sum256(body)
+	r.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
+	components := [][2]string{{"@method", "POST"}, {"@target-uri", "https://example.com/~/inbox"}, {"@authority", "example.com"}, {"content-digest", r.Header.Get("Content-Digest")}}
+	created := time.Now().Unix()
+	signature_message_test_sign(r, "sig1", components, fmt.Sprintf(`;created=%d;keyid="%s";alg="rsa-v1_5-sha256"`, created, bob.key_id), func(base []byte) []byte {
+		signature, err := key_sign_rsa(bob.private, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signature
+	})
+	signature_message_test_sign(r, "sig2", components, fmt.Sprintf(`;created=%d;keyid="%s";alg="rsa-v1_5-sha256"`, created, key), func(base []byte) []byte {
+		return []byte("not read: the key cannot be fetched")
+	})
+	if w := activitypub_request(t, r); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("THE POINT: a forwarded Delete whose actor's own key could not be read for now was answered %d, not put off with 503", w.Code)
+	}
+}

@@ -485,7 +485,8 @@ func networks_database() *DB {
 
 // networks_create lays the server-wide networks database, for db_create and
 // db_upgrade_18: the delivery queue (whose rows carry, in address, the actor
-// they are for where its inbox was not known when queued), the hosts it has
+// they are for where its inbox was not known when queued, and on XMPP the
+// contact a subscription change is for, xmpp_subscription_send), the hosts it has
 // learned about, the owner's domain blocks, Mochi's registrations as a client
 // on other servers, the server's own keys as a client, and the clients
 // registered to sign users in with their own tokens. A change here is also a

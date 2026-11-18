@@ -47,12 +47,18 @@ import (
 
 const xmpp_ns_dialback_feature = "urn:xmpp:features:dialback"
 
-// How long a link may stay idle, and the longest wait before a failed one is
-// tried again.
+// How long a link may stay idle, how much longer a link in waits for the
+// other server to say something before giving it up, and the longest wait
+// before a failed link out is tried again.
 var (
 	xmpp_link_idle    = 10 * time.Minute
+	xmpp_link_grace   = time.Minute
 	xmpp_link_backoff = time.Hour
 )
+
+// xmpp_confirm_timeout is how long xmpp_confirmed waits for the other server
+// to answer: long enough for a link to open and authenticate first.
+var xmpp_confirm_timeout = xmpp_negotiate_timeout + xmpp_query_timeout
 
 // xmpp_tables lays the server-wide XMPP database, for db_create: the secret
 // dialback keys are made with, the files hosted accounts' clients upload,
@@ -209,19 +215,33 @@ func xmpp_peer_of(local string, remote string) *xmpp_peer {
 // xmpp_send_remote sends a stanza to another server over the link from the
 // sender's domain, refusing a domain the owner blocks.
 func xmpp_send_remote(s *xmpp_stanza, from jid.JID, to jid.JID) {
+	xmpp_send_together([]*xmpp_stanza{s}, from, to)
+}
+
+// xmpp_send_together sends stanzas, each with its from and to set, over the
+// link from one domain of this server's to another server's, written as one,
+// so all go on one connection or none does.
+func xmpp_send_together(stanzas []*xmpp_stanza, from jid.JID, to jid.JID) {
 	if err := host_allowed(nil, "xmpp", to.Domainpart()); err != nil {
-		xmpp_bounce(s, "service-unavailable")
+		for _, s := range stanzas {
+			xmpp_bounce(s, "service-unavailable")
+		}
 		return
 	}
 	l := xmpp_peer_of(from.Domainpart(), to.Domainpart())
-	text := s.text(xmpp_ns_server)
+	var text strings.Builder
+	for _, s := range stanzas {
+		text.WriteString(s.text(xmpp_ns_server))
+	}
 	l.lock.Lock()
 	if !l.running && time.Now().Before(l.retry) {
 		l.lock.Unlock()
-		xmpp_bounce(s, "remote-server-timeout")
+		for _, s := range stanzas {
+			xmpp_bounce(s, "remote-server-timeout")
+		}
 		return
 	}
-	l.waiting = append(l.waiting, text)
+	l.waiting = append(l.waiting, text.String())
 	start := !l.running
 	l.running = true
 	l.lock.Unlock()
@@ -233,6 +253,98 @@ func xmpp_send_remote(s *xmpp_stanza, from jid.JID, to jid.JID) {
 	case l.wake <- struct{}{}:
 	default:
 	}
+}
+
+// xmpp_confirmed sends a stanza to another server with a ping after it, the two
+// written as one over the link between the domains, and reports whether the
+// other server answered the ping. A link takes its stanzas in order, so an
+// answer, whatever it says, shows the stanza arrived; sent apart, the stanza
+// could go into a connection the other server had closed and the ping on the
+// next one. An error this server made for a link that is down or failing
+// shows nothing of the kind.
+func xmpp_confirmed(s *xmpp_stanza, from jid.JID, to jid.JID) bool {
+	id := "confirm-" + uid()
+	answer := make(chan *xmpp_stanza, 1)
+	xmpp_asks_lock.Lock()
+	xmpp_asks[id] = answer
+	xmpp_asks_lock.Unlock()
+	defer func() {
+		xmpp_asks_lock.Lock()
+		delete(xmpp_asks, id)
+		xmpp_asks_lock.Unlock()
+	}()
+	s.set("from", from.String())
+	s.set("to", to.String())
+	ping := xmpp_make("iq", `<ping xmlns="`+xmpp_ns_ping+`"/>`, "type", "get", "id", id, "from", from.Domain().String(), "to", to.Domain().String())
+	xmpp_send_together([]*xmpp_stanza{s, ping}, from, to)
+	select {
+	case s := <-answer:
+		if s.get("type") == "error" {
+			switch xmpp_condition(s) {
+			case "remote-server-not-found", "remote-server-timeout":
+				return false
+			}
+		}
+		return true
+	case <-time.After(xmpp_confirm_timeout):
+		return false
+	}
+}
+
+// delivery_xmpp sends a row of the delivery queue's XMPP network, a change to
+// a subscription (xmpp_subscription_send), and keeps it until the contact's
+// server has answered the ping that follows it.
+func delivery_xmpp(db *DB, d *delivery) delivery_outcome {
+	// A worker sends the rows it claimed; one a later change to the same side
+	// replaced since is gone, and is not sent.
+	if found, _ := db.exists("select 1 from deliveries where id=?", d.ID); !found {
+		return delivery_dropped
+	}
+	s, err := xmpp_parse(d.Body)
+	if err != nil {
+		db.exec("delete from deliveries where id=?", d.ID)
+		return delivery_dropped
+	}
+	from, err := jid.Parse(s.get("from"))
+	to, err2 := jid.Parse(s.get("to"))
+	if err != nil || err2 != nil {
+		db.exec("delete from deliveries where id=?", d.ID)
+		return delivery_dropped
+	}
+	if !network_enabled("xmpp") {
+		delivery_defer(db, d.ID, now()+3600)
+		return delivery_deferred
+	}
+	if !xmpp_served(from.Domainpart()) || host_allowed(nil, "xmpp", to.Domainpart()) != nil {
+		debug("Delivery to %s dropped: %s is not served here, or is blocked", d.Address, from.Domainpart())
+		db.exec("delete from deliveries where id=?", d.ID)
+		return delivery_dropped
+	}
+	if xmpp_local(to.Domainpart()) {
+		// A domain this server has come to serve since: told at once.
+		xmpp_route(s, from, to)
+	} else if !xmpp_confirmed(s, from, to) {
+		return delivery_failed_attempt(db, d, to.Domainpart()+" did not answer")
+	}
+	db.exec("delete from deliveries where id=?", d.ID)
+	delivery_host_alive(d.Host)
+	delivery_sent.Add(1)
+	// An approval is followed by the account's presence, now the contact's
+	// server has it (RFC 6121 3.1.5): sent before it, the presence is dropped
+	// there as from someone the contact does not see.
+	// Only while the contact may still see it: the account may have taken the
+	// approval back while it was on its way.
+	if s.get("type") == "subscribed" {
+		if a := xmpp_account_of(from); a != nil {
+			address := strings.ToLower(to.Bare().String())
+			item := xmpp_roster_item(a, address)
+			_, friend := xmpp_friends(a)[address]
+			if friend || (item != nil && (item.subscription == "from" || item.subscription == "both")) {
+				xmpp_presence_send(a, to)
+			}
+		}
+	}
+	return delivery_success
 }
 
 // xmpp_bounce answers a stanza that could not be sent with an error to its
@@ -280,7 +392,7 @@ func (l *xmpp_peer) run() {
 		}
 		l.lock.Unlock()
 		for _, text := range waiting {
-			if s, err := xmpp_parse(text); err == nil {
+			for _, s := range xmpp_parse_all(text) {
 				xmpp_bounce(s, "remote-server-not-found")
 			}
 		}
@@ -295,6 +407,23 @@ func xmpp_parse(text string) (*xmpp_stanza, error) {
 	x.buffer = bufio.NewReader(x.limited)
 	x.restart()
 	return x.next()
+}
+
+// xmpp_parse_all reads every stanza in text, as a link's waiting entry holds
+// those sent together.
+func xmpp_parse_all(text string) []*xmpp_stanza {
+	x := &xmpp_conn{maximum: len(text) + 1}
+	x.limited = &xmpp_limited{r: strings.NewReader(text), left: len(text) + 1}
+	x.buffer = bufio.NewReader(x.limited)
+	x.restart()
+	var out []*xmpp_stanza
+	for {
+		s, err := x.next()
+		if err != nil {
+			return out
+		}
+		out = append(out, s)
+	}
 }
 
 // serve is the link's life: open, authenticate, write what waits.
@@ -338,7 +467,20 @@ func (l *xmpp_peer) serve() error {
 	failed := make(chan error, 1)
 	go func() {
 		for {
-			secured.SetReadDeadline(time.Now().Add(xmpp_link_idle + time.Minute))
+			// The other server sends nothing on this link once it has accepted
+			// it: its own stanzas come on a link of its own. A deadline on a
+			// quiet link in use failed it every eleven minutes, and for the
+			// backoff after, what was sent to that server was refused or lost.
+			// It is held open until it is idle, and TCP's keepalive finds a
+			// peer that has gone.
+			l.lock.Lock()
+			ready := l.ready
+			l.lock.Unlock()
+			if ready {
+				secured.SetReadDeadline(time.Time{})
+			} else {
+				secured.SetReadDeadline(time.Now().Add(xmpp_negotiate_timeout))
+			}
 			s, err := x.next()
 			if err != nil {
 				failed <- err
@@ -544,7 +686,7 @@ func xmpp_server_serve(conn net.Conn) {
 		break
 	}
 	for {
-		x.conn.SetReadDeadline(time.Now().Add(xmpp_link_idle + time.Minute))
+		x.conn.SetReadDeadline(time.Now().Add(xmpp_link_idle + xmpp_link_grace))
 		x.conn.SetWriteDeadline(time.Time{})
 		s, err := x.next()
 		if err != nil {

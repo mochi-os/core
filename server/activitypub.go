@@ -1308,7 +1308,7 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 	// account following the actor named.
 	fetch := func(ctx context.Context, key_id string, fresh bool) (string, error) {
 		if activitypub_host_of(key_id) != host {
-			return "", fmt.Errorf("key %s is not on %s", key_id, host)
+			return "", fmt.Errorf("key %s is not on %s: %w", key_id, host, activitypub_key_elsewhere)
 		}
 		return signature_key_fetch(ctx, key_id, fresh)
 	}
@@ -1338,6 +1338,21 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		} else {
 			debug("ActivityPub inbox dropped the Delete of %s, not checked: %v", remote, err)
 		}
+		c.AbortWithStatus(http.StatusAccepted)
+		return
+	}
+	if err != nil && kind == "Delete" && errors.Is(err, activitypub_key_elsewhere) {
+		// A Delete signed by another server than its actor's is one that
+		// server forwards from a thread it holds (ActivityPub 7.1.2). Whatever
+		// of the actor's it could take back came here from the actor's own
+		// server, which sends its Delete here too. Refused, it was sent again
+		// and again; it is taken and dropped, and nothing is fetched on its
+		// word. One also signed by the actor's own key, which could not be
+		// read for now, is put off as any other is.
+		if activitypub_deferred(c, err) {
+			return
+		}
+		debug("ActivityPub inbox dropped the forwarded Delete of %s by %s", activitypub_actor_of(activity["object"]), remote)
 		c.AbortWithStatus(http.StatusAccepted)
 		return
 	}
@@ -1386,6 +1401,10 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 	}
 	c.AbortWithStatus(http.StatusAccepted)
 }
+
+// activitypub_key_elsewhere is the inbox's refusal of a signature by a key on
+// another host than the activity's actor.
+var activitypub_key_elsewhere = errors.New("the key is not on the actor's host")
 
 // activitypub_deferred answers a request as one to send again later when what
 // it needs could not be read for now - this server's own limit on requests to

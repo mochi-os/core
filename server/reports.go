@@ -466,11 +466,33 @@ func hosts_health() map[string]any {
 	for _, row := range counts {
 		waiting[row_string(row, "host")] = row_int(row, "count")
 	}
+	// The queue's XMPP rows, subscription changes waiting for the contact's
+	// server (xmpp_subscription_send), are under "xmpp:" and the domain:
+	// reported with the XMPP links, not as fediverse hosts.
+	type xmpp_queued struct {
+		failures int
+		next     int64
+		waiting  int64
+	}
+	queued := map[string]*xmpp_queued{}
+	for host, count := range waiting {
+		if domain, found := strings.CutPrefix(host, "xmpp:"); found {
+			queued[domain] = &xmpp_queued{waiting: count}
+			delete(waiting, host)
+		}
+	}
 	fediverse := []any{}
 	seen := map[string]bool{}
 	rows, _ := db.rows("select * from hosts order by host")
 	for _, row := range rows {
 		host := row_string(row, "host")
+		if domain, found := strings.CutPrefix(host, "xmpp:"); found {
+			if queued[domain] == nil {
+				queued[domain] = &xmpp_queued{}
+			}
+			queued[domain].failures, queued[domain].next = int(row_int(row, "failures")), row_int(row, "next")
+			continue
+		}
 		seen[host] = true
 		fediverse = append(fediverse, map[string]any{
 			"host":     host,
@@ -524,8 +546,21 @@ func hosts_health() map[string]any {
 		if !l.retry.IsZero() {
 			next = l.retry.Unix()
 		}
-		links = append(links, map[string]any{"server": l.remote, "domain": l.local, "up": l.ready && l.conn != nil, "failures": l.failures, "next": next, "waiting": len(l.waiting)})
+		entry := map[string]any{"server": l.remote, "domain": l.local, "up": l.ready && l.conn != nil, "failures": l.failures, "next": next, "waiting": int64(len(l.waiting))}
+		if q := queued[l.remote]; q != nil {
+			entry["waiting"] = int64(len(l.waiting)) + q.waiting
+			if q.failures > l.failures {
+				entry["failures"], entry["next"] = q.failures, q.next
+			}
+			delete(queued, l.remote)
+		}
+		links = append(links, entry)
 		l.lock.Unlock()
+	}
+	for domain, q := range queued {
+		if q.waiting > 0 {
+			links = append(links, map[string]any{"server": domain, "domain": "", "up": false, "failures": q.failures, "next": q.next, "waiting": q.waiting})
+		}
 	}
 	xmpp_resources_lock.Lock()
 	clients, accounts := 0, 0

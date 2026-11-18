@@ -22,13 +22,15 @@ import (
 // An xmpp_remote is another XMPP server, for a domain of its own: it takes
 // the links this server opens to it, checking this server's dialback key by
 // asking it back, and opens its own to send, answering this server's checks
-// of its key. It records the stanzas it was sent.
+// of its key. It records the stanzas it was sent, and answers a ping over a
+// link of its own back when answers is set.
 type xmpp_remote struct {
 	env      *xmpp_env
 	domain   string
 	secret   string
 	lock     sync.Mutex
 	received []string
+	answers  bool
 }
 
 func (env *xmpp_env) remote(t *testing.T, domain string) *xmpp_remote {
@@ -139,9 +141,40 @@ func (f *xmpp_remote) serve(conn net.Conn) {
 		default:
 			f.lock.Lock()
 			f.received = append(f.received, s.text(s.space))
+			answers := f.answers
 			f.lock.Unlock()
+			if answers && s.name == "iq" && s.get("type") == "get" && strings.Contains(s.inner, xmpp_ns_ping) {
+				// The answer goes on the remote's own link, whose key this
+				// server checks over the link this ping came on, so it waits
+				// on nothing this loop reads.
+				go f.pong(s)
+			}
 		}
 	}
+}
+
+// pong answers a ping over a link of the remote's own to the domain it came
+// from, as a server answers one.
+func (f *xmpp_remote) pong(s *xmpp_stanza) {
+	to := s.get("from")
+	x, err := f.secured(to)
+	if err != nil {
+		return
+	}
+	defer x.conn.Close()
+	x.write(`<db:result from="` + f.domain + `" to="` + to + `">` + f.key(to, x.id) + `</db:result>`)
+	if answer, err := x.next(); err != nil || answer.get("type") != "valid" {
+		return
+	}
+	x.write(`<iq xmlns="jabber:server" type="result" id="` + s.get("id") + `" from="` + f.domain + `" to="` + to + `"/>`)
+	time.Sleep(200 * time.Millisecond)
+}
+
+// answering sets whether the remote answers pings.
+func (f *xmpp_remote) answering(answers bool) {
+	f.lock.Lock()
+	f.answers = answers
+	f.lock.Unlock()
 }
 
 // ask checks the key this server gave on a stream by asking it.
@@ -319,5 +352,303 @@ func TestXMPPNotices(t *testing.T) {
 	}
 	if _, _, reason := handle_available(env.alice, "example.com", "notices", "handle"); reason != "blocked" {
 		t.Errorf("THE POINT: the notices name was taken as a handle: %q", reason)
+	}
+}
+
+// subscription_rows is the delivery queue's rows of subscription changes for
+// a contact: each one's inbox (the side it changes), body and attempts.
+func subscription_rows(t *testing.T, address string) []map[string]any {
+	t.Helper()
+	rows, err := db_open("db/networks.db").rows("select inbox, body, attempts from deliveries where network='xmpp' and address=? order by inbox", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// subscription_due makes a host's rows due again, as their backoff ending
+// would.
+func subscription_due(host string) {
+	db := db_open("db/networks.db")
+	db.exec("update deliveries set next=0, claimed=0 where host=?", host)
+	db.exec("update hosts set next=0 where host=?", host)
+}
+
+// TestXMPPLinkOutlivesAQuietPeer: the other server says nothing on a link this
+// server opens once it has accepted it. A deadline on reading it failed every
+// link in use eleven minutes after it opened, and what was sent to that
+// server in the backoff after was refused or lost.
+func TestXMPPLinkOutlivesAQuietPeer(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	remote := env.remote(t, "quiet.test")
+	saved_idle, saved_grace := xmpp_link_idle, xmpp_link_grace
+	xmpp_link_idle, xmpp_link_grace = time.Second, 300*time.Millisecond
+	t.Cleanup(func() { xmpp_link_idle, xmpp_link_grace = saved_idle, saved_grace })
+
+	alice, carol := mustjid("alice@example.com/phone"), mustjid("carol@quiet.test")
+	for i := range 16 {
+		xmpp_route(xmpp_make("message", "<body>Tick "+itoa(i)+"</body>", "type", "chat"), alice, carol)
+		time.Sleep(150 * time.Millisecond)
+	}
+	wait(t, "the last message at the other server", func() bool { return len(remote.heard("Tick 15")) == 1 })
+	l := xmpp_peer_of("example.com", "quiet.test")
+	l.lock.Lock()
+	failures := l.failures
+	l.lock.Unlock()
+	if failures != 0 {
+		t.Errorf("THE POINT: the link in use failed %d times while the other server said nothing", failures)
+	}
+	for i := range 16 {
+		if len(remote.heard("Tick "+itoa(i)+"<")) != 1 {
+			t.Errorf("THE POINT: message %d did not reach the other server", i)
+		}
+	}
+}
+
+// TestXMPPSubscriptionKeptUntilAnswered: a change to a subscription with a
+// contact on another server is kept in the delivery queue until that server
+// answers the ping sent after it on the same link, and sent again until then.
+// Routed once, it was lost whenever the link was down or dropped what was
+// written to it, and the two servers went on disagreeing.
+func TestXMPPSubscriptionKeptUntilAnswered(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	remote := env.remote(t, "far.test")
+	saved := xmpp_confirm_timeout
+	xmpp_confirm_timeout = 2 * time.Second
+	t.Cleanup(func() { xmpp_confirm_timeout = saved })
+
+	alice := &xmpp_account{user: env.alice, id: "x1", address: mustjid("alice@example.com")}
+	xmpp_roster_save(alice, &xmpp_item{address: "carol@far.test", subscription: "both", listed: true})
+	xmpp_roster_remove(alice, mustjid("carol@far.test"))
+	if rows := subscription_rows(t, "carol@far.test"); len(rows) != 2 || row_string(rows[0], "inbox") != "xmpp:carol@far.test#from" || row_string(rows[1], "inbox") != "xmpp:carol@far.test#to" ||
+		!strings.Contains(row_string(rows[0], "body"), `type="unsubscribed"`) || !strings.Contains(row_string(rows[1], "body"), `type="unsubscribe"`) {
+		t.Fatalf("THE POINT: the removal's two changes are not kept in the queue: %v", rows)
+	}
+
+	// The other server takes the changes but does not answer: they are kept.
+	delivery_host("xmpp:far.test")
+	if len(remote.heard(`type="unsubscribe"`)) != 1 || len(remote.heard(`type="unsubscribed"`)) != 1 {
+		t.Fatalf("the changes did not reach the other server: %v", remote.received)
+	}
+	if rows := subscription_rows(t, "carol@far.test"); len(rows) != 2 || row_int(rows[0], "attempts") != 1 || row_int(rows[1], "attempts") != 1 {
+		t.Errorf("THE POINT: changes the other server never answered for were taken as delivered: %v", rows)
+	}
+
+	// It answers now: they are sent again, and given up as delivered.
+	remote.answering(true)
+	subscription_due("xmpp:far.test")
+	delivery_host("xmpp:far.test")
+	if rows := subscription_rows(t, "carol@far.test"); len(rows) != 0 {
+		t.Errorf("THE POINT: changes the other server answered for are still kept: %v", rows)
+	}
+	if len(remote.heard(`type="unsubscribe"`)) != 2 {
+		t.Errorf("the kept change was not sent again: %v", remote.heard(`type="unsubscribe"`))
+	}
+}
+
+// TestXMPPSubscriptionNotTakenFromAFailedLink: the error this server makes for
+// a link it cannot open is no answer from the other server.
+func TestXMPPSubscriptionNotTakenFromAFailedLink(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	saved := xmpp_confirm_timeout
+	xmpp_confirm_timeout = 10 * time.Second
+	t.Cleanup(func() { xmpp_confirm_timeout = saved })
+
+	alice := &xmpp_account{user: env.alice, id: "x1", address: mustjid("alice@example.com")}
+	xmpp_subscription_send(alice, "subscribe", mustjid("dave@nowhere.test"))
+	started := time.Now()
+	delivery_host("xmpp:nowhere.test")
+	if rows := subscription_rows(t, "dave@nowhere.test"); len(rows) != 1 || row_int(rows[0], "attempts") != 1 {
+		t.Errorf("THE POINT: a change to a server that cannot be reached was taken as delivered: %v", rows)
+	}
+	if time.Since(started) > 8*time.Second {
+		t.Errorf("the failed link was waited out (%v) rather than answered at once", time.Since(started))
+	}
+	// The failure is the domain's on XMPP: its fediverse deliveries are not
+	// held up for it.
+	db := db_open("db/networks.db")
+	if found, _ := db.exists("select 1 from hosts where host='nowhere.test'"); found {
+		t.Error("THE POINT: an XMPP failure was counted against the domain's fediverse deliveries")
+	}
+	if found, _ := db.exists("select 1 from hosts where host='xmpp:nowhere.test' and failures=1"); !found {
+		t.Error("the XMPP failure was not counted against the domain on XMPP")
+	}
+}
+
+// TestXMPPSubscriptionChangeReplacesTheWaitingOne: a later change to the same
+// side of a subscription replaces one still waiting, so a change sent again
+// after a later one cannot undo it; the other side's is kept.
+func TestXMPPSubscriptionChangeReplacesTheWaitingOne(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	alice := &xmpp_account{user: env.alice, id: "x1", address: mustjid("alice@example.com")}
+	carol := mustjid("carol@slow.test")
+	xmpp_subscription_send(alice, "subscribe", carol)
+	xmpp_subscription_send(alice, "subscribed", carol)
+	xmpp_subscription_send(alice, "unsubscribe", carol)
+	rows := subscription_rows(t, "carol@slow.test")
+	if len(rows) != 2 || !strings.Contains(row_string(rows[0], "body"), `type="subscribed"`) || !strings.Contains(row_string(rows[1], "body"), `type="unsubscribe"`) {
+		t.Errorf("THE POINT: the waiting changes are not the latest of each side: %v", rows)
+	}
+
+	// A contact here is told at once, with nothing kept.
+	xmpp_subscription_send(alice, "subscribe", mustjid("bob@example.com"))
+	if rows := subscription_rows(t, "bob@example.com"); len(rows) != 0 {
+		t.Errorf("a change for a contact here was queued: %v", rows)
+	}
+	_ = env
+}
+
+// TestXMPPApprovalBeforePresence: an approval of a contact on another server
+// reaches it before the account's presence (RFC 6121 3.1.5). Sent first, the
+// presence is dropped there as from someone the contact does not see, and the
+// contact sees the account offline until its presence next changes.
+func TestXMPPApprovalBeforePresence(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	remote := env.remote(t, "far.test")
+	remote.answering(true)
+	saved := xmpp_confirm_timeout
+	xmpp_confirm_timeout = 5 * time.Second
+	t.Cleanup(func() { xmpp_confirm_timeout = saved })
+	c, err := env.connect(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.online(t)
+
+	alice := &xmpp_account{user: env.alice, id: "x1", address: mustjid("alice@example.com")}
+	xmpp_roster_save(alice, &xmpp_item{address: "carol@far.test", subscription: "none", pending: true})
+	xmpp_subscription_out(alice, "subscribed", mustjid("carol@far.test"))
+	delivery_host("xmpp:far.test")
+	wait(t, "alice's presence at the other server", func() bool { return len(remote.heard("<presence", `from="`+c.full.String()+`"`)) > 0 })
+
+	approval, presence := -1, -1
+	remote.lock.Lock()
+	for i, text := range remote.received {
+		if approval < 0 && strings.Contains(text, `type="subscribed"`) {
+			approval = i
+		}
+		if presence < 0 && strings.Contains(text, "<presence") && strings.Contains(text, `from="`+c.full.String()+`"`) && !strings.Contains(text, "type=") {
+			presence = i
+		}
+	}
+	remote.lock.Unlock()
+	if approval < 0 || presence < approval {
+		t.Errorf("THE POINT: the presence (at %d) reached the other server before the approval (at %d)", presence, approval)
+	}
+}
+
+// TestXMPPConfirmationIsOneWrite: a change and the ping that confirms it are
+// written to a link as one. Written apart, the change could go into a
+// connection the other server had closed and the ping on the next, whose
+// answer then confirmed a change that never arrived.
+func TestXMPPConfirmationIsOneWrite(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []net.Conn
+	var lock sync.Mutex
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			lock.Lock()
+			held = append(held, conn)
+			lock.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		lock.Lock()
+		for _, conn := range held {
+			conn.Close()
+		}
+		lock.Unlock()
+	})
+	env.lock.Lock()
+	env.addresses["hold.test"] = listener.Addr().String()
+	env.lock.Unlock()
+	saved := xmpp_confirm_timeout
+	xmpp_confirm_timeout = time.Second
+	t.Cleanup(func() { xmpp_confirm_timeout = saved })
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- xmpp_confirmed(xmpp_make("presence", "", "type", "unsubscribed"), mustjid("alice@example.com"), mustjid("carol@hold.test"))
+	}()
+	l := xmpp_peer_of("example.com", "hold.test")
+	var waiting []string
+	wait(t, "the change waiting on the link", func() bool {
+		l.lock.Lock()
+		defer l.lock.Unlock()
+		waiting = append([]string(nil), l.waiting...)
+		return len(waiting) > 0
+	})
+	if len(waiting) != 1 || !strings.Contains(waiting[0], `type="unsubscribed"`) || !strings.Contains(waiting[0], xmpp_ns_ping) {
+		t.Errorf("THE POINT: the change and its ping wait apart, to be written apart: %q", waiting)
+	}
+	if <-done {
+		t.Error("a ping nobody answered confirmed the change")
+	}
+}
+
+// TestXMPPStaleApprovalNotSent: a worker sends the rows it has claimed. An
+// approval taken back after its row was claimed is replaced in the queue, and
+// the claimed copy is not sent: it went out, and the account's presence after
+// it, to the contact just refused.
+func TestXMPPStaleApprovalNotSent(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	remote := env.remote(t, "far.test")
+	remote.answering(true)
+	saved := xmpp_confirm_timeout
+	xmpp_confirm_timeout = 5 * time.Second
+	t.Cleanup(func() { xmpp_confirm_timeout = saved })
+
+	alice := &xmpp_account{user: env.alice, id: "x1", address: mustjid("alice@example.com")}
+	carol := mustjid("carol@far.test")
+	xmpp_subscription_send(alice, "subscribed", carol)
+	rows, claimed := delivery_claim("xmpp:far.test")
+	if !claimed || len(rows) != 1 {
+		t.Fatalf("the approval was not claimed: %v", rows)
+	}
+	xmpp_subscription_send(alice, "unsubscribed", carol)
+	if outcome := delivery_attempt(&rows[0]); outcome != delivery_dropped {
+		t.Errorf("the replaced approval's outcome = %v, want dropped", outcome)
+	}
+	if heard := remote.heard(`type="subscribed"`); len(heard) != 0 {
+		t.Errorf("THE POINT: the approval taken back was sent: %v", heard)
+	}
+}
+
+// TestXMPPPresenceOnlyWhileAllowed: the presence after a confirmed approval
+// goes only to a contact who may still see it.
+func TestXMPPPresenceOnlyWhileAllowed(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	remote := env.remote(t, "far.test")
+	remote.answering(true)
+	saved := xmpp_confirm_timeout
+	xmpp_confirm_timeout = 5 * time.Second
+	t.Cleanup(func() { xmpp_confirm_timeout = saved })
+	c, err := env.connect(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.online(t)
+
+	// The approval is on its way, and the roster no longer lets carol see
+	// alice: taken back while it went.
+	alice := &xmpp_account{user: env.alice, id: "x1", address: mustjid("alice@example.com")}
+	xmpp_roster_save(alice, &xmpp_item{address: "carol@far.test", subscription: "none", listed: true})
+	xmpp_subscription_send(alice, "subscribed", mustjid("carol@far.test"))
+	delivery_host("xmpp:far.test")
+	if len(remote.heard(`type="subscribed"`)) != 1 {
+		t.Fatalf("the approval did not reach the other server: %v", remote.received)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if heard := remote.heard("<presence", `from="`+c.full.String()+`"`); len(heard) != 0 {
+		t.Errorf("THE POINT: the presence went to a contact the roster no longer lets see it: %v", heard)
 	}
 }

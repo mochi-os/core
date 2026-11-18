@@ -377,6 +377,9 @@ const (
 // backed off on any other failure until its attempts or its age run out.
 func delivery_attempt(d *delivery) delivery_outcome {
 	db := db_open("db/networks.db")
+	if d.Network == "xmpp" {
+		return delivery_xmpp(db, d)
+	}
 	user := user_by_uid(d.User)
 	actor, private := "", ""
 	if domain, found := strings.CutPrefix(d.Account, activitypub_server_account); found {

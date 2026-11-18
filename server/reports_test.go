@@ -120,6 +120,103 @@ func TestReportsFlag(t *testing.T) {
 	}
 }
 
+// TestReportsFlagText: a Flag naming the account's own posts keeps their text
+// as their apps hold them, so the administrator reads what was complained of;
+// a post since deleted, a boost, a like and an object elsewhere add nothing.
+// Each post is asked for once, none once the text is as long as a report
+// keeps, and none for a Flag past the bound of reports waiting, which is
+// dropped.
+func TestReportsFlagText(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	load_core_labels()
+	report_capture(t, alice)
+	db := db_user(alice, "user")
+	public := json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{}})
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o1', 'f1', 'feeds', 'Note', ?, 1000)", public)
+	db.exec("insert into objects (id, account, app, type, addressing, created, deleted) values ('o2', 'f1', 'feeds', 'Note', ?, 1001, 2000)", public)
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o3', 'f1', 'feeds', 'Announce', ?, 1002)", json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{}, "object": "https://remote.example/n/1"}))
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o4', 'f1', 'feeds', 'Note', ?, 1003)", public)
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o5', 'f1', 'feeds', 'Like', ?, 1004)", json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{}, "activity": map[string]any{"type": "Like", "object": "https://remote.example/n/2"}}))
+	// A post named only under another server's address for the account.
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o6', 'f1', 'feeds', 'Note', ?, 1005)", public)
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o7', 'f1', 'feeds', 'Article', ?, 1006)", public)
+	db.close()
+	asked := map[string]int{}
+	saved_call := activitypub_call
+	activitypub_call = func(user *User, a *App, function string, args Map) (any, error) {
+		id, _ := args["id"].(string)
+		asked[id]++
+		switch id {
+		case "https://example.com/~f1/o1":
+			return map[string]any{"type": "Note", "content": "<p>Buy <b>now</b> &amp; save</p>"}, nil
+		case "https://example.com/~f1/o4":
+			return map[string]any{"type": "Note", "content": "<p>Second</p>"}, nil
+		case "https://example.com/~f1/o7":
+			return map[string]any{"type": "Article", "content": "<p>" + strings.Repeat("z", report_content_maximum+10) + "</p>"}, nil
+		}
+		t.Errorf("THE POINT: the app was asked for %s", id)
+		return map[string]any{"type": "Note", "content": "<p>" + id + "</p>"}, nil
+	}
+	t.Cleanup(func() { activitypub_call = saved_call })
+	apps_lock.Lock()
+	saved_apps := apps
+	apps = map[string]*App{"feeds": {id: "feeds", internal: &AppVersion{}}}
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		apps = saved_apps
+		apps_lock.Unlock()
+	})
+	flag := func(id string, objects ...any) map[string]any {
+		return map[string]any{"@context": activitystreams, "id": bob.id + "#flags/" + id, "type": "Flag", "actor": bob.id, "content": "Spam", "object": append([]any{"https://example.com/~f1"}, objects...)}
+	}
+
+	if w := signed_post(t, bob, "/~f1/inbox", flag("text", "https://example.com/~f1/o1", "https://example.com/~f1/o2", "https://example.com/~f1/o3", "https://remote.example/notes/9", "https://example.com/~f1/o4", "https://example.com/~f1/o5", "https://elsewhere.example/~f1/o6", "https://example.com/~f1/o1"), nil); w.Code != http.StatusAccepted {
+		t.Fatalf("flag answered %d %s", w.Code, w.Body.String())
+	}
+	rows := reports_rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("reports = %v", rows)
+	}
+	if content := row_string(rows[0], "content"); content != "Buy now & save\n\nSecond" {
+		t.Errorf("THE POINT: the reported text = %q", content)
+	}
+	if asked["https://example.com/~f1/o1"] != 1 {
+		t.Errorf("THE POINT: a post named twice was asked for %d times", asked["https://example.com/~f1/o1"])
+	}
+	if objects := report_objects(rows[0]); len(objects) != 8 {
+		t.Errorf("objects = %v", objects)
+	}
+
+	// A post as long as a report keeps: the post after it is not asked for.
+	asked = map[string]int{}
+	if w := signed_post(t, bob, "/~f1/inbox", flag("long", "https://example.com/~f1/o7", "https://example.com/~f1/o4"), nil); w.Code != http.StatusAccepted {
+		t.Fatalf("long flag answered %d", w.Code)
+	}
+	if asked["https://example.com/~f1/o7"] != 1 || asked["https://example.com/~f1/o4"] != 0 {
+		t.Errorf("THE POINT: asked past the length a report keeps: %v", asked)
+	}
+	if rows := reports_rows(t); len(rows) != 2 || len(row_string(rows[1], "content")) != report_content_maximum {
+		t.Errorf("the long report = %d rows", len(rows))
+	}
+
+	// Past the bound of reports waiting from the server: dropped, and no post
+	// is asked for.
+	saved := report_open_maximum
+	report_open_maximum = 2
+	t.Cleanup(func() { report_open_maximum = saved })
+	asked = map[string]int{}
+	if w := signed_post(t, bob, "/~f1/inbox", flag("bound", "https://example.com/~f1/o1"), nil); w.Code != http.StatusAccepted {
+		t.Fatalf("bound flag answered %d", w.Code)
+	}
+	if len(asked) != 0 {
+		t.Errorf("THE POINT: posts were asked for a report past the bound: %v", asked)
+	}
+	if rows := reports_rows(t); len(rows) != 2 {
+		t.Errorf("a report past the bound was kept: %d rows", len(rows))
+	}
+}
+
 // TestReportsFlagCommunity: a Flag sent to a community stays its moderators',
 // queued for the app that keeps it, and is no report for the administrators.
 func TestReportsFlagCommunity(t *testing.T) {

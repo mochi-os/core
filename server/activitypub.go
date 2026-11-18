@@ -1834,6 +1834,10 @@ func activitypub_report(ctx context.Context, user *User, a *actor, actor_id stri
 	}
 	comment, _ := activity["content"].(string)
 	host := activitypub_host_of(remote)
+	if report_full(host, remote) {
+		debug("Report from %s dropped: %d waiting", remote, report_open_maximum)
+		return
+	}
 	name := host
 	if r, err := author_resolve(ctx, remote); err == nil && r.Address != "" && r.Type == "person" {
 		name = r.Address
@@ -1845,9 +1849,50 @@ func activitypub_report(ctx context.Context, user *User, a *actor, actor_id stri
 		User:     user.UID,
 		Objects:  objects,
 		Comment:  html_text(comment),
+		Content:  activitypub_report_text(user, a, actor_id, objects),
 		Names:    map[string]string{remote: name, actor_id: "@" + a.Handle + "@" + a.Domain},
 		Host:     host,
 	})
+}
+
+// activitypub_report_text is the text of the reported objects that are the
+// account's own posts, as their apps hold them now, so the administrator reads
+// what was complained of; a post since deleted, a boost or another activity
+// of the account's, and anything elsewhere add nothing. Each post is asked
+// for once, and no more once the text is as long as a report keeps.
+func activitypub_report_text(user *User, a *actor, actor_id string, objects []string) string {
+	db := db_user(user, "user")
+	defer db.close()
+	var texts []string
+	seen := map[string]bool{}
+	length := 0
+	for i, object := range objects {
+		if i >= report_objects_maximum || length >= report_content_maximum {
+			break
+		}
+		id, found := strings.CutPrefix(object, actor_id+"/")
+		if !found || id == "" || strings.ContainsAny(id, "/?#") || seen[id] {
+			continue
+		}
+		seen[id] = true
+		object_row, _ := db.row("select id, app, type, addressing, created, updated, deleted from objects where id=? and account=?", id, a.ID)
+		if object_row == nil || row_int(object_row, "deleted") != 0 || object_activity(object_row) != nil || activitypub_announce(actor_id, object_row) != nil {
+			continue
+		}
+		document := activitypub_object_document(user, a, nil, object_row)
+		if document == nil {
+			continue
+		}
+		text, _ := document["content"].(string)
+		if text = html_text(text); text == "" {
+			text, _ = document["name"].(string)
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			texts = append(texts, text)
+			length += len(text) + 2
+		}
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 // === The inbound queue ===

@@ -100,17 +100,11 @@ func report_clip(text string, maximum int) string {
 // or "" where the bound of reports waiting from its server or reporter is
 // reached.
 func report_add(r report) string {
-	db := networks_database()
-	var waiting map[string]any
-	if r.Host != "" {
-		waiting, _ = db.row("select count(*) as count from reports where host=? and resolved=0", strings.ToLower(r.Host))
-	} else {
-		waiting, _ = db.row("select count(*) as count from reports where host='' and reporter=? and resolved=0", r.Reporter)
-	}
-	if row_int(waiting, "count") >= int64(report_open_maximum) {
+	if report_full(r.Host, r.Reporter) {
 		debug("Report from %s dropped: %d waiting", r.Reporter, report_open_maximum)
 		return ""
 	}
+	db := networks_database()
 	objects := []string{}
 	for _, object := range r.Objects {
 		if object = report_clip(object, 2048); object != "" && len(objects) < report_objects_maximum {
@@ -125,6 +119,20 @@ func report_add(r report) string {
 		id, r.Network, r.Reporter, r.Person, r.User, r.Room, json_encode(objects), r.Category, report_clip(r.Comment, report_comment_maximum), report_clip(r.Content, report_content_maximum), json_encode(r.Names), strings.ToLower(r.Host), now())
 	report_notify(id, r)
 	return id
+}
+
+// report_full says whether the reports waiting from a server, or from a
+// reporter with none, have reached the bound, so a report from them would be
+// dropped: a caller with work to do for one asks first.
+func report_full(host string, reporter string) bool {
+	db := networks_database()
+	var waiting map[string]any
+	if host != "" {
+		waiting, _ = db.row("select count(*) as count from reports where host=? and resolved=0", strings.ToLower(host))
+	} else {
+		waiting, _ = db.row("select count(*) as count from reports where host='' and reporter=? and resolved=0", reporter)
+	}
+	return row_int(waiting, "count") >= int64(report_open_maximum)
 }
 
 // report_name is how an address is shown: the name given for it, else the

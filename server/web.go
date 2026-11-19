@@ -580,6 +580,15 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
+	// A read runs only the functions the app marked read. Judged, like the
+	// preflight, on the action found for whoever the request runs as.
+	if web_read_refused(c, aa, git_route) {
+		debug("405 read of an unmarked action: app=%s action=%s method=%s", a.id, name, c.Request.Method)
+		c.Header("Allow", "POST")
+		respond_error(c, http.StatusMethodNotAllowed, "method_not_allowed", "errors.unsupported_method", nil)
+		return true
+	}
+
 	// Block app actions for users whose restore hasn't completed; /login stays
 	// reachable for the waiting page. Reaching an app mid-restore can corrupt the
 	// running database connection while the restore renames files underneath it.
@@ -1524,6 +1533,26 @@ func web_serves_file(c *gin.Context, aa *AppAction) bool {
 	}
 	accept := c.GetHeader("Accept")
 	return strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+}
+
+// web_read_refused reports whether a GET or HEAD would run an action's
+// function the app has not marked read. Routing ignores the method and a page
+// builds request paths from data, so an avatar's address holding a crafted
+// comment id ("../delete?x=") would otherwise be a GET of the app's delete
+// action, its inputs read from the query string. An asset action is what an
+// <img> reads, a declared file or files directory answers before any function
+// runs, and the git and DAV engines answer their own methods.
+func web_read_refused(c *gin.Context, aa *AppAction, git bool) bool {
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		return false
+	}
+	if aa.Read || aa.Asset || git || aa.Feature == "git" || dav_served(aa.Feature) {
+		return false
+	}
+	if web_serves_file(c, aa) || aa.Files != "" {
+		return false
+	}
+	return aa.Function != "" || aa.internal_function != nil
 }
 
 // same_user reports whether two users are the same account, nil being nobody.

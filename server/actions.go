@@ -351,18 +351,28 @@ func (a *Action) error(code int, format string, values ...any) {
 	a.web.Writer.WriteString("</pre></body></html>")
 }
 
+// action_queried reports whether a request's inputs may come from its query
+// string: only a read's. A request that may change state takes them from the
+// route, the body and its form, so a page steered into sending one to a path
+// it built from data cannot also choose what it is sent with.
+func action_queried(c *gin.Context) bool {
+	return c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead
+}
+
 func (a *Action) input(name string) string {
 	input, found := a.inputs[name]
 	if found {
 		return input
 	}
 
-	value := a.web.Query(name)
-	if value != "" {
-		return value
+	if action_queried(a.web) {
+		value := a.web.Query(name)
+		if value != "" {
+			return value
+		}
 	}
 
-	value = a.web.PostForm(name)
+	value := a.web.PostForm(name)
 	if value != "" {
 		return value
 	}
@@ -700,8 +710,10 @@ func (a *Action) sl_inputs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	var values []string
 
-	// Check query string first
-	values = a.web.QueryArray(field)
+	// The query string first, on a read only (action_queried)
+	if action_queried(a.web) {
+		values = a.web.QueryArray(field)
+	}
 
 	// If no query values, check form values
 	if len(values) == 0 {

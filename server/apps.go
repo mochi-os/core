@@ -68,7 +68,13 @@ type AppAction struct {
 	// Site marks an action that publishes a website, exempting it from the
 	// safe-serve policy (SVG sanitized, unsafe types forced to download).
 	// Declared, never inferred from the request arriving on a domain route.
-	Site      bool   `json:"site"`
+	Site bool `json:"site"`
+	// Read marks an action that only reads, so a GET or HEAD may run it.
+	// Every other action's function answers only a method that may change
+	// state: a page builds request paths from data, and an id crafted to climb
+	// out of an image's path would otherwise make the image's GET a call to a
+	// writing action, its inputs chosen in the query string.
+	Read      bool   `json:"read"`
 	OpenGraph string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 
 	name              string            `json:"-"`

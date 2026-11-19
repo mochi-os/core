@@ -366,13 +366,14 @@ def action_pure(a):
 
 // anonymous_dispatch runs one request with no credential through web_action.
 // routed is the owner domains_middleware would have published for a domain
-// route; empty for a request that arrived by the app's own path.
+// route; empty for a request that arrived by the app's own path. A POST, as
+// the fixture's actions are not marked read.
 func anonymous_dispatch(t *testing.T, app *App, action string, routed string) (int, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/"+app.id+"/"+action, nil)
+	c.Request = httptest.NewRequest("POST", "/"+app.id+"/"+action, nil)
 	c.Request.Header.Set("Accept", "application/json")
 	routing := routing_class
 	if routed != "" {

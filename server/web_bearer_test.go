@@ -62,11 +62,12 @@ func web_bearer_env(t *testing.T) (*App, *User, string) {
 	version := &AppVersion{
 		Actions: map[string]AppAction{
 			// Non-public and function-backed: neither aa.Public nor
-			// shell_static can excuse it from the token requirement.
-			"-/private": {Function: "action_private"},
+			// shell_static can excuse it from the token requirement. Marked
+			// read, as the tokens these tests measure are a read's.
+			"-/private": {Function: "action_private", Read: true},
 			// A public action skips the app-token block entirely, and still
 			// runs AS the user any credential names.
-			"-/open": {Function: "action_open", Public: true},
+			"-/open": {Function: "action_open", Public: true, Read: true},
 			// Marked asset: the only actions an asset token reaches. One
 			// private and function-backed, one public, so the read-only rule
 			// is measured on both sides of the app-token block.
@@ -250,15 +251,18 @@ def action_mint(a):
 	if err := os.WriteFile(star, []byte(source), 0o600); err != nil {
 		t.Fatalf("writing the test app: %v", err)
 	}
+	// Marked read where a test reaches the action with a GET: what these tests
+	// measure is which user and session a request binds, and an app token in
+	// the URL binds only on a read.
 	av := &AppVersion{Version: "1.0", Execute: []string{star}, Actions: map[string]AppAction{
-		"-/open":    {Function: "action_who", Public: true},
+		"-/open":    {Function: "action_who", Public: true, Read: true},
 		"-/picture": {Function: "action_who", Public: true, Asset: true},
 		"-/avatar":  {Function: "action_who", Public: true, Asset: true, Shared: true},
-		"-/private": {Function: "action_who"},
-		"-/session": {Function: "action_session"},
-		"-/storage": {Function: "action_storage", Public: true},
+		"-/private": {Function: "action_who", Read: true},
+		"-/session": {Function: "action_session", Read: true},
+		"-/storage": {Function: "action_storage", Public: true, Read: true},
 		"-/write":   {Function: "action_write", Public: true},
-		"-/logout":  {Function: "action_logout"},
+		"-/logout":  {Function: "action_logout", Read: true},
 		"-/mint":    {Function: "action_mint"},
 	}}
 	av.Architecture.Engine = "starlark"
@@ -627,9 +631,9 @@ func TestBearerGateVersionFollowsTheSetAside(t *testing.T) {
 			t.Fatal(err)
 		}
 		av := &AppVersion{Version: version, Execute: []string{star}, Actions: map[string]AppAction{
-			"-/version": {Function: "action_version", Public: true},
+			"-/version": {Function: "action_version", Public: true, Read: true},
 			// Public only in the victim's version.
-			"-/gated": {Function: "action_version", Public: version == "2"},
+			"-/gated": {Function: "action_version", Public: version == "2", Read: true},
 		}}
 		// A DAV route only in the victim's version, which answers OPTIONS
 		// itself; elsewhere OPTIONS gets the preflight.
@@ -685,7 +689,7 @@ func web_bearer_repository(t *testing.T, app *App) *Entity {
 	t.Helper()
 	app.internal.Actions[":repository/*path"] = AppAction{File: "index.html", Public: true}
 	app.internal.Actions[":repository/git/*path"] = AppAction{Feature: "git", Public: true}
-	app.internal.Actions[":repository/-/storage"] = AppAction{Function: "action_storage", Public: true}
+	app.internal.Actions[":repository/-/storage"] = AppAction{Function: "action_storage", Public: true, Read: true}
 
 	repository := test_entity_id('r')
 	db_open("db/users.db").exec("insert into entities (id, fingerprint, user, class, name, privacy) values (?, ?, 'bearer-user', 'repository', 'Private', 'private')",
@@ -856,12 +860,12 @@ func TestPeopleEmbeddedRoutesAreShared(t *testing.T) {
 // revoke the credentials that outlive it.
 func TestBearerGateKeepsAURLTokenCarried(t *testing.T) {
 	app, session, victim, _ := web_bearer_two_users(t)
-	status, body := web_bearer_target(t, app, session, "Bearer "+victim["asset"], "GET", "-/mint?token="+victim["api"])
+	status, body := web_bearer_target(t, app, session, "Bearer "+victim["asset"], "POST", "-/mint?token="+victim["api"])
 	if status == 200 || !strings.Contains(body, "carried in a URL") {
 		t.Errorf("THE POINT: an API token in the URL, kept beside a set-aside asset token, minted a token: %d %s", status, body)
 	}
 	// CONTROL: the same request with the API token in no URL mints one.
-	status, body = web_bearer_target(t, app, session, "Bearer "+victim["app"], "GET", "-/mint")
+	status, body = web_bearer_target(t, app, session, "Bearer "+victim["app"], "POST", "-/mint")
 	if status != 200 || !strings.Contains(body, `"minted":true`) {
 		t.Errorf("CONTROL: an app token in the header could not mint a token: %d %s", status, body)
 	}

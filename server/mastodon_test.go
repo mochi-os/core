@@ -31,6 +31,7 @@ type mastodon_fake struct {
 	keys          []string
 	polls         int
 	exchanges     int    // the token requests it has had
+	revokes       int    // the tokens it was asked to revoke, with its registration
 	address       string // the account address verify_credentials answers, when not its own
 }
 
@@ -58,6 +59,15 @@ func create_mastodon_fake(t *testing.T) *mastodon_fake {
 		f.redirect = r.Form.Get("redirect_uris")
 		f.lock.Unlock()
 		answer(w, 200, map[string]any{"id": "1", "client_id": f.client, "client_secret": f.secret})
+	})
+	mux.HandleFunc("POST /oauth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		f.lock.Lock()
+		defer f.lock.Unlock()
+		if r.Form.Get("token") == "mtok" && r.Form.Get("client_id") == f.client && r.Form.Get("client_secret") == f.secret {
+			f.revokes++
+		}
+		answer(w, 200, map[string]any{})
 	})
 	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()

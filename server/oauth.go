@@ -1416,7 +1416,7 @@ func oauth_get_json(ctx context.Context, url, token string, github bool, out any
 // Starlark API
 // ============================================================================
 
-// mochi.user.oauth.list() -> list: Identities linked to the current user
+// mochi.user.oauth.list() -> list: Identities linked to the current user, each with its provider, email, name, when it was linked (created), when it last served as a step-up factor (used), and whether a step-up can use it now (verify)
 func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1436,9 +1436,17 @@ func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	for _, r := range rows {
 		id, _ := r["id"].(int64)
 		r["used"] = lasts[id]
+		r["verify"] = oauth_verifiable(row_string(r, "provider"))
 		delete(r, "id")
 	}
 	return sl_encode(rows), nil
+}
+
+// oauth_verifiable reports whether verify.begin takes a provider: one this
+// server offers, and a network's only where its accounts sign users in here.
+func oauth_verifiable(name string) bool {
+	provider, ok := oauth_providers()[name]
+	return ok && oauth_enabled(name) && (provider.network == "" || network_login_offered(name))
 }
 
 // mochi.user.oauth.link(provider, target?) -> dict | None: Begin linking a
@@ -1502,10 +1510,10 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "invalid challenge")
 	}
 
-	provider, ok := oauth_providers()[name]
-	if !ok || !oauth_enabled(name) || (provider.network != "" && !network_login_offered(name)) {
-		return sl_error(fn, "unknown provider")
+	if !oauth_verifiable(name) {
+		return sl_error(fn, "%v", refuse(http.StatusBadRequest, "errors.unknown_provider", nil))
 	}
+	provider := oauth_providers()[name]
 	// Only a provider the user has actually linked can re-authenticate them.
 	if linked, _ := db_open("db/users.db").exists("select 1 from oauth where user=? and provider=?", user.UID, name); !linked {
 		return sl_error(fn, "provider not linked")

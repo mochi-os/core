@@ -59,8 +59,9 @@ func TestServesFileDecidesTheAuthBypass(t *testing.T) {
 	}
 }
 
-// The bypass and the branch that writes the file ask the same function, so they
-// cannot disagree about whether an action serves a file or runs its function.
+// The bypass, the branch that writes the file and the read gate ask the same
+// function, so they cannot disagree about whether an action serves a file or
+// runs its function.
 func TestServesFileMatchesTheServingBranch(t *testing.T) {
 	source, err := os.ReadFile("web.go")
 	if err != nil {
@@ -68,8 +69,14 @@ func TestServesFileMatchesTheServingBranch(t *testing.T) {
 	}
 	text := string(source)
 
-	if n := strings.Count(text, "web_serves_file(c, aa)"); n != 2 {
-		t.Errorf("web_serves_file is called %d times in web.go, want exactly 2 - web_static, which the shell_static bypass asks, and the serving branch", n)
+	if n := strings.Count(text, "web_serves_file(c, aa)"); n != 3 {
+		t.Errorf("web_serves_file is called %d times in web.go, want exactly 3 - web_static, which the shell_static bypass asks, the serving branch, and web_read_refused, which lets a GET through to a file", n)
+	}
+	if strings.Count(text, "\tif web_serves_file(c, aa) {") != 1 {
+		t.Error("the serving branch no longer asks web_serves_file whether to write the file")
+	}
+	if strings.Count(text, "if web_serves_file(c, aa) || aa.Files != \"\" {") != 1 {
+		t.Error("web_read_refused no longer asks web_serves_file; a GET answered with a file and a GET refused can now disagree")
 	}
 	if strings.Count(text, "return web_serves_file(c, aa) ||") != 1 {
 		t.Error("web_static no longer derives from web_serves_file; the bypass and the serving branch can now disagree")

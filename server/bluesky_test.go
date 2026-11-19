@@ -633,3 +633,75 @@ func TestBlueskyClientDocument(t *testing.T) {
 	}
 	networks_development = true
 }
+
+// TestNetworkStepUpBluesky: a Bluesky account linked as a way to sign in
+// confirms its user's identity from its DID: the consent is its own
+// authorization server's, the callback must come from that issuer, the
+// factor accrues in the browser that completed the consent, and the session
+// the exchange minted is revoked, since the step-up keeps nothing.
+func TestNetworkStepUpBluesky(t *testing.T) {
+	alice, fake := bluesky_test_setup(t)
+	sessions := db_open("db/sessions.db")
+	sessions.exec("create table if not exists verifications (oauth integer not null, user text not null, last integer not null, primary key (oauth, user))")
+	db_open("db/users.db").exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, 'bluesky', ?, ?, 1, 'Alice', ?)", alice.UID, fake.did, alice.Username, now())
+
+	begin := func(challenge string) {
+		t.Helper()
+		thread := &sl.Thread{}
+		thread.SetLocal("app", &App{id: "internal", internal: &AppVersion{}})
+		thread.SetLocal("user", alice)
+		thread.SetLocal("session", "s-step")
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "http://example.com/settings/-/user/account/oauth/verify/begin", nil)
+		thread.SetLocal("action", &Action{web: c})
+		fn := sl.NewBuiltin("mochi.user.oauth.verify.begin", api_user_oauth_verify_begin)
+		v, err := api_user_oauth_verify_begin(thread, fn, sl.Tuple{sl.String("bluesky"), sl.String(challenge)}, nil)
+		if err != nil {
+			t.Fatalf("THE POINT: the step-up through the linked Bluesky account did not begin: %v", err)
+		}
+		answer, _, _ := v.(*sl.Dict).Get(sl.String("url"))
+		consent, err := url.Parse(string(answer.(sl.String)))
+		if err != nil || consent.Path != "/authorize" || consent.Query().Get("request_uri") == "" {
+			t.Fatalf("consent = %v", answer)
+		}
+	}
+	proved := func(challenge string) bool {
+		found, _ := sessions.exists("select 1 from ceremonies where challenge=? and type='reauthentication_oauth' and user=?", []byte(challenge), alice.UID)
+		return found
+	}
+	revoked := func() int {
+		fake.lock.Lock()
+		defer fake.lock.Unlock()
+		return fake.revokes
+	}
+
+	// From another issuer, nothing is proved and no session was minted.
+	wrong := oauth_challenge(random_alphanumeric(64))
+	begin(wrong)
+	state, _ := oauth_only_ceremony(t)
+	network_login_callback("bluesky", "state="+state+"&code=code-1&iss=https://evil.example", &http.Cookie{Name: "session", Value: "s-browser"})
+	if proved(wrong) || revoked() != 0 {
+		t.Errorf("a callback from another issuer: proved %v, revocations %d", proved(wrong), revoked())
+	}
+
+	first := oauth_challenge(random_alphanumeric(64))
+	begin(first)
+	state, st := oauth_only_ceremony(t)
+	if st.Mode != "reauthentication" || st.Identifier != fake.did {
+		t.Fatalf("ceremony = %+v", st)
+	}
+	r := network_login_callback("bluesky", "state="+state+"&code=code-1&iss="+url.QueryEscape(fake.server.URL), &http.Cookie{Name: "session", Value: "s-browser"})
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "mochi-oauth-done") {
+		t.Fatalf("callback: %d %q", r.Code, r.Body.String())
+	}
+	if !proved(first) {
+		t.Error("THE POINT: the linked Bluesky account's consent stored no proof")
+	}
+	if accrued, _ := sessions.exists("select 1 from reauthentication where user=? and session='s-browser' and methods like '%oauth%'", alice.UID); !accrued {
+		t.Error("the factor did not accrue in the browser that completed the consent")
+	}
+	if revoked() != 1 {
+		t.Errorf("THE POINT: %d sessions revoked after a step-up, want 1", revoked())
+	}
+}

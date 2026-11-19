@@ -83,9 +83,12 @@ func bluesky_fetch(ctx context.Context, user *User, address string, accept strin
 
 // bluesky_resolve finds an account from a handle or a DID.
 func bluesky_resolve(ctx context.Context, user *User, identifier string) (*bluesky_identity, error) {
-	identifier = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(identifier), "@"))
+	identifier = strings.TrimPrefix(strings.TrimSpace(identifier), "@")
 	did := identifier
+	// A DID stands as written: a did:web's path is case-sensitive and its port
+	// an escaped colon in capitals (%3A). Only a handle is folded.
 	if !strings.HasPrefix(identifier, "did:") {
+		identifier = strings.ToLower(identifier)
 		if !bluesky_handle_re.MatchString(identifier) {
 			return nil, fmt.Errorf("invalid handle")
 		}

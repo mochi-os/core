@@ -155,6 +155,24 @@ func mastodon_callback(ctx context.Context, user *User, st *oauth_state, code st
 	return profile, l.data, nil
 }
 
+// mastodon_revoke ends an access token on its server, best effort, with the
+// registration it was issued to.
+func mastodon_revoke(ctx context.Context, user *User, host string, client string, token string) {
+	if host == "" || token == "" {
+		return
+	}
+	row, _ := db_open("db/networks.db").row("select id, secret from clients where host=? and network='mastodon'", host)
+	if row == nil || row_string(row, "id") != client {
+		return
+	}
+	l := &linked{user: user, kind: "mastodon", data: map[string]any{"server": host}}
+	l.form(ctx, network_scheme+host+"/oauth/revoke", url.Values{
+		"client_id":     {client},
+		"client_secret": {row_string(row, "secret")},
+		"token":         {token},
+	}, nil)
+}
+
 // mastodon_address is the account's address, @user@host.
 func mastodon_address(acct string, host string) string {
 	acct = strings.TrimPrefix(acct, "@")

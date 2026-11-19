@@ -729,14 +729,20 @@ func linked_reauthenticate(c *gin.Context, kind string, st *oauth_state, user_id
 	ctx, cancel := context.WithTimeout(context.Background(), linked_timeout)
 	defer cancel()
 	var profile *linked_profile
+	var data map[string]any
 	var err error
 	switch kind {
 	case "mastodon":
-		profile, _, err = mastodon_callback(ctx, user, st, code)
+		profile, data, err = mastodon_callback(ctx, user, st, code)
 	case "bluesky":
-		profile, _, err = bluesky_callback(ctx, user, st, code, c.Query("iss"))
+		profile, data, err = bluesky_callback(ctx, user, st, code, c.Query("iss"))
 	default:
 		err = fmt.Errorf("unknown provider")
+	}
+	// A step-up proves the account and keeps nothing, so the credential the
+	// exchange minted is ended on the account's server, proved or not.
+	if data != nil {
+		defer linked_reauthentication_discard(ctx, user, kind, st, data)
 	}
 	if err != nil || profile == nil || profile.ID == "" {
 		info("Step-up with a %s account: %v", kind, err)
@@ -750,6 +756,18 @@ func linked_reauthenticate(c *gin.Context, kind string, st *oauth_state, user_id
 		oauth_reauthentication_prove(users, kind, subject, user, web_session(c), st.Challenge)
 	}
 	oauth_reauthenticate_page(c)
+}
+
+// linked_reauthentication_discard revokes the credential a step-up's exchange
+// minted, best effort: a Mastodon access token, or a Bluesky OAuth session.
+func linked_reauthentication_discard(ctx context.Context, user *User, kind string, st *oauth_state, data map[string]any) {
+	switch kind {
+	case "mastodon":
+		token, _ := data["token"].(string)
+		mastodon_revoke(ctx, user, st.Server, st.Client, token)
+	case "bluesky":
+		bluesky_forget(ctx, &linked{user: user, kind: kind, data: data})
+	}
 }
 
 // linked_subject is the identity a sign-in is keyed by: the account's

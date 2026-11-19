@@ -590,6 +590,11 @@ func TestNetworkStepUpMastodon(t *testing.T) {
 		fake.address = fake.server.URL + "/@" + name
 		fake.lock.Unlock()
 	}
+	revoked := func() int {
+		fake.lock.Lock()
+		defer fake.lock.Unlock()
+		return fake.revokes
+	}
 	challenge := func() string { return oauth_challenge(random_alphanumeric(64)) }
 
 	// An account the user never linked begins nothing.
@@ -622,6 +627,10 @@ func TestNetworkStepUpMastodon(t *testing.T) {
 	if !accrued("s-browser") || accrued("s-step") {
 		t.Errorf("the factor accrued in the completing browser's session %v, in the beginning one %v", accrued("s-browser"), accrued("s-step"))
 	}
+	// The step-up keeps nothing, so the token its exchange minted is revoked.
+	if revoked() != 1 {
+		t.Errorf("THE POINT: %d tokens revoked after a step-up, want 1", revoked())
+	}
 
 	// A refused consent proves nothing.
 	declined := challenge()
@@ -649,6 +658,9 @@ func TestNetworkStepUpMastodon(t *testing.T) {
 	if proved(other) || exchanged() != before+1 {
 		t.Errorf("an account the user did not link: proved %v, exchanges %d -> %d", proved(other), before, exchanged())
 	}
+	if revoked() != 2 {
+		t.Errorf("%d tokens revoked after a refused account's step-up, want 2", revoked())
+	}
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u-bob', 'bob@example.com')")
 	db_open("db/users.db").exec("insert into oauth (user, provider, subject, email, verified, name, created) values ('u-bob', 'mastodon', ?, 'bob@example.com', 1, 'Bob', ?)", fake.server.URL+"/@bob", now())
 	address("bob")
@@ -671,10 +683,36 @@ func TestNetworkStepUpMastodon(t *testing.T) {
 	}
 	db_open("db/users.db").exec("update users set disabled='' where uid=?", alice.UID)
 
-	// With sign-in through other providers off server-wide, none begins.
+	// The identity list says which identities can confirm the user, so the
+	// step-up offers only those; with sign-in through other providers off
+	// server-wide none can, and a begin is refused in the user's words.
+	verifies := func() any {
+		thread := &sl.Thread{}
+		thread.SetLocal("app", &App{id: "internal", internal: &AppVersion{}})
+		thread.SetLocal("user", alice)
+		v, err := api_user_oauth_list(thread, sl.NewBuiltin("mochi.user.oauth.list", api_user_oauth_list), nil, nil)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		list, _ := v.(sl.Indexable)
+		for i := 0; list != nil && i < list.Len(); i++ {
+			row, _ := list.Index(i).(*sl.Dict)
+			if provider, _, _ := row.Get(sl.String("provider")); provider == sl.String("mastodon") {
+				verify, _, _ := row.Get(sl.String("verify"))
+				return verify
+			}
+		}
+		return nil
+	}
+	if verifies() != sl.True {
+		t.Errorf("THE POINT: the linked Mastodon account lists verify %v, want true", verifies())
+	}
 	setting_set("auth_oauth", "disabled")
-	if _, err := begin(challenge()); err == nil {
-		t.Error("a step-up began with sign-in through other providers off")
+	if verifies() != sl.False {
+		t.Errorf("THE POINT: with sign-in through other providers off, the account lists verify %v, want false", verifies())
+	}
+	if _, err := begin(challenge()); !refused(err, "errors.unknown_provider", "") {
+		t.Errorf("a step-up with sign-in through other providers off = %v", err)
 	}
 	setting_set("auth_oauth", "")
 

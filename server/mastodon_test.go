@@ -30,6 +30,7 @@ type mastodon_fake struct {
 	challenge     string
 	keys          []string
 	polls         int
+	exchanges     int    // the token requests it has had
 	address       string // the account address verify_credentials answers, when not its own
 }
 
@@ -62,6 +63,7 @@ func create_mastodon_fake(t *testing.T) *mastodon_fake {
 		r.ParseForm()
 		f.lock.Lock()
 		defer f.lock.Unlock()
+		f.exchanges++
 		if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code") != "code-1" || r.Form.Get("client_id") != f.client || r.Form.Get("client_secret") != f.secret || r.Form.Get("redirect_uri") != f.redirect || oauth_challenge(r.Form.Get("code_verifier")) != f.challenge {
 			answer(w, 400, map[string]any{"error": "invalid_grant", "error_description": "the code or the verifier is wrong"})
 			return
@@ -266,11 +268,11 @@ func TestMastodonLink(t *testing.T) {
 	session := login_create(alice.UID, "", "")
 
 	// A server named wrongly is a refusal for the user, not a server fault.
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", "not a server", "target", "/settings/networks")); !refused(err, "errors.link_failed", "invalid server") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("token", linked_stepup(t, alice), "server", "not a server", "target", "/settings/networks")); !refused(err, "errors.link_failed", "invalid server") {
 		t.Errorf("THE POINT: a server named wrongly: %v", err)
 	}
 
-	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", "https://"+host+"/", "target", "/settings/networks")))
+	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("token", linked_stepup(t, alice), "server", "https://"+host+"/", "target", "/settings/networks")))
 	hop, _ := begun["url"].(string)
 	row, _ := db_open("db/networks.db").row("select id, redirect from clients where host=? and network='mastodon'", host)
 	if row == nil || row_string(row, "redirect") != "http://example.com/_/auth/oauth/mastodon/callback" {
@@ -288,7 +290,7 @@ func TestMastodonLink(t *testing.T) {
 
 	// A callback presented by a browser without the session is refused, and
 	// the ceremony is spent.
-	other := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks")))
+	other := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("token", linked_stepup(t, alice), "server", host, "target", "/settings/networks")))
 	other_state := oauth_hop(t, "mastodon", other["url"].(string), session).Query().Get("state")
 	if code, location := link_return("mastodon", "state="+other_state+"&code=code-1", ""); code != http.StatusFound || !strings.Contains(location, "oauth_error=state_invalid") {
 		t.Errorf("callback without the session: %d %q", code, location)
@@ -322,7 +324,7 @@ func TestMastodonLink(t *testing.T) {
 	}
 
 	// A refused consent goes back to the target.
-	refused := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks?tab=accounts")))
+	refused := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("token", linked_stepup(t, alice), "server", host, "target", "/settings/networks?tab=accounts")))
 	refused_state := oauth_hop(t, "mastodon", refused["url"].(string), session).Query().Get("state")
 	if _, location := link_return("mastodon", "state="+refused_state+"&error=access_denied", session); location != "/settings/networks?tab=accounts&link_error=access_denied" {
 		t.Errorf("refused consent: %q", location)
@@ -341,7 +343,7 @@ func TestMastodonLink(t *testing.T) {
 
 	// A registration whose redirect has changed is made afresh.
 	db_open("db/networks.db").exec("update clients set redirect='http://old/callback' where host=?", host)
-	decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks")))
+	decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("token", linked_stepup(t, alice), "server", host, "target", "/settings/networks")))
 	fake.lock.Lock()
 	registrations = fake.registrations
 	fake.lock.Unlock()
@@ -410,7 +412,7 @@ func TestMastodonMobileLink(t *testing.T) {
 	host := fake_host(fake.server)
 	verifier := strings.Repeat("v", 43)
 
-	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/", "scheme", "mochi", "challenge", oauth_challenge(verifier))))
+	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("token", linked_stepup(t, alice), "server", host, "target", "/", "scheme", "mochi", "challenge", oauth_challenge(verifier))))
 	consent, err := url.Parse(begun["url"].(string))
 	if err != nil || consent.Host != host || begun["nonce"] == "" {
 		t.Fatalf("mobile link answered %v", begun)

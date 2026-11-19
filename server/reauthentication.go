@@ -146,6 +146,22 @@ func reauthentication_consume(user *User, session string, token string) bool {
 	return true
 }
 
+// reauthentication_held reports whether reauthentication_consume would accept
+// a step-up proof, without spending it: a caller with remote work to do
+// before its change checks first and spends the proof once that work has
+// gone through, so a server that cannot be reached does not cost the user
+// another step-up.
+func reauthentication_held(user *User, session string, token string) bool {
+	if user == nil || token == "" {
+		return false
+	}
+	var r Reauthentication
+	if !db_open("db/sessions.db").scan(&r, "select id, user, session, methods, expires from reauthentication where id=? and user=? and session=? and expires>=?", token, user.UID, session, now()) {
+		return false
+	}
+	return len(reauthentication_remaining(user, r.Methods)) == 0
+}
+
 // reauthentication_contains reports whether factor is already present in
 // the comma-separated completed set.
 func reauthentication_contains(completed, factor string) bool {

@@ -37,6 +37,8 @@ func create_linked_test_env(t *testing.T) *User {
 	// A linked Mastodon or Bluesky account is also a way to sign in
 	// (linked_signin), kept where every server keeps its sign-ins.
 	db_open("db/users.db").exec("create table if not exists oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	// A Mastodon or Bluesky link asks for a step-up (linked_stepup).
+	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
 
 	saved_scheme, saved_sessions, saved_servers, saved_nonces, saved_inbound := network_scheme, linked_sessions, bluesky_servers, bluesky_nonces, linked_inbound
 	network_scheme = "http://"
@@ -109,6 +111,25 @@ func linked_kwargs(pairs ...string) []sl.Tuple {
 		kwargs = append(kwargs, sl.Tuple{sl.String(pairs[i]), sl.String(pairs[i+1])})
 	}
 	return kwargs
+}
+
+// linked_stepup is the single-use step-up proof a Mastodon or Bluesky link
+// asks for, minted in the session a test thread runs in (none) as a
+// re-verified factor mints it.
+func linked_stepup(t *testing.T, user *User) string {
+	t.Helper()
+	methods := reauthentication_required(user)
+	if len(methods) == 0 {
+		methods = []string{"passkey"}
+	}
+	token, remaining := "", []string(nil)
+	for _, method := range methods {
+		token, remaining = reauthentication_advance(user, "", method)
+	}
+	if token == "" {
+		t.Fatalf("no step-up proof: %v still required", remaining)
+	}
+	return token
 }
 
 // decoded answers a function that decodes a Starlark answer into a map,

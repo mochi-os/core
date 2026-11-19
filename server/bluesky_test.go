@@ -407,13 +407,13 @@ func TestBlueskyPassword(t *testing.T) {
 	thread := linked_thread(alice)
 	fn := sl.NewBuiltin("test", nil)
 
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle, "password", "wrong")); !refused(err, "errors.link_failed", "did not accept") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("token", linked_stepup(t, alice), "handle", fake.handle, "password", "wrong")); !refused(err, "errors.link_failed", "did not accept") {
 		t.Errorf("wrong password: %v", err)
 	}
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle)); err == nil || !strings.Contains(err.Error(), "password") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("token", linked_stepup(t, alice), "handle", fake.handle)); err == nil || !strings.Contains(err.Error(), "password") {
 		t.Errorf("no password without a domain: %v", err)
 	}
-	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle, "password", "app-pass")))
+	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("token", linked_stepup(t, alice), "handle", fake.handle, "password", "app-pass")))
 	id := account["id"].(string)
 	if account["identifier"] != fake.handle || account["label"] != "Alice" || account["hosted"] != false || account["url"] != "https://bsky.app/profile/"+fake.did || account["avatar"] != fake.server.URL+"/xrpc/com.atproto.sync.getBlob?did="+url.QueryEscape(fake.did)+"&cid=bafyavatar" {
 		t.Fatalf("linked account = %v", account)
@@ -516,7 +516,7 @@ func TestBlueskyOAuth(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 	session := login_create(alice.UID, "", "")
 
-	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle, "target", "/settings/networks")))
+	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("token", linked_stepup(t, alice), "handle", fake.handle, "target", "/settings/networks")))
 	fake.lock.Lock()
 	pushes := fake.pushes
 	fake.lock.Unlock()
@@ -537,7 +537,7 @@ func TestBlueskyOAuth(t *testing.T) {
 	}
 
 	// The callback must come from the issuer the request went to.
-	wrong := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle, "target", "/settings/networks")))
+	wrong := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("token", linked_stepup(t, alice), "handle", fake.handle, "target", "/settings/networks")))
 	wrong_state := oauth_hop(t, "bluesky", wrong["url"].(string), session).Query().Get("state")
 	if wrong_state == "" {
 		rows, _ := db_open("db/sessions.db").rows("select id from ceremonies where type='oauth' and id<>?", state)

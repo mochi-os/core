@@ -485,3 +485,203 @@ func TestTokenListByKind(t *testing.T) {
 		t.Error("another app's plain token was revoked")
 	}
 }
+
+// TestNetworkLinkNeedsStepUp: a Mastodon or Bluesky link becomes a way to
+// sign in, so it is refused without a step-up proof, or with one made in
+// another session, before anything is asked of the account's server.
+func TestNetworkLinkNeedsStepUp(t *testing.T) {
+	alice := network_login_env(t)
+	db_open("db/sessions.db").exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
+	fake := create_mastodon_fake(t)
+	host := fake_host(fake.server)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("mochi.account.link", api_account_link)
+	stepup := func(err error) bool { return refused(err, "errors.reauthentication_required", "") }
+
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks")); !stepup(err) {
+		t.Errorf("THE POINT: a Mastodon link without a step-up = %v", err)
+	}
+	other, _ := reauthentication_advance(alice, "s-other", "email")
+	if other == "" {
+		t.Fatal("no proof minted in the other session")
+	}
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks", "token", other)); !stepup(err) {
+		t.Errorf("a Mastodon link with another session's step-up = %v", err)
+	}
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", "alice.example.com", "password", "app-pass")); !stepup(err) {
+		t.Errorf("THE POINT: a Bluesky link without a step-up = %v", err)
+	}
+	if begun, _ := db_open("db/sessions.db").exists("select 1 from ceremonies where type='oauth' and user=?", alice.UID); begun {
+		t.Error("a refused link began a ceremony")
+	}
+	fake.lock.Lock()
+	registrations := fake.registrations
+	fake.lock.Unlock()
+	if registrations != 0 {
+		t.Error("a refused link registered with the account's server")
+	}
+	if linked, _ := db_open("db/users.db").exists("select 1 from oauth where user=?", alice.UID); linked {
+		t.Error("a refused link made a way to sign in")
+	}
+
+	// A server that cannot be reached leaves the proof unspent, for the retry;
+	// the link that goes through spends it.
+	token := linked_stepup(t, alice)
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", "127.0.0.1:1", "target", "/settings/networks", "token", token)); !refused(err, "errors.link_failed", "") {
+		t.Errorf("a link to an unreachable server = %v", err)
+	}
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks", "token", token)); err != nil {
+		t.Errorf("THE POINT: the retry with the same proof: %v", err)
+	}
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", host, "target", "/settings/networks", "token", token)); !stepup(err) {
+		t.Errorf("a spent proof linked again = %v", err)
+	}
+}
+
+// TestNetworkStepUpMastodon: a Mastodon account linked as a way to sign in
+// confirms its user's identity. verify.begin sends the browser to the consent
+// on the account's own server, and the callback, bound to the user who began
+// it, stores a proof only for an account that user linked: a refused consent
+// or another account on the server stores none.
+func TestNetworkStepUpMastodon(t *testing.T) {
+	alice := network_login_env(t)
+	sessions := db_open("db/sessions.db")
+	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
+	sessions.exec("create table if not exists verifications (oauth integer not null, user text not null, last integer not null, primary key (oauth, user))")
+	fake := create_mastodon_fake(t)
+	host := fake_host(fake.server)
+
+	begin := func(challenge string) (string, error) {
+		thread := &sl.Thread{}
+		thread.SetLocal("app", &App{id: "internal", internal: &AppVersion{}})
+		thread.SetLocal("user", alice)
+		thread.SetLocal("session", "s-step")
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "http://example.com/settings/-/user/account/oauth/verify/begin", nil)
+		thread.SetLocal("action", &Action{web: c})
+		fn := sl.NewBuiltin("mochi.user.oauth.verify.begin", api_user_oauth_verify_begin)
+		v, err := api_user_oauth_verify_begin(thread, fn, sl.Tuple{sl.String("mastodon"), sl.String(challenge)}, nil)
+		if err != nil {
+			return "", err
+		}
+		answer, _, _ := v.(*sl.Dict).Get(sl.String("url"))
+		consent, err := url.Parse(string(answer.(sl.String)))
+		if err != nil || consent.Host != host || consent.Path != "/oauth/authorize" {
+			t.Fatalf("consent = %v", answer)
+		}
+		q := consent.Query()
+		fake.lock.Lock()
+		fake.challenge = q.Get("code_challenge")
+		fake.lock.Unlock()
+		return q.Get("state"), nil
+	}
+	proved := func(challenge string) bool {
+		found, _ := sessions.exists("select 1 from ceremonies where challenge=? and type='reauthentication_oauth' and user=?", []byte(challenge), alice.UID)
+		return found
+	}
+	exchanged := func() int {
+		fake.lock.Lock()
+		defer fake.lock.Unlock()
+		return fake.exchanges
+	}
+	address := func(name string) {
+		fake.lock.Lock()
+		fake.address = fake.server.URL + "/@" + name
+		fake.lock.Unlock()
+	}
+	challenge := func() string { return oauth_challenge(random_alphanumeric(64)) }
+
+	// An account the user never linked begins nothing.
+	if _, err := begin(challenge()); err == nil {
+		t.Error("a step-up through an unlinked Mastodon account began")
+	}
+	db_open("db/users.db").exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, 'mastodon', ?, ?, 1, 'Alice', ?)", alice.UID, fake.server.URL+"/@alice", alice.Username, now())
+
+	// The linked account consents on its own server, and its consent proves
+	// the user. The callback carries no cookie: the ceremony's user binds it.
+	first := challenge()
+	state, err := begin(first)
+	if err != nil {
+		t.Fatalf("THE POINT: the step-up through the linked Mastodon account did not begin: %v", err)
+	}
+	r := network_login_callback("mastodon", "state="+state+"&code=code-1", &http.Cookie{Name: "session", Value: "s-browser"})
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "mochi-oauth-done") {
+		t.Fatalf("callback: %d %q", r.Code, r.Body.String())
+	}
+	if !proved(first) {
+		t.Error("THE POINT: the linked Mastodon account's consent stored no proof")
+	}
+	// The factor accrues in the session of the browser that completed the
+	// consent, never in the one that began it: a consent completed in someone
+	// else's browser proves nothing to whoever began the step-up.
+	accrued := func(session string) bool {
+		found, _ := sessions.exists("select 1 from reauthentication where user=? and session=? and methods like '%oauth%'", alice.UID, session)
+		return found
+	}
+	if !accrued("s-browser") || accrued("s-step") {
+		t.Errorf("the factor accrued in the completing browser's session %v, in the beginning one %v", accrued("s-browser"), accrued("s-step"))
+	}
+
+	// A refused consent proves nothing.
+	declined := challenge()
+	state, _ = begin(declined)
+	fake.lock.Lock()
+	exchanges := fake.exchanges
+	fake.lock.Unlock()
+	network_login_callback("mastodon", "state="+state+"&error=access_denied")
+	if proved(declined) {
+		t.Error("a refused consent stored a proof")
+	}
+	fake.lock.Lock()
+	if fake.exchanges != exchanges {
+		t.Error("a refused consent still asked the server for a token")
+	}
+	fake.lock.Unlock()
+
+	// Another account on the same server proves nothing, nor one another user
+	// signs in with; in both the exchange ran, so it is the account refused.
+	address("mallory")
+	other := challenge()
+	state, _ = begin(other)
+	before := exchanged()
+	network_login_callback("mastodon", "state="+state+"&code=code-1")
+	if proved(other) || exchanged() != before+1 {
+		t.Errorf("an account the user did not link: proved %v, exchanges %d -> %d", proved(other), before, exchanged())
+	}
+	db_open("db/users.db").exec("insert into users (uid, username) values ('u-bob', 'bob@example.com')")
+	db_open("db/users.db").exec("insert into oauth (user, provider, subject, email, verified, name, created) values ('u-bob', 'mastodon', ?, 'bob@example.com', 1, 'Bob', ?)", fake.server.URL+"/@bob", now())
+	address("bob")
+	bobs := challenge()
+	state, _ = begin(bobs)
+	before = exchanged()
+	network_login_callback("mastodon", "state="+state+"&code=code-1")
+	if proved(bobs) || exchanged() != before+1 {
+		t.Errorf("another user's account: proved %v, exchanges %d -> %d", proved(bobs), before, exchanged())
+	}
+
+	// A user who turned signing in this way off proves nothing by it.
+	address("alice")
+	db_open("db/users.db").exec("update users set disabled='oauth' where uid=?", alice.UID)
+	off := challenge()
+	state, _ = begin(off)
+	network_login_callback("mastodon", "state="+state+"&code=code-1")
+	if proved(off) {
+		t.Error("a user with the method turned off stored a proof")
+	}
+	db_open("db/users.db").exec("update users set disabled='' where uid=?", alice.UID)
+
+	// With sign-in through other providers off server-wide, none begins.
+	setting_set("auth_oauth", "disabled")
+	if _, err := begin(challenge()); err == nil {
+		t.Error("a step-up began with sign-in through other providers off")
+	}
+	setting_set("auth_oauth", "")
+
+	// A server that cannot be reached is a translated refusal, not a failure
+	// the administrator is mailed about.
+	db_open("db/users.db").exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, 'mastodon', 'http://127.0.0.1:1/@alice', ?, 1, 'Alice', ?)", alice.UID, alice.Username, now())
+	if _, err := begin(challenge()); !refused(err, "errors.provider_unavailable", "") {
+		t.Errorf("a step-up through an unreachable server = %v", err)
+	}
+}

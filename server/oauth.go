@@ -640,6 +640,10 @@ func web_oauth_callback(c *gin.Context) {
 			linked_login(c, provider.network, st, code)
 			return
 		}
+		if st.Mode == "reauthentication" && link_user != "" {
+			linked_reauthenticate(c, provider.network, st, link_user, code, perr)
+			return
+		}
 		if link_user == "" || (st.Mode != "account" && st.Mode != "mobile") {
 			oauth_error_redirect(c, "state_invalid", nil)
 			return
@@ -1499,12 +1503,22 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	provider, ok := oauth_providers()[name]
-	if !ok || !oauth_enabled(name) || provider.network != "" {
+	if !ok || !oauth_enabled(name) || (provider.network != "" && !network_login_offered(name)) {
 		return sl_error(fn, "unknown provider")
 	}
 	// Only a provider the user has actually linked can re-authenticate them.
 	if linked, _ := db_open("db/users.db").exists("select 1 from oauth where user=? and provider=?", user.UID, name); !linked {
 		return sl_error(fn, "provider not linked")
+	}
+
+	// A Mastodon or Bluesky account consents on its own server, which the
+	// linked identity names.
+	if provider.network != "" {
+		url, err := linked_reauthentication_begin(action.web, provider, user, challenge)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(map[string]any{"url": url}), nil
 	}
 
 	// Step-up reauthentication completes in the browser, not through a deep
@@ -1560,33 +1574,43 @@ func api_user_oauth_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 // None.
 func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, user *User, challenge string) {
 	users := db_open("db/users.db")
-	owner := ""
-	if row, _ := users.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
-		owner, _ = row["user"].(string)
-	}
-
-	if owner != "" && owner == user.UID && !user_method_disabled(user, "oauth") {
+	if oauth_reauthentication_owned(users, provider, p.Subject, user) {
 		oauth_update_profile(users, provider, p)
-		oauth_verification_record(users, provider, p.Subject, user.UID)
-
-		token, remaining := reauthentication_advance(user, web_session(c), "oauth")
-		result := map[string]any{}
-		if token != "" {
-			result["token"] = token
-		} else {
-			result["remaining"] = remaining
-		}
-		if body, err := json.Marshal(result); err == nil {
-			// The caller's challenge goes in the challenge column, not in id: id is the
-			// shared primary key, and a squatted value makes this insert a constraint
-			// violation, which db.exec panics on.
-			db_open("db/sessions.db").exec(
-				"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication_oauth', ?, ?, ?, ?)",
-				uid(), user.UID, []byte(challenge), string(body), now()+120)
-		}
+		oauth_reauthentication_prove(users, provider, p.Subject, user, web_session(c), challenge)
 	}
-
 	oauth_reauthenticate_page(c)
+}
+
+// oauth_reauthentication_owned reports whether an identity the provider has
+// just proved is linked to the user stepping up, as a way to sign in they
+// have not turned off.
+func oauth_reauthentication_owned(users *DB, provider string, subject string, user *User) bool {
+	row, _ := users.row("select user from oauth where provider=? and subject=?", provider, subject)
+	owner := row_string(row, "user")
+	return owner != "" && owner == user.UID && !user_method_disabled(user, "oauth")
+}
+
+// oauth_reauthentication_prove advances the user's oauth factor in the
+// session the step-up is for and stashes the proof under the caller's
+// challenge, for verify.finish.
+func oauth_reauthentication_prove(users *DB, provider string, subject string, user *User, session string, challenge string) {
+	oauth_verification_record(users, provider, subject, user.UID)
+
+	token, remaining := reauthentication_advance(user, session, "oauth")
+	result := map[string]any{}
+	if token != "" {
+		result["token"] = token
+	} else {
+		result["remaining"] = remaining
+	}
+	if body, err := json.Marshal(result); err == nil {
+		// The caller's challenge goes in the challenge column, not in id: id is the
+		// shared primary key, and a squatted value makes this insert a constraint
+		// violation, which db.exec panics on.
+		db_open("db/sessions.db").exec(
+			"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication_oauth', ?, ?, ?, ?)",
+			uid(), user.UID, []byte(challenge), string(body), now()+120)
+	}
 }
 
 // oauth_reauthenticate_page closes the OAuth popup and pings the opener so the

@@ -302,7 +302,7 @@ func linked_store(user *User, kind string, profile *linked_profile, data map[str
 // removed where the user's sign-in methods are listed, with the guard against
 // removing the last.
 func linked_signin(user *User, kind string, profile *linked_profile) {
-	if kind != "mastodon" && kind != "bluesky" {
+	if !linked_signs_in(kind) {
 		return
 	}
 	subject := linked_subject(kind, profile)
@@ -315,6 +315,12 @@ func linked_signin(user *User, kind string, profile *linked_profile) {
 	}
 	users.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, 1, ?, ?)",
 		user.UID, kind, subject, user.Username, profile.Name, now())
+}
+
+// linked_signs_in reports whether a linked account of a network is also a way
+// to sign in.
+func linked_signs_in(kind string) bool {
+	return kind == "mastodon" || kind == "bluesky"
 }
 
 // linked_forget ends a linked account: the server is told where the protocol
@@ -375,7 +381,7 @@ func api_account_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.linking_unavailable", nil))
 	}
 	fields := map[string]string{}
-	var target, scheme, challenge string
+	var target, scheme, challenge, token string
 	for _, kv := range kwargs {
 		key := string(kv[0].(sl.String))
 		value, _ := sl.AsString(kv[1])
@@ -386,9 +392,21 @@ func api_account_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 			scheme = value
 		case "challenge":
 			challenge = value
+		case "token":
+			token = value
 		default:
 			fields[key] = strings.TrimSpace(value)
 		}
+	}
+	// A Mastodon or Bluesky link becomes a way to sign in (linked_signin), so
+	// it asks for the step-up a provider's sign-in link does: without it, a
+	// session alone could add its holder's own account as a sign-in. The proof
+	// is checked now and spent once the account's server has answered.
+	stepup := func() bool {
+		return !linked_signs_in(kind) || reauthentication_consume(user, reauthentication_session(t), token)
+	}
+	if linked_signs_in(kind) && !reauthentication_held(user, reauthentication_session(t), token) {
+		return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.reauthentication_required", nil))
 	}
 	link := provider_link(provider)
 	for _, f := range link.Fields {
@@ -397,7 +415,7 @@ func api_account_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 	if link.Flow == "oauth" {
-		return linked_oauth_begin(t, fn, user, kind, fields, target, scheme, challenge)
+		return linked_oauth_begin(t, fn, user, kind, fields, target, scheme, challenge, stepup)
 	}
 	ctx, cancel := context.WithTimeout(thread_context(t), linked_timeout)
 	defer cancel()
@@ -417,6 +435,9 @@ func api_account_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if err != nil {
 		return sl_error(fn, "%v", linked_refusal(kind, err))
 	}
+	if !stepup() {
+		return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.reauthentication_required", nil))
+	}
 	return sl_encode(account_present(user, linked_store(user, kind, profile, data))), nil
 }
 
@@ -435,7 +456,7 @@ func linked_refusal(kind string, err error) error {
 // link: the ceremony is prepared, the protocol registers or pushes what it
 // must and names the consent URL, and the ceremony is stored bound to the
 // session as a grant's is.
-func linked_oauth_begin(t *sl.Thread, fn *sl.Builtin, user *User, kind string, fields map[string]string, target, scheme, challenge string) (sl.Value, error) {
+func linked_oauth_begin(t *sl.Thread, fn *sl.Builtin, user *User, kind string, fields map[string]string, target, scheme, challenge string, stepup func() bool) (sl.Value, error) {
 	action, _ := t.Local("action").(*Action)
 	if action == nil || action.web == nil {
 		return sl_error(fn, "no request context")
@@ -469,6 +490,9 @@ func linked_oauth_begin(t *sl.Thread, fn *sl.Builtin, user *User, kind string, f
 	}
 	if err != nil {
 		return sl_error(fn, "%v", linked_refusal(kind, err))
+	}
+	if !stepup() {
+		return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.reauthentication_required", nil))
 	}
 	url, returned, err := oauth_ceremony_begin(action.web, provider, kind, user.UID, state, st)
 	if err != nil {
@@ -601,10 +625,11 @@ const network_login_cookie = "mochi_network"
 const network_login_lifetime = 600
 
 // network_login_offered reports whether a network's accounts may sign users
-// in here: while the server offers networks, and for Bluesky only with a
-// configured domain, since its consent is by OAuth as a link's is.
+// in here: while the server offers networks and sign-in through other
+// providers, and for Bluesky only with a configured domain, since its consent
+// is by OAuth as a link's is.
 func network_login_offered(name string) bool {
-	if !oauth_enabled(name) {
+	if !oauth_enabled(name) || !auth_method_allowed("oauth") {
 		return false
 	}
 	switch name {
@@ -647,6 +672,84 @@ func network_login_begin(c *gin.Context, provider *oauth_provider, target string
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"url": st.Consent})
+}
+
+// linked_reauthentication_begin starts a step-up through a Mastodon or
+// Bluesky account linked as a way to sign in: the ceremony is the user's own,
+// in the step-up mode, and the consent is on the server of the account they
+// linked, which its identity names (a Mastodon account's address lies on its
+// server; a Bluesky DID resolves to its PDS). A user who linked more than one
+// account of the network is sent to the latest; the callback accepts any of
+// theirs.
+func linked_reauthentication_begin(c *gin.Context, provider *oauth_provider, user *User, challenge string) (string, error) {
+	row, _ := db_open("db/users.db").row("select subject from oauth where user=? and provider=? order by id desc limit 1", user.UID, provider.name)
+	subject := row_string(row, "subject")
+	if subject == "" {
+		return "", fmt.Errorf("provider not linked")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), linked_timeout)
+	defer cancel()
+	state, st := oauth_ceremony_prepare(c, provider.name, user.UID, "", "reauthentication", "", challenge, "")
+	var err error
+	switch provider.network {
+	case "mastodon":
+		address, perr := url.Parse(subject)
+		if perr != nil || address.Host == "" {
+			err = fmt.Errorf("the linked account names no server")
+		} else {
+			err = mastodon_prepare(ctx, user, st, address.Host)
+		}
+	case "bluesky":
+		err = bluesky_prepare(ctx, user, st, subject)
+	default:
+		return "", fmt.Errorf("unknown provider")
+	}
+	if err != nil {
+		info("Step-up with a %s account: %v", provider.network, err)
+		return "", refuse(http.StatusServiceUnavailable, "errors.provider_unavailable", nil)
+	}
+	consent, _, err := oauth_ceremony_begin(c, provider, provider.name, user.UID, state, st)
+	return consent, err
+}
+
+// linked_reauthenticate completes a step-up through a Mastodon or Bluesky
+// account once its server has consented: the account must be one the user
+// linked as a way to sign in, as an OIDC step-up's identity must
+// (oauth_reauthenticate), and the factor accrues in the session of the
+// browser that completed the consent, never in the one that began it, so a
+// consent completed in someone else's browser proves nothing to whoever began
+// it. Anything else, a refusal included, stores no proof, and the popup closes
+// either way.
+func linked_reauthenticate(c *gin.Context, kind string, st *oauth_state, user_id string, code string, refused string) {
+	user := user_by_uid(user_id)
+	if user == nil || refused != "" {
+		oauth_reauthenticate_page(c)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), linked_timeout)
+	defer cancel()
+	var profile *linked_profile
+	var err error
+	switch kind {
+	case "mastodon":
+		profile, _, err = mastodon_callback(ctx, user, st, code)
+	case "bluesky":
+		profile, _, err = bluesky_callback(ctx, user, st, code, c.Query("iss"))
+	default:
+		err = fmt.Errorf("unknown provider")
+	}
+	if err != nil || profile == nil || profile.ID == "" {
+		info("Step-up with a %s account: %v", kind, err)
+		oauth_reauthenticate_page(c)
+		return
+	}
+	subject := linked_subject(kind, profile)
+	users := db_open("db/users.db")
+	if oauth_reauthentication_owned(users, kind, subject, user) {
+		users.exec("update oauth set name=? where provider=? and subject=? and name!=?", profile.Name, kind, subject, profile.Name)
+		oauth_reauthentication_prove(users, kind, subject, user, web_session(c), st.Challenge)
+	}
+	oauth_reauthenticate_page(c)
 }
 
 // linked_subject is the identity a sign-in is keyed by: the account's

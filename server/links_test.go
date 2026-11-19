@@ -652,3 +652,45 @@ func TestXMPPPresenceOnlyWhileAllowed(t *testing.T) {
 		t.Errorf("THE POINT: the presence went to a contact the roster no longer lets see it: %v", heard)
 	}
 }
+
+// TestXMPPSwitchedOffEndsStreams: switching XMPP off ends the streams already
+// open, each told why at its next stanza: another server's link is shut down
+// rather than left to queue what it carries, which reaches no one, and a
+// client's stream is shut down and its resource ended, so it no longer reads
+// as signed in.
+func TestXMPPSwitchedOffEndsStreams(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	fake := env.apps(t)
+	remote := env.remote(t, "remote.test")
+	phone := env.mint(t, env.alice, "x1", "Phone")
+	a, err := env.connect(t, "alice@example.com", phone, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.online(t)
+	fake.allow(env.alice, "carol@remote.test")
+	x, answer := remote.link(t, false)
+	if answer != "valid" {
+		t.Fatalf("the remote's link was refused: %s", answer)
+	}
+	desk := env.raw(t, "alice@example.com", phone, "desk")
+
+	setting_set("xmpp", "false")
+	t.Cleanup(func() { setting_set("xmpp", "true") })
+	x.write(`<message xmlns="jabber:server" from="carol@remote.test/phone" to="alice@example.com" type="chat" id="i1"><body>Switched off</body></message>`)
+	if s, err := x.next(); err != nil || s.name != "error" || !strings.Contains(s.inner, "system-shutdown") {
+		t.Errorf("THE POINT: the link was not shut down when XMPP was switched off: %v %v", s, err)
+	}
+	a.silent(t, "THE POINT: a stanza on a link open before XMPP was switched off reached alice", "Switched off")
+	env.log.lock.Lock()
+	for _, e := range env.log.events {
+		if e["body"] == "Switched off" {
+			t.Errorf("THE POINT: a stanza on a link open before XMPP was switched off reached chat: %v", e)
+		}
+	}
+	env.log.lock.Unlock()
+
+	desk.send(`<presence xmlns="jabber:client"><status>Still here</status></presence>`)
+	desk.expect(t, "THE POINT: the client's stream is shut down once XMPP is off", "system-shutdown")
+	wait(t, "THE POINT: the client's resource to end", func() bool { return xmpp_resource_get("alice@example.com", "desk") == nil })
+}

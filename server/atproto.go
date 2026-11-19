@@ -1081,6 +1081,11 @@ func atproto_subscribe(c *gin.Context) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 	for {
+		// A subscription open when the owner switches Bluesky off ends by the
+		// next keepalive at the latest.
+		if !network_enabled("bluesky") {
+			return
+		}
 		rows := stream_after(position, 100)
 		for _, row := range rows {
 			if err := ws.Write(ctx, websocket.MessageBinary, repository_bytes(row["body"])); err != nil {

@@ -714,6 +714,16 @@ func TestAtprotoSubscribe(t *testing.T) {
 	if event := read(ahead); event.Error == nil || event.Error.Error != "FutureCursor" {
 		t.Fatalf("ahead frame = %+v", event)
 	}
+	// A subscription open when the owner switches Bluesky off ends, the
+	// commit after it not sent.
+	setting_set("bluesky", "false")
+	t.Cleanup(func() { setting_set("bluesky", "true") })
+	if _, _, err := repository_write(ctx, r, "app.bsky.feed.post", "after", map[string]any{"$type": "app.bsky.feed.post", "text": "After", "createdAt": "2026-10-15T00:00:00Z"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _, err := fresh.Read(ctx); err == nil {
+		t.Errorf("THE POINT: a %v frame came on a subscription after Bluesky was switched off", kind)
+	}
 }
 
 // TestAtprotoStreamRestored: a server restored from an older backup, its

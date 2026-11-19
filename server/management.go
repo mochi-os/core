@@ -310,6 +310,13 @@ func xmpp_client_run(r *xmpp_resource, stream xmpp_stream) {
 			clean = err == io.EOF
 			break
 		}
+		// A stream open when the owner switches XMPP off carries nothing more:
+		// the client is told the service has stopped, and its resource ends.
+		if !network_enabled("xmpp") {
+			close(broken)
+			r.end("system-shutdown")
+			return
+		}
 		switch s.space {
 		case xmpp_ns_management:
 			r.manage(stream, s)

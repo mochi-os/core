@@ -692,6 +692,11 @@ func xmpp_server_serve(conn net.Conn) {
 		if err != nil {
 			return
 		}
+		// A link open when the owner switches XMPP off carries nothing more.
+		if !network_enabled("xmpp") {
+			x.fail("system-shutdown")
+			return
+		}
 		switch {
 		case s.space == xmpp_ns_dialback && s.name == "result":
 			from, to := strings.ToLower(s.get("from")), strings.ToLower(s.get("to"))

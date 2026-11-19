@@ -792,10 +792,10 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	// principal_storage answers with the route owner on a context route even when
-	// a different user is signed in, so on a custom domain this would hand the
-	// owner's connected accounts - ntfy topics, webhook URLs, email addresses -
-	// to any logged-in visitor. Every other account API resolves with
+	// principal_storage answers with the route owner for a site action on a
+	// context route even when a different user is signed in, so there this
+	// would hand the owner's connected accounts - ntfy topics, webhook URLs,
+	// email addresses - to any logged-in visitor. Every other account API resolves with
 	// principal_caller; this one keeps the acting form for the anonymous case
 	// and refuses the cross-user one outright.
 	if caller := principal_caller(t); caller != nil && caller.UID != user.UID {

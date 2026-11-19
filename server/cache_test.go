@@ -195,9 +195,10 @@ func TestCacheQuotaExempt(t *testing.T) {
 	}
 }
 
-// TestCacheCopyStaysInOneNamespace. Under domain routing the two user
-// resolutions diverge - cache_base takes the route OWNER, t.Local("user") the
-// VISITOR - so the copy read the owner's bytes into the visitor's storage.
+// TestCacheCopyStaysInOneNamespace. For a site action on a context route the
+// two user resolutions diverge - cache_base takes the route OWNER,
+// t.Local("user") the VISITOR - so the copy read the owner's bytes into the
+// visitor's storage.
 func TestCacheCopyStaysInOneNamespace(t *testing.T) {
 	tmp := t.TempDir()
 	original_data, original_cache := data_dir, cache_dir
@@ -222,8 +223,9 @@ func TestCacheCopyStaysInOneNamespace(t *testing.T) {
 	thread.SetLocal("owner", owner)
 	thread.SetLocal("app", app)
 	thread.SetLocal("action", &Action{
-		web:    c,
-		domain: &DomainInfo{route: &DomainRouteInfo{context: "hosted", owner: owner}},
+		web:        c,
+		domain:     &DomainInfo{route: &DomainRouteInfo{context: "hosted", owner: owner}},
+		definition: &AppAction{Site: true},
 	})
 
 	// The owner's cache holds a secret; the visitor's is empty.

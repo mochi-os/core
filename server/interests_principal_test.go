@@ -1,9 +1,10 @@
 // Mochi server: interests belong to the caller, not to the storage account.
 //
-// principal_storage answers with the route owner for every request to a domain
-// route carrying a context. That is right for the databases a hosted site
-// serves from and wrong for a per-person profile: it made a signed-in visitor
-// read and write the site owner's interests using their own grant.
+// principal_storage answers with the route owner for every request to a site
+// action on a domain route carrying a context. That is right for the databases
+// a hosted site serves from and wrong for a per-person profile: it made a
+// signed-in visitor read and write the site owner's interests using their own
+// grant.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only

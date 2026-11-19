@@ -792,8 +792,8 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // empty for an anonymous caller. Accepts either an entity ID or a fingerprint.
 //
 // Resolves the CALLER, never principal_storage, which answers a different
-// question (which per-user database to open) and returns the owner on a domain
-// route carrying a context.
+// question (which per-user database to open) and returns the owner for a site
+// action on a domain route carrying a context.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
 		return sl_error(fn, "%v", err)

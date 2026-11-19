@@ -66,8 +66,10 @@ type AppAction struct {
 	// attachment's id could read it as the user, private or not.
 	Shared bool `json:"shared"`
 	// Site marks an action that publishes a website, exempting it from the
-	// safe-serve policy (SVG sanitized, unsafe types forced to download).
-	// Declared, never inferred from the request arriving on a domain route.
+	// safe-serve policy (SVG sanitized, unsafe types forced to download). On a
+	// domain route carrying a context it also runs on the owner's storage for
+	// a signed-in caller (principal_storage). Declared, never inferred from the
+	// request arriving on a domain route.
 	Site bool `json:"site"`
 	// Read marks an action that only reads, so a GET or HEAD may run it.
 	// Every other action's function answers only a method that may change

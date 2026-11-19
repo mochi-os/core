@@ -61,6 +61,13 @@ func principal_app(t *sl.Thread) *App {
 // dispatcher that knows the answer sets the storage local (OpenGraph does,
 // since it renders one account's entity for any viewer); otherwise the fallback
 // below decides.
+//
+// A signed-in caller keeps their own storage on every route, a hosted domain's
+// included, unless the action declares "site": true and the route carries a
+// context. A site action publishes the owner's website, so it reads the
+// owner's storage whoever asks. Any other action writes the caller's own state
+// (a subscription, a vote, a sort order), and on the owner's storage it would
+// land in the owner's rows.
 func principal_storage(t *sl.Thread) (*User, error) {
 	if storage, ok := t.Local("storage").(*User); ok && storage != nil {
 		return storage, nil
@@ -69,11 +76,9 @@ func principal_storage(t *sl.Thread) (*User, error) {
 	owner, _ := t.Local("owner").(*User)
 	user, _ := t.Local("user").(*User)
 
-	var routing bool
-	if action := t.Local("action"); action != nil {
-		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
-			routing = a.domain.route.context != ""
-		}
+	var site bool
+	if action, ok := t.Local("action").(*Action); ok && action != nil && action.definition != nil && action.definition.Site && action.domain != nil && action.domain.route != nil {
+		site = action.domain.route.context != ""
 	}
 
 	if user == nil {
@@ -82,7 +87,7 @@ func principal_storage(t *sl.Thread) (*User, error) {
 		}
 		return owner, nil
 	}
-	if routing {
+	if site {
 		if owner == nil {
 			return nil, fmt.Errorf("no owner context for domain routing")
 		}

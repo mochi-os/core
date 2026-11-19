@@ -615,8 +615,9 @@ func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	// The caller's, as the grant checked is: on a context route or an
-	// OpenGraph render the storage user is the page's owner, not the viewer.
+	// The caller's, as the grant checked is: for a site action on a context
+	// route or an OpenGraph render the storage user is the page's owner, not
+	// the viewer.
 	caller := principal_caller(t)
 	if caller == nil {
 		return sl_error(fn, "no user")

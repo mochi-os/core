@@ -36,8 +36,9 @@ var reg_interests = upsert_def{"interests", []string{"qid"}, []string{"weight", 
 // interests_writer resolves the account an interests write belongs to. It is
 // the caller and never the storage account: the gate above each writer is
 // require_permission, checked against the caller's own grant, while
-// principal_storage answers with the route owner for every request to a domain
-// route carrying a context. A signed-in visitor to a hosted site would
+// principal_storage answers with the route owner for every request to a site
+// action on a domain route carrying a context. A signed-in visitor to a hosted
+// site would
 // otherwise spend their own grant adjusting the site owner's profile, and an
 // anonymous one would do it with no account at all.
 func interests_writer(t *sl.Thread) *User {

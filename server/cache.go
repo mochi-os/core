@@ -797,9 +797,10 @@ func api_cache_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	// The same user the source was resolved for. cache_file goes through
-	// cache_base, which uses principal_storage and so returns the OWNER under
-	// domain routing; reading the destination from t.Local("user") instead
-	// copied the owner's cached bytes into a visitor's own file storage.
+	// cache_base, which uses principal_storage and so returns the OWNER for a
+	// site action on a context route; reading the destination from
+	// t.Local("user") instead copied the owner's cached bytes into a visitor's
+	// own file storage.
 	user, err := principal_storage(t)
 	if err != nil || user == nil {
 		return sl_error(fn, "no user")

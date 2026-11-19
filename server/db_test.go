@@ -1299,11 +1299,15 @@ func TestDbUserForThread(t *testing.T) {
 	alice := &User{UID: "alice"}
 	bob := &User{UID: "bob"}
 
-	action_with_route := func(ctx string) *Action {
+	// An action reached through a hosted domain route, declared as app.json
+	// declares it: a site action publishes the route owner's website, and every
+	// other action keeps a signed-in caller on their own storage.
+	action_with_route := func(ctx string, site bool) *Action {
 		return &Action{
 			domain: &DomainInfo{
 				route: &DomainRouteInfo{context: ctx},
 			},
+			definition: &AppAction{Site: site},
 		}
 	}
 
@@ -1352,28 +1356,53 @@ func TestDbUserForThread(t *testing.T) {
 			owner: bob,
 			want:  alice,
 		},
+		// A signed-in caller of any action but a site action keeps their own
+		// storage on a route carrying a context: a subscribe, a vote or a sort
+		// order would otherwise be written into the owner's rows.
 		{
-			name:   "logged_in_under_domain_routing_uses_route_owner",
+			name:   "logged_in_context_route_other_action_keeps_own_db",
 			user:   alice,
 			owner:  bob,
-			action: action_with_route("/blog"),
+			action: action_with_route("blog", false),
+			want:   alice,
+		},
+		{
+			name:   "logged_in_context_route_site_action_uses_route_owner",
+			user:   alice,
+			owner:  bob,
+			action: action_with_route("blog", true),
 			want:   bob,
 		},
 		{
-			name:       "logged_in_under_domain_routing_no_owner_errors",
+			name:   "anonymous_context_route_other_action_reads_owner_db",
+			user:   nil,
+			owner:  bob,
+			action: action_with_route("blog", false),
+			want:   bob,
+		},
+		{
+			name:   "anonymous_context_route_site_action_reads_owner_db",
+			user:   nil,
+			owner:  bob,
+			action: action_with_route("blog", true),
+			want:   bob,
+		},
+		{
+			name:       "logged_in_context_route_site_action_no_owner_errors",
 			user:       alice,
 			owner:      nil,
-			action:     action_with_route("/blog"),
+			action:     action_with_route("blog", true),
 			want_error: true,
 		},
 		// An action with an empty domain context is not "domain routing"
 		// — main-site requests carry an Action but no route, so the
-		// logged-in branch must still return the user's own DB.
+		// logged-in branch must still return the user's own DB, site action
+		// or not.
 		{
 			name:   "logged_in_main_site_action_uses_own_db",
 			user:   alice,
 			owner:  bob,
-			action: action_with_route(""),
+			action: action_with_route("", true),
 			want:   alice,
 		},
 		// A request that reached the app by its own path carries no route

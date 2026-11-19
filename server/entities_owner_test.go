@@ -16,7 +16,8 @@ import (
 
 // entity_get_thread builds a thread as an action would: an owner whose data is
 // being served, an authenticated caller, and optionally a domain route carrying
-// a context (which is what makes principal_storage substitute the owner).
+// a context, reached by an action declared "site": true (the two together are
+// what makes principal_storage substitute the owner).
 func entity_get_thread(owner *User, user *User, context string) *sl.Thread {
 	t := &sl.Thread{Name: "test"}
 	t.SetLocal("owner", owner)
@@ -42,8 +43,9 @@ func entity_get_thread(owner *User, user *User, context string) *sl.Thread {
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest("GET", "/people/x/-/profile/set", nil)
 		t.SetLocal("action", &Action{
-			web:    c,
-			domain: &DomainInfo{route: &DomainRouteInfo{context: context}},
+			web:        c,
+			domain:     &DomainInfo{route: &DomainRouteInfo{context: context}},
+			definition: &AppAction{Site: true},
 		})
 	}
 	return t
@@ -75,7 +77,8 @@ func entity_get_ids(t *testing.T, thread *sl.Thread, id string) []string {
 
 // TestEntityGetResolvesCallerNotOwner guards the class where "does the caller
 // own this" is read off principal_storage, which answers "which database do I
-// open". On a domain route carrying a context the two diverge.
+// open". For a site action on a domain route carrying a context the two
+// diverge.
 func TestEntityGetResolvesCallerNotOwner(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)

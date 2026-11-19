@@ -137,14 +137,14 @@ func TestNetworksSettingsHiddenUntilSwitch(t *testing.T) {
 		}
 		return names
 	}
-	for _, name := range []string{"handles", "description", "fediverse", "bluesky", "xmpp", "matrix"} {
+	for _, name := range []string{"handles", "description", "fediverse", "bluesky", "matrix", "xmpp"} {
 		if !listed()[name] {
 			t.Errorf("%s not listed with the switch on", name)
 		}
 	}
 	networks_development = false
 	names := listed()
-	for _, name := range []string{"handles", "description", "fediverse", "bluesky", "xmpp", "matrix"} {
+	for _, name := range []string{"handles", "description", "fediverse", "bluesky", "matrix", "xmpp"} {
 		if names[name] {
 			t.Errorf("%s listed with the switch off", name)
 		}
@@ -343,5 +343,20 @@ func TestAccountAddressMigration(t *testing.T) {
 		if row == nil || row["identifier"] != address {
 			t.Errorf("account %s has identifier %v, want %s", id, row["identifier"], address)
 		}
+	}
+}
+
+// TestAccountNetworksAlphabetical pins the order the settings and the Networks
+// page list the networks in: alphabetical by the names people see (ActivityPub,
+// Bluesky, Matrix, XMPP), not the order they were built.
+func TestAccountNetworksAlphabetical(t *testing.T) {
+	alice, _ := create_handles_test_env(t)
+	thread := create_test_thread(alice, create_external_app("app1"))
+	v, err := api_account_networks(thread, sl.NewBuiltin("mochi.account.networks", api_account_networks), nil, nil)
+	if err != nil {
+		t.Fatalf("mochi.account.networks: %v", err)
+	}
+	if got := fmt.Sprint(sl_decode(v)); got != "[fediverse bluesky matrix xmpp]" {
+		t.Errorf("THE POINT: mochi.account.networks = %s, want [fediverse bluesky matrix xmpp]", got)
 	}
 }

@@ -31,8 +31,9 @@ import (
 )
 
 // network_names are the networks, in the order the settings and the Networks
-// page list them. Each is also the name of its system setting.
-var network_names = []string{"fediverse", "bluesky", "xmpp", "matrix"}
+// page list them: alphabetical by the names people see (ActivityPub, Bluesky,
+// Matrix, XMPP). Each is also the name of its system setting.
+var network_names = []string{"fediverse", "bluesky", "matrix", "xmpp"}
 
 // networks_development is the [development] networks switch in mochi.conf. Off
 // by default: every engine, page and provider for the networks stays dormant

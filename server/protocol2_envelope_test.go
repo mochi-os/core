@@ -56,7 +56,7 @@ func TestHandleRejectsOversizedID(t *testing.T) {
 // TestHandleAcceptsIDAtTheLimit: the boundary is inclusive, so a legitimate
 // id of exactly the documented length still works.
 func TestHandleAcceptsIDAtTheLimit(t *testing.T) {
-	if !envelope_valid("", "feeds", "post/create", strings.Repeat("a", id_length_maximum)) {
+	if !envelope_valid("", "feeds", "post/create", strings.Repeat("a", id_length_maximum), "", nil) {
 		t.Errorf("an id of exactly max_id_length (%d) was rejected; the bound is a maximum, not an exclusive limit", id_length_maximum)
 	}
 }
@@ -84,10 +84,10 @@ func TestHandleRejectsMalformedService(t *testing.T) {
 // becomes a map key, never a path - but five other call sites share the
 // validator.
 func TestServiceValidatorAdmitsSlashesAndDots(t *testing.T) {
-	if !envelope_valid("", "../../etc/passwd", "", "") {
+	if !envelope_valid("", "../../etc/passwd", "", "", "", nil) {
 		t.Skip("\"constant\" has been tightened to reject traversal shapes; re-check every caller that relies on slashes, e.g. nested event names")
 	}
-	if !envelope_valid("", "post/create", "", "") {
+	if !envelope_valid("", "post/create", "", "", "", nil) {
 		t.Error("a slash-bearing service was rejected; nested names are ordinary here")
 	}
 }
@@ -110,8 +110,36 @@ func TestHandleAcceptsAWellFormedEnvelope(t *testing.T) {
 // service, event or id — acks and pongs among them — so the check must reject
 // only what is present and malformed.
 func TestEnvelopeAllowsEmptyFields(t *testing.T) {
-	if !envelope_valid("", "", "", "") {
+	if !envelope_valid("", "", "", "", "", nil) {
 		t.Error("an empty envelope was rejected; ack, pong and bye frames carry no addressing")
+	}
+}
+
+// TestHandleRejectsMalformedSender: the sending app and the services it says it
+// handles reach Event.route, the logs, the handler's headers and stored rows.
+// /mochi/2/stream refused malformed ones at open; the messages path, which
+// carries most traffic, took megabytes of either.
+func TestHandleRejectsMalformedSender(t *testing.T) {
+	many := make([]string, services_maximum+1)
+	for i := range many {
+		many[i] = "service"
+	}
+	for name, f := range map[string]*Frame{
+		"app":            {Type: frame_type_message, ID: "abc", Service: "feeds", Event: "post/create", FromApp: strings.Repeat("a", 4096)},
+		"service":        {Type: frame_type_message, ID: "abc", Service: "feeds", Event: "post/create", Services: []string{"feeds", "not a service"}},
+		"many services":  {Type: frame_type_message, ID: "abc", Service: "feeds", Event: "post/create", Services: many},
+		"binary service": {Type: frame_type_message, ID: "abc", Service: "feeds", Event: "post/create", Services: []string{"\x00\x01"}},
+	} {
+		r, stream := receiver_for_test()
+		if r.handle(f) {
+			t.Errorf("%s: handle accepted a malformed sender", name)
+		}
+		if !stream.reset {
+			t.Errorf("%s: a malformed sender did not reset the stream", name)
+		}
+	}
+	if !envelope_valid("", "feeds", "post/create", "abc", "feeds", many[:services_maximum]) {
+		t.Errorf("a sender naming %d well-formed services was refused", services_maximum)
 	}
 }
 
@@ -123,12 +151,12 @@ func TestAnnouncementValidSharesTheEnvelopeCheck(t *testing.T) {
 	if announcement_valid(&Announcement{ID: long}) {
 		t.Error("announcement_valid accepted an oversized id")
 	}
-	if envelope_valid("", "", "", long) {
+	if envelope_valid("", "", "", long, "", nil) {
 		t.Error("envelope_valid accepted an oversized id")
 	}
 	// Same verdict for the same input, which is the property that matters.
 	for _, service := range []string{"feeds", "not a service", strings.Repeat("s", 4096)} {
-		shared := envelope_valid("", service, "", "")
+		shared := envelope_valid("", service, "", "", "", nil)
 		pubsub := announcement_valid(&Announcement{Service: service})
 		if shared != pubsub {
 			t.Errorf("service %.32q: envelope_valid=%v but announcement_valid=%v; the paths have diverged again", service, shared, pubsub)

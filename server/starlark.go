@@ -1035,10 +1035,14 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	s.thread.SetMaxExecutionSteps(starlark_steps_maximum)
 
 	// Run the call in a goroutine so we can interrupt on timeout. Buffered so
-	// a goroutine we have already abandoned can always send and exit.
+	// a goroutine we have already abandoned can always send and exit. finished
+	// closes as it exits, for a caller that must not start another call in the
+	// same place until an abandoned one has really ended (starlark_abandonment).
 	done := make(chan starlark_result, 1)
+	finished := make(chan struct{})
 
 	go func() {
+		defer close(finished)
 		// Recover panics so a fault in one Starlark call becomes an error the caller
 		// can report. gin's Recovery middleware only wraps HTTP handlers; this
 		// goroutine is spawned outside it, so an unguarded panic kills the process.
@@ -1098,7 +1102,7 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 				default:
 				}
 				debug("Starlark %s() file serving timed out after %s", function, starlark_file_timeout)
-				return nil, fmt.Errorf("starlark: file serving timeout after %s: %w", starlark_file_timeout, starlark_abandoned)
+				return nil, &starlark_abandonment{err: fmt.Errorf("starlark: file serving timeout after %s: %w", starlark_file_timeout, starlark_abandoned), finished: finished}
 			}
 		}
 		// The context goes with the thread, so a builtin that honours it - a
@@ -1126,7 +1130,7 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 		// frees its semaphore slot when it eventually exits; touching the
 		// thread, its streams or its transaction from here would race with it.
 		debug("Starlark %s() timed out after %s", function, deadline)
-		return nil, fmt.Errorf("starlark: timeout after %s: %w", deadline, starlark_abandoned)
+		return nil, &starlark_abandonment{err: fmt.Errorf("starlark: timeout after %s: %w", deadline, starlark_abandoned), finished: finished}
 	}
 }
 
@@ -1135,6 +1139,17 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 // stays in use after the caller returns: an HTTP handler must then not hand
 // its request's context back for reuse (see web_action_abandoned).
 var starlark_abandoned = errors.New("the call was abandoned while still running")
+
+// starlark_abandonment is the error Starlark.call returns for an abandoned call:
+// it matches starlark_abandoned, and finished closes once the call has really
+// ended, for a caller that serialises calls (the P2P worker) to wait on.
+type starlark_abandonment struct {
+	err      error
+	finished <-chan struct{}
+}
+
+func (a *starlark_abandonment) Error() string { return a.err.Error() }
+func (a *starlark_abandonment) Unwrap() error { return a.err }
 
 // Set a Starlark thread variable
 func (s *Starlark) set(key string, value any) {

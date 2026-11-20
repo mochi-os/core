@@ -27,17 +27,20 @@ import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	p2p_sec "github.com/libp2p/go-libp2p/core/sec"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	p2p_rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	p2p_swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
 	holepunch "github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	p2p_ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
+	p2p_quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	p2p_tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	p2p_webrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
+	p2p_webtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
-type mdns_notifee struct {
-	h p2p_host.Host
-}
+type mdns_notifee struct{}
 
 var (
 	net_context = context.Background()
@@ -51,7 +54,8 @@ var (
 // Peer discovered using multicast DNS. mDNS is link-scoped, so every
 // address it carries — including loopback from a same-host sibling — is
 // valid for us to store and dial; one connect attempt per event, not
-// per address.
+// per address. Any host on the link can answer, so the peer is registered
+// under the admission rule as any other discovery is.
 func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		debug("Net received mDNS event from %q at %q", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
@@ -79,16 +83,19 @@ func net_connect(peer string, addresses []string) bool {
 		return false
 	}
 
+	// Stored state, not operator input: an address another host supplied is
+	// checked when it is taken in (peer_address_valid), so one that still fails
+	// here is logged, not mailed to the administrator at every dial.
 	for _, address := range addresses {
 		ma, err := multiaddr.NewMultiaddr(address)
 		if err != nil {
-			warn("Net ignoring invalid peer address %q: %v", address, err)
+			info("Net ignoring invalid peer address %q: %v", address, err)
 			continue
 		}
 
 		i, err := p2p_peer.AddrInfoFromP2pAddr(ma)
 		if err != nil {
-			warn("Net ignoring invalid multiaddress: %v", err)
+			info("Net ignoring invalid multiaddress %q: %v", address, err)
 			continue
 		}
 
@@ -127,6 +134,39 @@ func net_drop_rotated_addresses(peer string, dial_error error) {
 	}
 }
 
+// net_limits is the resource manager's configuration: libp2p's defaults with
+// higher stream and connection limits, and a peer held to the messages streams
+// it needs.
+func net_limits() p2p_rcmgr.ConcreteLimitConfig {
+	limits := p2p_rcmgr.DefaultLimits
+	limits.SystemBaseLimit.Streams = 4096
+	limits.SystemBaseLimit.StreamsInbound = 2048
+	limits.SystemBaseLimit.StreamsOutbound = 2048
+	limits.SystemBaseLimit.Conns = 256
+	limits.SystemBaseLimit.ConnsInbound = 128
+	limits.SystemBaseLimit.ConnsOutbound = 128
+	limits.ServiceBaseLimit.Streams = 1024
+	limits.ServiceBaseLimit.StreamsInbound = 512
+	limits.ServiceBaseLimit.StreamsOutbound = 512
+	limits.ProtocolBaseLimit.Streams = 1024
+	limits.ProtocolBaseLimit.StreamsInbound = 512
+	limits.ProtocolBaseLimit.StreamsOutbound = 512
+	limits.PeerBaseLimit.Streams = 256
+	limits.PeerBaseLimit.StreamsInbound = 128
+	limits.PeerBaseLimit.StreamsOutbound = 128
+	// A peer sends over one messages stream. libp2p's default of 64 inbound
+	// per peer let a handful of identities hold every slot of the protocol and
+	// shut other servers out; one over what the receiver keeps
+	// (receiver_streams_maximum) lets a reconnect through to reset the oldest.
+	limits.AddProtocolPeerLimit(protocol_messages, p2p_rcmgr.BaseLimit{
+		StreamsInbound:  receiver_streams_maximum + 1,
+		StreamsOutbound: limits.ProtocolPeerBaseLimit.StreamsOutbound,
+		Streams:         receiver_streams_maximum + 1 + limits.ProtocolPeerBaseLimit.StreamsOutbound,
+		Memory:          limits.ProtocolPeerBaseLimit.Memory,
+	}, p2p_rcmgr.BaseLimitIncrease{})
+	return limits.AutoScale()
+}
+
 // Start p2p
 func net_start() {
 	// Load bootstrap peers and the default publisher from mochi.conf
@@ -161,24 +201,7 @@ func net_start() {
 		}
 	}
 
-	// Configure resource manager with higher limits
-	limits := p2p_rcmgr.DefaultLimits
-	limits.SystemBaseLimit.Streams = 4096
-	limits.SystemBaseLimit.StreamsInbound = 2048
-	limits.SystemBaseLimit.StreamsOutbound = 2048
-	limits.SystemBaseLimit.Conns = 256
-	limits.SystemBaseLimit.ConnsInbound = 128
-	limits.SystemBaseLimit.ConnsOutbound = 128
-	limits.ServiceBaseLimit.Streams = 1024
-	limits.ServiceBaseLimit.StreamsInbound = 512
-	limits.ServiceBaseLimit.StreamsOutbound = 512
-	limits.ProtocolBaseLimit.Streams = 1024
-	limits.ProtocolBaseLimit.StreamsInbound = 512
-	limits.ProtocolBaseLimit.StreamsOutbound = 512
-	limits.PeerBaseLimit.Streams = 256
-	limits.PeerBaseLimit.StreamsInbound = 128
-	limits.PeerBaseLimit.StreamsOutbound = 128
-	limiter := p2p_rcmgr.NewFixedLimiter(limits.AutoScale())
+	limiter := p2p_rcmgr.NewFixedLimiter(net_limits())
 	rm, err := p2p_rcmgr.NewResourceManager(limiter)
 	if err != nil {
 		panic(fmt.Sprintf("Net failed to create resource manager: %v", err))
@@ -201,9 +224,15 @@ func net_start() {
 		// (logged and counted for the status page); see holepunch.go.
 		p2p.EnableHolePunching(holepunch.WithTracer(holepunch_tracer{})),
 		// Rewrite advertised addresses for the 443 fallback (no-op when
-		// off): drop the loopback WebSocket listener, inject the public
-		// WSS address. See fallback.go.
+		// off): drop the bridge's loopback listener. See fallback.go.
 		p2p.AddrsFactory(fallback_addrs_factory),
+		// libp2p's default transports, the WebSocket one wrapped so the 443
+		// bridge can hand it connections the web server accepted.
+		p2p.Transport(p2p_tcp.NewTCPTransport),
+		p2p.Transport(p2p_quic.NewTransport),
+		p2p.Transport(fallback_transport_new),
+		p2p.Transport(p2p_webtransport.New),
+		p2p.Transport(p2p_webrtc.New),
 	}
 
 	// Hostile-network reachability: also accept libp2p on 443 (QUIC over
@@ -216,7 +245,13 @@ func net_start() {
 	// AutoRelay: when behind NAT, reserve a slot on a relay. Candidates come
 	// dynamically from relay.go, so a NAT'd server is not limited to the
 	// bootstraps. Our own relay service starts when AutoNAT finds us public.
-	opts = append(opts, p2p.EnableAutoRelayWithPeerSource(net_relay_candidates))
+	// AutoRelay picks among the candidates it is given at random, so the source
+	// gives the configured relays alone while they have room, and the number it
+	// waits for is the number of relays it wants.
+	opts = append(opts, p2p.EnableAutoRelayWithPeerSource(net_relay_candidates,
+		autorelay.WithNumRelays(relay_wanted),
+		autorelay.WithMinCandidates(relay_wanted),
+		autorelay.WithMaxCandidates(relay_candidates_maximum)))
 
 	net_me = must(p2p.New(opts...))
 	net_id = net_me.ID().String()
@@ -224,9 +259,6 @@ func net_start() {
 
 	// Before any dial, so no connection's record outlives it.
 	net_watch_connections(net_me.Network())
-
-	// Record the loopback WebSocket port for the web server's 443 bridge.
-	fallback_capture()
 
 	// /mochi/2 handlers: messages multiplexes many small messages on
 	// one persistent stream; stream is a raw bidirectional channel
@@ -268,8 +300,11 @@ func net_start() {
 	go bootstrap_manager()
 
 	// Add peers from database, along with their claimed display names
-	// and signed records
-	peers_add_from_db(100)
+	// and signed records. Every stored peer is loaded, so the daily prune
+	// runs first: rows it would delete would otherwise sit in the registry,
+	// counted against the unproven ceiling, until its first pass a day later.
+	peers_prune()
+	peers_add_from_db(peers_dial_maximum)
 	peer_names_load()
 	peer_records_load()
 	peers_purge_self_relay()
@@ -280,7 +315,7 @@ func net_start() {
 	// so a startup failure here shouldn't take the server down.
 	// An isolated server, one a test suite runs, looks for no one.
 	if !net_isolated {
-		if err := mdns.NewMdnsService(net_me, "mochi", &mdns_notifee{h: net_me}).Start(); err != nil {
+		if err := mdns.NewMdnsService(net_me, "mochi", &mdns_notifee{}).Start(); err != nil {
 			warn("mDNS peer discovery disabled: %v", err)
 		}
 	}
@@ -289,7 +324,7 @@ func net_start() {
 	// message is relayed between joining and gating. Peer scoring stays off: the
 	// validator cannot tell hostile from out-of-date, and would graylist old
 	// nodes.
-	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
+	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me, p2p_pubsub.WithMaxMessageSize(pubsub_maximum)))
 	must(gs.RegisterTopicValidator(pubsub_topic, pubsub_validate))
 	net_pubsub = must(gs.Join(pubsub_topic))
 	go pubsub_manager()
@@ -606,10 +641,9 @@ func net_ping_peer(id string) {
 	}
 }
 
-// Sign data with this server's libp2p host key. Used for core-scope replication
-// ops that aren't tied to a user identity (apps.db / settings.db / domains.db),
-// directory attestations, and membership self-assertions. User-scoped ops sign
-// with entity_sign() instead. Nil before net_start (unit tests).
+// Sign data with this server's libp2p host key, for the directory attestations
+// no user identity signs; user-scoped data signs with entity_sign() instead.
+// Nil before net_start (unit tests).
 func server_sign(data []byte) []byte {
 	if net_private == nil {
 		return nil

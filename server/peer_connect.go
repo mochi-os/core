@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
@@ -135,23 +136,30 @@ func peer_connect(id string) bool {
 	peers_lock.Unlock()
 
 	ok := peer_dial(id, addrs)
+	// A dial to a peer already connected inbound succeeds without making a
+	// connection of this host's own.
+	dialled := ok && peer_dialled(id)
 
 	peers_lock.Lock()
 	// A peer reset mid-dial (a disconnect, a prune) can have a second dial under
 	// way. That dial owns the peer's state and its entry, so its waiters keep
-	// waiting on it; this one only marks a connection it made.
-	p = peers[id]
-	if peer_dials[id] == dialed {
-		if ok {
+	// waiting on it; this one only marks a connection it made. A peer pruned
+	// while it dialled, and not added since, is not put back: the entry would
+	// hold no addresses and count against the registry.
+	current := peer_dials[id] == dialed
+	if current {
+		delete(peer_dials, id)
+	}
+	if p, held := peers[id]; held {
+		switch {
+		case ok:
 			p.state = peer_state_connected
-		} else {
+			p.dialled = dialled
+		case current:
 			p.state = peer_state_disconnected
 		}
-		delete(peer_dials, id)
-	} else if ok {
-		p.state = peer_state_connected
+		peers[id] = p
 	}
-	peers[id] = p
 	close(dialed)
 	peers_lock.Unlock()
 
@@ -161,18 +169,37 @@ func peer_connect(id string) bool {
 
 	if ok {
 		peer_refresh_connected_address(id)
-		peer_reconnected(id)
-		// Clear the silent cache before resurrecting deferred rows, or peer_is_silent
-		// short-circuits every resurrected row for up to peer_silent_skip_window.
-		peer_mark_reachable(id)
-		// Any queue rows deferred by queue_process's silent-peer
-		// pre-filter (1h next_retry push when peer_is_silent) become
-		// ready immediately. Without this the backlog waits out the
-		// deferral despite the peer being back.
-		queue_resurrect_peer(id)
+		peer_recovered(id)
 	}
 
 	return ok
+}
+
+// peer_dialled reports whether this host holds a connection to the peer that it
+// dialled itself, rather than one the peer opened to it.
+func peer_dialled(id string) bool {
+	pid, err := p2p_peer.Decode(id)
+	if err != nil || net_me == nil {
+		return false
+	}
+	for _, c := range net_me.Network().ConnsToPeer(pid) {
+		if c.Stat().Direction == p2p_network.DirOutbound {
+			return true
+		}
+	}
+	return false
+}
+
+// peer_recovered clears what a peer's absence left behind once it is connected:
+// its reconnect probing, its silence, and the deferral of its queued rows.
+func peer_recovered(id string) {
+	peer_reconnected(id)
+	// Clear the silent cache before resurrecting deferred rows, or peer_is_silent
+	// short-circuits every resurrected row straight back into deferral.
+	peer_mark_reachable(id)
+	// Rows deferred by queue_screen while the peer was silent become ready at
+	// once, rather than waiting out the deferral with the peer back.
+	queue_resurrect_peer(id)
 }
 
 // peer_connect_retry dials a peer and, on failure, enrolls it in the reconnect
@@ -185,20 +212,24 @@ func peer_connect_retry(id string) {
 }
 
 // Refresh the address we actually connected on, recording the success —
-// the evidence that protects it from cap eviction and early pruning.
+// the evidence that protects it from cap eviction and early pruning, and that
+// takes the peer out of the unproven count admission is held to. Only a
+// connection this host dialled is that evidence: the far end of one the peer
+// opened says nothing of where it listens, and stamping it would let any node
+// that connects and relays one announcement shed its unproven status.
 func peer_refresh_connected_address(id string) {
 	pid, err := p2p_peer.Decode(id)
-	if err != nil {
+	if err != nil || net_me == nil {
 		return
 	}
 
-	conns := net_me.Network().ConnsToPeer(pid)
-	if len(conns) == 0 {
+	remote := peer_dialled_address(net_me.Network().ConnsToPeer(pid))
+	if remote == nil {
 		return
 	}
 
 	t := now()
-	addr := conns[0].RemoteMultiaddr().String() + "/p2p/" + id
+	addr := remote.String() + "/p2p/" + id
 
 	peers_lock.Lock()
 	if p, found := peers[id]; found {
@@ -207,6 +238,7 @@ func peer_refresh_connected_address(id string) {
 			if a.Address == addr {
 				p.addresses[i].Success = t
 				p.addresses[i].Failure = 0
+				p.addresses[i].Saved = t
 				break
 			}
 		}
@@ -215,18 +247,35 @@ func peer_refresh_connected_address(id string) {
 	peers_lock.Unlock()
 
 	db := db_open("db/peers.db")
-	db.exec("insert into peers ( id, address, updated, success ) values ( ?, ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated, success=excluded.success, failure=0", id, addr, t, t)
+	db.exec_bg("peer connected address", "insert into peers ( id, address, updated, success ) values ( ?, ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated, success=excluded.success, failure=0", id, addr, t, t)
 }
 
-// Peer has become disconnected.
+// peer_dialled_address is the remote address of the first of conns this host
+// dialled whose address may be dialled back (peer_returnable), nil for none.
+func peer_dialled_address(conns []p2p_network.Conn) multiaddr.Multiaddr {
+	for _, c := range conns {
+		if c.Stat().Direction == p2p_network.DirOutbound && peer_returnable(c.RemoteMultiaddr()) {
+			return c.RemoteMultiaddr()
+		}
+	}
+	return nil
+}
+
+// Peer has become disconnected. It is probed for reconnection only when this
+// host has a reason to reach it (peer_reconnect_wanted): libp2p reports every
+// peer gone, including those that only ever dialled in, and probing one of
+// those costs a dial and a mesh-wide address request every few minutes for a
+// server this host never needed.
 func peer_disconnected(id string) {
 	if id == "" {
 		return
 	}
 	debug("Peer %q disconnected", id)
 
+	dialled := false
 	peers_lock.Lock()
 	if p, found := peers[id]; found {
+		dialled = p.dialled
 		p.state = peer_state_disconnected
 		peers[id] = p
 	}
@@ -239,11 +288,20 @@ func peer_disconnected(id string) {
 		fn(id)
 	}
 
-	// A replication member dropping at the libp2p level is the event-driven
-	// "offline" signal that fires even when there is no traffic to it - the
-	// gap the send-failure stamp alone misses for an idle member.
+	if dialled || peer_reconnect_needed(id) {
+		peer_schedule_reconnect(id)
+	}
+}
 
-	peer_schedule_reconnect(id)
+// peer_reconnect_wanted reports whether this host has a reason to reach a peer:
+// the connection it last held was one this host dialled, or something needs the
+// peer (peer_reconnect_needed). Only such a peer is probed when it drops, and
+// only for such a peer is the mesh asked for its addresses.
+func peer_reconnect_wanted(id string) bool {
+	peers_lock.Lock()
+	dialled := peers[id].dialled
+	peers_lock.Unlock()
+	return dialled || peer_reconnect_needed(id)
 }
 
 // peer_schedule_reconnect adds id to peer_reconnects[] with an initial retry
@@ -266,9 +324,6 @@ func peer_reconnected(id string) {
 	peer_reconnect_lock.Lock()
 	delete(peer_reconnects, id)
 	peer_reconnect_lock.Unlock()
-	// Reachable again at the libp2p level: clear the offline mark so an idle
-	// member that reconnects without resuming traffic doesn't keep showing
-	// the offline badge.
 }
 
 // peer_reconnect_parallel caps concurrent reconnect attempts. Each can block
@@ -297,20 +352,31 @@ func peer_reconnect_manager() {
 			semaphore <- struct{}{}
 			go func(id string) {
 				defer func() { <-semaphore }()
-				if peer_connect(id) {
-					debug("Peer %q reconnected successfully", id)
-					// Re-ship any retained journal ops the peer missed while
-					// it was gone (#23). Receiver dedups what it already has.
-					return
-				}
-				// The peer may be unreachable because our addresses for
-				// it are stale (or were never known); ask the mesh for
-				// fresh ones alongside the backoff probe.
-				peer_request_addresses(id)
-				peer_reconnect_failed(id)
+				peer_reconnect_probe(id)
 			}(id)
 		}
 	}
+}
+
+// peer_reconnect_probe makes one reconnect attempt for a peer the manager holds.
+func peer_reconnect_probe(id string) {
+	if peer_connect(id) {
+		// A probe that finds the peer connected completes as a reconnect does.
+		// peer_connect answers at once for a peer already connected - one
+		// connected inbound since, or silenced while its connection stayed up -
+		// without the recovery its own dial runs; without it here the peer
+		// would stay silent and be probed every tick.
+		debug("Peer %q reconnected successfully", id)
+		peer_recovered(id)
+		return
+	}
+	// The peer may be unreachable because our addresses for it are stale (or
+	// were never known); ask the mesh for fresh ones alongside the backoff
+	// probe, for a peer this host has a reason to reach.
+	if peer_reconnect_wanted(id) {
+		peer_request_addresses(id)
+	}
+	peer_reconnect_failed(id)
 }
 
 // peer_reconnect_attempts_maximum is how many failed probes, about an hour of
@@ -345,22 +411,19 @@ func peer_reconnect_failed(id string) {
 }
 
 // peer_reconnect_needed reports whether anything still needs a peer: it is a
-// bootstrap peer, its addresses are still held, it hosts directory entries, or
-// deliveries are queued for it. Probing anything else only broadcasts an
-// address request every few minutes for a server that is gone.
+// bootstrap peer, it hosts directory entries, or deliveries are queued for it.
+// Probing anything else only broadcasts an address request every few minutes
+// for a server that is gone. Holding addresses for a peer is no need: the
+// address an inbound stream was observed on is held for any peer that opened
+// one.
 func peer_reconnect_needed(id string) bool {
-	for _, p := range peers_bootstrap {
-		if p.ID == id {
-			return true
-		}
-	}
-	if peer_addresses_count(id) > 0 {
+	if peer_is_bootstrap(id) {
 		return true
 	}
-	if count_rows(db_open("db/directory.db"), "select count(*) from entries where peer=?", id) > 0 {
+	if count_rows(db_open("db/directory.db"), "select count(*) from ( select 1 from entries where peer=? limit 1 )", id) > 0 {
 		return true
 	}
-	return count_rows(db_open("db/queue.db"), "select count(*) from queue where target=?", id) > 0
+	return count_rows(db_open("db/queue.db"), "select count(*) from ( select 1 from queue where target=? limit 1 )", id) > 0
 }
 
 // peer_reconnect_abandon stops probing a peer and forgets its send failures,
@@ -437,8 +500,31 @@ func peers_publish_request() {
 // Merge an announcing peer's addresses, preferring its signed record
 // (self-certifying, replay-protected) over the plain list (trusted only via the
 // StrictSign-verified origin). An empty origin is a direct-stream spoof.
+//
+// An origin is only a keypair, and one connected peer can publish for any
+// number it mints, so its name, relay flag and record are kept only once its
+// addresses have made it a peer the registry holds, which only the admission
+// rule lets them do: all of them then count under the one ceiling on peers this
+// host has never reached. An origin the rule refuses is turned away first,
+// before its record is verified and each of its addresses is refused in turn.
 func peer_publish_event(e *Event) {
 	if e.origin == "" || e.origin == net_id {
+		return
+	}
+	if !peer_admit(e.origin) {
+		debug("Peer publish from %q refused: already holding %d unproven peers", e.origin, peer_unproven_maximum)
+		return
+	}
+
+	// Prefer the signed record: self-certifying and replay-protected.
+	// Fall back to the plain address list when absent or unverifiable,
+	// so peers that predate signed records still publish addresses.
+	if !peer_record_apply(e.origin, e.get("record", "")) {
+		if announced := e.get("addresses", ""); announced != "" {
+			peer_apply_addresses(e.origin, strings.Split(announced, ","))
+		}
+	}
+	if !peer_held(e.origin) {
 		return
 	}
 
@@ -450,29 +536,18 @@ func peer_publish_event(e *Event) {
 	}
 	peer_names_apply(e.origin, names)
 
-	// Note whether this peer offers relay, for AutoRelay candidate
-	// selection. Not security-sensitive: a false claim just fails to
-	// grant a reservation.
+	// Note whether this peer offers relay, for AutoRelay candidate selection. A
+	// false claim fails to grant a reservation; a true one from a hostile peer
+	// is why net_relay_candidates prefers the configured relays.
 	if e.get("relay", "") == "true" {
 		peer_relay_seen(e.origin, int(atoi(e.get("relay/load", "0"), 0)))
 	}
-
-	// Prefer the signed record: self-certifying and replay-protected.
-	// Fall back to the plain address list when absent or unverifiable,
-	// so peers that predate signed records still publish addresses.
-	addresses, ok := peer_record_apply(e.origin, e.get("record", ""))
-	if !ok {
-		announced := e.get("addresses", "")
-		if announced == "" {
-			return
-		}
-		addresses = strings.Split(announced, ",")
-	}
-	peer_apply_addresses(e.origin, addresses)
 }
 
 // peer_apply_addresses merges discovered addresses through the receive-side
-// hygiene shared by direct announcements and relayed records.
+// hygiene shared by direct announcements and relayed records: at most
+// peers_publish_addresses_maximum, each one peer_address_valid holds valid for
+// the peer, and none relaying through this host.
 func peer_apply_addresses(id string, addresses []string) {
 	applied := 0
 	for _, address := range addresses {
@@ -480,12 +555,7 @@ func peer_apply_addresses(id string, addresses []string) {
 			break
 		}
 		address = strings.TrimSpace(address)
-		ma, err := multiaddr.NewMultiaddr(address)
-		if err != nil {
-			continue
-		}
-		information, err := p2p_peer.AddrInfoFromP2pAddr(ma)
-		if err != nil || information.ID.String() != id {
+		if !peer_address_valid(id, address) {
 			continue
 		}
 		// A circuit address relaying through ourselves is dead weight: we hold the
@@ -518,18 +588,16 @@ func peer_request_event(e *Event) {
 }
 
 // A relayed signed record vouches for a third party's addresses. Trust is in
-// the record's own signature, so the carrier's identity is irrelevant.
+// the record's own signature, so which server carried it is irrelevant - but it
+// must have come over pubsub: peers/record is broadcast only, and a direct
+// stream would be a second carrier with no rate limit at all. The subject passes
+// the admission rule before anything of the record is kept.
 func peer_record_event(e *Event) {
-	id, addresses, sequence, data, ok := peer_record_verify(e.get("record", ""))
-	if !ok || id == net_id {
+	if e.origin == "" || e.origin == net_id {
 		return
 	}
-	// Only a non-stale answer suppresses our relay: signed records never expire,
-	// so a replayed old one would otherwise silence every legitimate relay.
-	if peer_record_current(id, sequence) {
-		peer_record_seen(id)
-	}
-	if !peer_record_store(id, sequence, data) {
+	id, addresses, sequence, data, ok := peer_record_verify(e.get("record", ""))
+	if !ok || id == net_id {
 		return
 	}
 	// A record for a peer this host has never held is the growth path: ids are
@@ -538,7 +606,23 @@ func peer_record_event(e *Event) {
 		debug("Peer record for %q refused: already holding %d unproven peers", id, peer_unproven_maximum)
 		return
 	}
+	// Only a non-stale answer suppresses our relay: signed records never expire,
+	// so a replayed old one would otherwise silence every legitimate relay.
+	current := peer_record_current(id, sequence)
+	if current {
+		peer_record_seen(id)
+	}
+	newer := peer_record_newer(id, sequence)
+	// A record as new as the one held is that record relayed again. Its
+	// addresses still restore a peer this host holds the record of but no
+	// longer holds in its registry: the recovery a peers/request asked for.
+	if !newer && !(current && !peer_held(id)) {
+		return
+	}
 	peer_apply_addresses(id, addresses)
+	if newer && peer_held(id) {
+		peer_record_store(id, sequence, data)
+	}
 }
 
 // peer_request_addresses broadcasts a peers/request asking a peer to publish

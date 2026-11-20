@@ -88,11 +88,11 @@ func TestARequestNamingNobodyIsIgnored(t *testing.T) {
 }
 
 // TestEveryPeersHandlerChecksOriginFirst is the invariant, stated across the
-// three handlers rather than in one. peer_record_event is exempt because it
-// verifies the record's own libp2p signature instead - the carrier's identity
-// is genuinely irrelevant there, which its comment says.
+// three handlers rather than in one. peer_record_event verifies the record's own
+// libp2p signature, so which server carried it is irrelevant - but it must have
+// come over pubsub, or a direct stream is a second carrier with no rate limit.
 func TestEveryPeersHandlerChecksOriginFirst(t *testing.T) {
-	for _, function := range []string{"func peer_request_event(", "func peer_publish_event("} {
+	for _, function := range []string{"func peer_request_event(", "func peer_publish_event(", "func peer_record_event("} {
 		body := function_body(t, "peer_connect.go", function)
 		guard := strings.Index(body, `e.origin == ""`)
 		if guard < 0 {

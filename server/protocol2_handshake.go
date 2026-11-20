@@ -285,9 +285,9 @@ func caps_read(r io.Reader) (*Frame, error) {
 // claim_write writes one `claim` frame for `entity`. receiver must be the
 // authenticated peer this stream runs to.
 func claim_write(w io.Writer, entity string, challenge []byte, receiver string, protocol string) error {
-	sig := claim_sign(entity, challenge, receiver, protocol)
-	if sig == nil {
-		return fmt.Errorf("claim: signing failed for entity %q", entity)
+	sig, err := claim_sign(entity, challenge, receiver, protocol)
+	if err != nil {
+		return err
 	}
 	return frame_write(w, &Frame{
 		Type:      frame_type_claim,

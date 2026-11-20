@@ -7,9 +7,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -17,89 +15,235 @@ import (
 	"sync"
 )
 
-// Deduplication cache for processed messages.
+// Deduplication of inbound messages and pubsub announcements, by message id.
 //
 // seen_messages_ttl MUST be at least 2x the longest gap in retry_delays
 // (queue.go caps at 1h); TestDedupWindowExceedsMaxRetryInterval enforces it. In
 // memory on purpose and NOT a replay defence: every handler reachable this way
 // already refuses a stale message on its own terms.
+//
+// A record is kept per id, with what became of the message: a copy arriving
+// while the first is still running waits for its outcome rather than being
+// acknowledged for a delivery that may yet fail. Each record is accounted to the
+// peer that delivered the copy which made it, and a peer at its share sheds its
+// own oldest, so one peer filling the map evicts its own records, not everyone
+// else's.
 var (
-	seen_messages      = make(map[string]int64) // id -> timestamp
+	seen_messages      = map[string]*message_record{}
+	seen_sources       = map[string]*message_source{}
 	seen_messages_lock sync.Mutex
 	seen_messages_ttl  = int64(8 * 3600) // 8 hours
 
-	// Ceiling on the dedup map: the TTL alone does not bound it, since the stream
-	// rate limit is charged per stream OPEN, not per frame. Eviction drops the
-	// OLDEST entries, which a retry (1h ladder, 8h TTL) never needs.
+	// Ceiling on all records, and on one peer's. The TTL alone bounds neither,
+	// since the stream rate limit is charged per stream OPEN, not per frame.
 	seen_messages_maximum = 1000000
+	seen_source_maximum   = 250000
 )
 
-// message_seen_evict drops the oldest entries until the map is back under its
-// ceiling. Caller holds seen_messages_lock; sheds a slice at a time, so this is
-// O(n) rarely rather than per insert.
-func message_seen_evict() {
-	if len(seen_messages) <= seen_messages_maximum {
-		return
-	}
-	target := len(seen_messages) - seen_messages_maximum + seen_messages_maximum/10
+// The states of a message's record, and what message_begin answers a copy with.
+const (
+	message_new     = iota // not seen, or failed for a reason the sender retries: the caller runs it
+	message_running        // a copy is with a handler: the caller's reply waits for its outcome
+	message_applied        // its handler succeeded: the caller acknowledges it
+	message_refused        // it failed for a reason no retry changes: the caller answers that reason
+)
 
-	// One sort to find the age cutoff that sheds `target` entries. Walking
-	// the cutoff forward a second at a time instead would rescan the map on
-	// every step - O(window x n), billions of operations at this size.
-	timestamps := make([]int64, 0, len(seen_messages))
-	for _, ts := range seen_messages {
-		timestamps = append(timestamps, ts)
+// message_waiting_maximum bounds the copies waiting on one running message. A
+// copy past it is answered fail_transient, for its sender to send again later.
+const message_waiting_maximum = 16
+
+// message_record is what this host knows of one message id.
+type message_record struct {
+	when    int64 // when it was marked or last settled, for the TTL
+	source  *message_source
+	state   int
+	reason  string         // the refusal, in message_refused
+	waiting []reply_target // copies that arrived while it ran
+}
+
+// message_source is one peer's share of the records: its ids, oldest first.
+type message_source struct {
+	peer  string
+	order []string
+	start int
+}
+
+// size is how many records the source holds.
+func (s *message_source) size() int {
+	return len(s.order) - s.start
+}
+
+// message_record_add records id, accounted to peer. Caller holds
+// seen_messages_lock and knows id is not recorded.
+func message_record_add(id, peer string, state int) *message_record {
+	source := seen_sources[peer]
+	if source == nil {
+		source = &message_source{peer: peer}
+		seen_sources[peer] = source
 	}
-	slices.Sort(timestamps)
-	cutoff := timestamps[target]
-	for id, ts := range seen_messages {
-		if ts < cutoff {
+	if source.size() >= seen_source_maximum {
+		message_source_shed(source, 1)
+	}
+	record := &message_record{when: now(), source: source, state: state}
+	seen_messages[id] = record
+	source.order = append(source.order, id)
+	if len(seen_messages) > seen_messages_maximum {
+		message_seen_evict()
+	}
+	return record
+}
+
+// message_source_shed forgets the source's count oldest records. Caller holds
+// seen_messages_lock.
+func message_source_shed(source *message_source, count int) {
+	for ; count > 0 && source.size() > 0; count-- {
+		id := source.order[source.start]
+		if record := seen_messages[id]; record != nil && record.source == source {
 			delete(seen_messages, id)
 		}
+		source.order[source.start] = ""
+		source.start++
 	}
-	warn("Messages: dedup map hit its %d-entry ceiling; shed entries older than %d", seen_messages_maximum, cutoff)
+	if source.size() == 0 {
+		delete(seen_sources, source.peer)
+		return
+	}
+	// Compacted once half is spent, so the slice does not grow without bound.
+	if source.start > len(source.order)/2 {
+		source.order = append([]string(nil), source.order[source.start:]...)
+		source.start = 0
+	}
 }
 
-// Check if message was already processed
-func message_seen(id string) bool {
-	seen_messages_lock.Lock()
-	defer seen_messages_lock.Unlock()
-	_, exists := seen_messages[id]
-	return exists
+// message_seen_evict brings the map back under its ceiling, a tenth below it so
+// this runs rarely, by shedding the oldest records of whichever peer holds the
+// most. By count, not by age: ids marked within the same second shed as readily
+// as any. Caller holds seen_messages_lock.
+func message_seen_evict() {
+	target := seen_messages_maximum - seen_messages_maximum/10
+	shed := 0
+	for len(seen_messages) > target {
+		var largest *message_source
+		for _, source := range seen_sources {
+			if largest == nil || source.size() > largest.size() {
+				largest = source
+			}
+		}
+		if largest == nil {
+			break
+		}
+		before := len(seen_messages)
+		message_source_shed(largest, len(seen_messages)-target)
+		shed += before - len(seen_messages)
+	}
+	warn("Messages: dedup map hit its %d-entry ceiling; shed the oldest %d of the peers holding the most", seen_messages_maximum, shed)
 }
 
-// message_seen_mark atomically reports whether id was already processed and, if
-// not, marks it seen. The pubsub manager and the direct-stream workers share
-// this map, so the separate check-then-mark pair is not safe here.
-func message_seen_mark(id string) bool {
+// message_begin is the check-and-mark a delivered message frame takes before it
+// is handed to a handler. message_new marks it running, for the caller to run
+// and settle with message_end; message_running adds reply to the copies waiting
+// on the one running, or, with a reason, finds no room for it and leaves the
+// caller to answer that; message_applied and message_refused say how the first
+// copy ended, reason being the refusal.
+func message_begin(id, peer string, reply reply_target) (int, string) {
 	seen_messages_lock.Lock()
 	defer seen_messages_lock.Unlock()
-	if _, exists := seen_messages[id]; exists {
+	record := seen_messages[id]
+	if record == nil {
+		message_record_add(id, peer, message_running)
+		return message_new, ""
+	}
+	switch record.state {
+	case message_new:
+		record.state = message_running
+		record.when = now()
+		return message_new, ""
+	case message_running:
+		if len(record.waiting) >= message_waiting_maximum {
+			return message_running, fail_transient
+		}
+		record.waiting = append(record.waiting, reply)
+		return message_running, ""
+	}
+	return record.state, record.reason
+}
+
+// message_state is message_begin without the mark, for a copy that may be
+// answered from its record before it is admitted.
+func message_state(id string) (int, string) {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	record := seen_messages[id]
+	if record == nil {
+		return message_new, ""
+	}
+	return record.state, record.reason
+}
+
+// message_end settles a message message_begin marked running, with the failure
+// reason its handler gave, empty for success, and returns the copies that
+// waited for it, to be answered the same. A reason the sender retries leaves
+// the record due a retry, so the next copy runs.
+func message_end(id, reason string) []reply_target {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	record := seen_messages[id]
+	if record == nil || record.state != message_running {
+		return nil
+	}
+	waiting := record.waiting
+	record.waiting = nil
+	record.when = now()
+	switch {
+	case reason == "":
+		record.state = message_applied
+	case fail_retryable(reason):
+		record.state = message_new
+	default:
+		record.state = message_refused
+		record.reason = reason
+	}
+	return waiting
+}
+
+// message_seen_mark atomically reports whether id was already seen and, if not,
+// records it as applied, accounted to peer. For pubsub announcements, which are
+// routed once and never retried; the direct-stream workers share the map, so
+// the separate check-then-mark pair is not safe here.
+func message_seen_mark(id, peer string) bool {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	if seen_messages[id] != nil {
 		return true
 	}
-	seen_messages[id] = now()
-	message_seen_evict()
+	message_record_add(id, peer, message_applied)
 	return false
 }
 
-// message_seen_clear forgets id so a later delivery is dispatched rather than
-// coalesced away as a duplicate. The mark is set before the handler runs, so
-// clear it only on a reason the sender will retry, never on a drop reason.
-func message_seen_clear(id string) {
-	seen_messages_lock.Lock()
-	defer seen_messages_lock.Unlock()
-	delete(seen_messages, id)
-}
-
-// Clean up old entries
+// message_seen_cleanup forgets records past the TTL, and the place each held in
+// its peer's order.
 func message_seen_cleanup() {
 	seen_messages_lock.Lock()
 	defer seen_messages_lock.Unlock()
 	cutoff := now() - seen_messages_ttl
-	for id, ts := range seen_messages {
-		if ts < cutoff {
+	for id, record := range seen_messages {
+		if record.when < cutoff {
 			delete(seen_messages, id)
 		}
+	}
+	for peer, source := range seen_sources {
+		kept := make([]string, 0, source.size())
+		for _, id := range source.order[source.start:] {
+			if record := seen_messages[id]; record != nil && record.source == source {
+				kept = append(kept, id)
+			}
+		}
+		if len(kept) == 0 {
+			delete(seen_sources, peer)
+			continue
+		}
+		source.order = kept
+		source.start = 0
 	}
 }
 
@@ -183,9 +327,8 @@ func (m *Message) publish(allow_queue bool) {
 	}
 
 	if peers_sufficient() {
-		pubsub_publish(m.From, m.Service, m.Event, m.ID, content)
-
-		if allow_queue {
+		// A failed publish leaves the row for the queue's retry.
+		if pubsub_publish(m.From, m.Service, m.Event, m.ID, content) == nil && allow_queue {
 			queue_ack(m.ID)
 		}
 	}
@@ -383,7 +526,7 @@ func (m *Message) send_peer_priority(peer string, priority int) error {
 }
 
 // messages_fanout_open opens a Sender for a peer a fan-out has queued rows for.
-var messages_fanout_open = sender_for
+var messages_fanout_open = sender_start
 
 // messages_fanout queues messages sharing one content, encoded once by the
 // caller, recipient after recipient: each to its pinned peer, or else to every
@@ -485,22 +628,27 @@ fanout:
 var message_attempt_send = message_attempt_send_real
 
 func message_attempt_send_real(m *Message, peer string, content []byte) {
-	// /mochi/2/messages: peer_send marks the queue row 'sending' and the
-	// inflight resolver (sender_read) drives queue_ack / queue_fail. On a
-	// stream-open failure the row stays queued for queue_process to retry.
+	// /mochi/2/messages: the row is claimed here and the inflight resolver
+	// (the Sender's read_loop) drives queue_ack / queue_fail. On a stream-open failure the
+	// row stays queued for queue_process to retry.
 	f, err := frame_for_message(m, content)
 	if err != nil {
 		frame_drop(m.ID, peer, err)
 		return
 	}
-	queue_sending(m.ID)
+	// A Sender's pull_loop may have claimed the row first: it is a new row, due
+	// at once. Then it is that Sender's to send.
+	if !queue_sending(m.ID) {
+		return
+	}
 	if send_error := peer_send(peer, m.ID, f); send_error != nil {
 		queue_unsending(m.ID)
 		// A Sender that is only busy takes the row itself: its pull_loop
 		// claims the peer's due rows as the outbox drains, so the row stays
-		// due rather than waiting out the retry ladder. A peer that cannot be
-		// reached is retried with backoff.
-		if errors.Is(send_error, error_sender_full) {
+		// due rather than waiting out the retry ladder; so does one
+		// draining for shutdown, or closed. A peer that cannot be reached is
+		// retried with backoff.
+		if sender_refused(send_error) {
 			return
 		}
 		queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_error))

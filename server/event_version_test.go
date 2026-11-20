@@ -119,18 +119,26 @@ func TestTheEventLookupReleasesItsLockOnPanic(t *testing.T) {
 	}
 }
 
-// TestBothVersionLookupsInRouteAreChecked is the shape. route() calls active()
-// twice and the defect was that only one result was screened; a third call
-// added later must be screened too.
+// TestBothVersionLookupsInRouteAreChecked is the shape. Routing resolves a
+// version twice - once choosing the app (event_target, which route and
+// event_admit share) and once in route itself - and the defect was that only
+// one result was screened; a call added later must be screened too.
 func TestBothVersionLookupsInRouteAreChecked(t *testing.T) {
-	body := function_body(t, "events.go", "func (e *Event) route()")
-
-	calls := strings.Count(body, "a.active(e.user)")
-	if calls < 2 {
-		t.Fatalf("route() makes %d calls to a.active; this test is reading the wrong function", calls)
+	total := 0
+	for _, f := range []struct{ name, call string }{
+		{"func (e *Event) route()", "a.active(e.user)"},
+		{"func event_target(", "a.active(user)"},
+		{"func event_admit(", "a.active(user)"},
+	} {
+		body := function_body(t, "events.go", f.name)
+		calls := strings.Count(body, f.call)
+		total += calls
+		if checks := strings.Count(body, "av != nil") + strings.Count(body, "av == nil"); checks < calls {
+			t.Errorf("%s resolves a version %d times but screens the result %d times; every use of av dereferences it", f.name, calls, checks)
+		}
 	}
-	if checks := strings.Count(body, "av != nil") + strings.Count(body, "av == nil"); checks < calls {
-		t.Errorf("route() resolves a version %d times but screens the result %d times; every use of av dereferences it", calls, checks)
+	if total < 3 {
+		t.Fatalf("routing makes %d calls to a.active; this test is reading the wrong functions", total)
 	}
 }
 

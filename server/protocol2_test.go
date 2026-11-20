@@ -21,6 +21,7 @@ import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	multiaddr "github.com/multiformats/go-multiaddr"
 	"io"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -34,6 +35,220 @@ func init() {
 
 // --- Framing -----------------------------------------------------------
 
+// cbor_flood is a value of more than cbor_maximum_items data items within every
+// per-container cap: arrays of arrays of empty maps, a byte apiece on the wire
+// and a heap allocation apiece decoded.
+func cbor_flood(t *testing.T) ([]byte, map[string]any) {
+	t.Helper()
+	inner := make([]any, cbor_maximum_elements)
+	for i := range inner {
+		inner[i] = map[string]any{}
+	}
+	outer := make([]any, cbor_maximum_items/cbor_maximum_elements+1)
+	for i := range outer {
+		outer[i] = inner
+	}
+	content := map[string]any{"x": outer}
+	body, err := cbor.Marshal(map[string]any{"type": frame_type_message, "id": "flood", "content": content})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if err := cbor_decode_mode.Wellformed(body); err != nil {
+		t.Fatalf("control: the flood breaks a per-container cap, so it tests nothing new: %v", err)
+	}
+	return body, content
+}
+
+// frame_prefixed is body with its length prefix, as frame_write sends it.
+func frame_prefixed(body []byte) *bytes.Reader {
+	out := make([]byte, frame_length_size+len(body))
+	binary.BigEndian.PutUint32(out, uint32(len(body)))
+	copy(out[frame_length_size:], body)
+	return bytes.NewReader(out)
+}
+
+// A frame within every per-container cap but holding more data items than the
+// budget is refused before it is decoded: about 1 MB of such a body decoded to
+// some 64 MB of heap, and a 16 MB frame to a gigabyte, before any claim.
+func TestFrameReadRefusesTooManyItems(t *testing.T) {
+	body, content := cbor_flood(t)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := frame_read(frame_prefixed(body))
+	runtime.ReadMemStats(&after)
+	var undecodable *frame_undecodable
+	if !errors.As(err, &undecodable) || !errors.Is(err, cbor_walk_items) {
+		t.Fatalf("THE POINT: a frame over the item budget read as %v", err)
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > uint64(8*len(body)) {
+		t.Errorf("THE POINT: refusing it allocated %d bytes for a %d-byte body", grown, len(body))
+	}
+	if err := frame_check(&Frame{Type: frame_type_message, ID: "flood", Content: content}); !errors.Is(err, frame_refused) {
+		t.Errorf("frame_check passed a frame no receiver decodes: %v", err)
+	}
+	if err := announcement_read_check(body); err == nil {
+		t.Error("announcement_read decoded a body over the item budget")
+	}
+}
+
+// announcement_read_check reads body as a pubsub announcement.
+func announcement_read_check(body []byte) error {
+	_, err := announcement_read(body)
+	return err
+}
+
+// A stream segment over the item budget is refused as a frame is, before it is
+// decoded; the segment after it still reads.
+func TestStreamReadRefusesTooManyItems(t *testing.T) {
+	flood, _ := cbor_flood(t)
+	small, _ := cbor.Marshal(map[string]any{"n": 1})
+	st := stream_rw(io.NopCloser(bytes.NewReader(append(append([]byte{}, small...), flood...))), nil)
+	first := map[string]any{}
+	if err := st.read(&first); err != nil {
+		t.Fatalf("control: the first segment did not read: %v", err)
+	}
+	var second any
+	if err := st.read(&second); !errors.Is(err, cbor_walk_items) {
+		t.Errorf("THE POINT: a segment over the item budget read as %v", err)
+	}
+}
+
+// The walk finds where a value ends however its bytes are split across reads,
+// counts as the decoder does, and agrees with it at the nesting bound.
+func TestCborWalkFollowsSplitValues(t *testing.T) {
+	values := []any{
+		map[string]any{"a": []any{1, "two", []byte{3}, map[string]any{"x": nil}}, "b": 1.5, "c": true},
+		[]any{},
+		"text",
+		uint64(1) << 40,
+		-12,
+		cbor.Tag{Number: 1, Content: int64(5)},
+	}
+	for i, value := range values {
+		data, err := cbor.Marshal(value)
+		if err != nil {
+			t.Fatalf("encode %d: %v", i, err)
+		}
+		// Indefinite-length forms too.
+		for split := 1; split <= len(data); split++ {
+			var w cbor_walk
+			n := 0
+			for end := split; ; end += split {
+				if end > len(data) {
+					end = len(data)
+				}
+				n, err = w.step(data[:end])
+				if err != nil || n > 0 || end == len(data) {
+					break
+				}
+			}
+			if err != nil || n != len(data) {
+				t.Fatalf("value %d split every %d bytes: length %d, %v; want %d", i, split, n, err, len(data))
+			}
+		}
+	}
+	indefinite := []byte{0x9f, 0x01, 0x5f, 0x41, 0x61, 0xff, 0xbf, 0x61, 0x6b, 0x00, 0xff, 0xff}
+	var w cbor_walk
+	if n, err := w.step(append(indefinite, 0x01)); err != nil || n != len(indefinite) {
+		t.Errorf("indefinite forms: length %d, %v; want %d", n, err, len(indefinite))
+	}
+	if err := cbor_decode_mode.Wellformed(indefinite); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+
+	// Nested as deep as the decoder allows passes the walk.
+	var deep any = []any{}
+	for i := 1; i < cbor_maximum_depth; i++ {
+		deep = []any{deep}
+	}
+	data, _ := cbor.Marshal(deep)
+	if err := cbor_decode_mode.Wellformed(data); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	if err := cbor_items(data); err != nil {
+		t.Errorf("a value the decoder takes was refused by the walk: %v", err)
+	}
+	for _, malformed := range [][]byte{{0xff}, {0x1c}, {0x5f, 0x41}} {
+		if err := cbor_items(malformed); err == nil {
+			t.Errorf("malformed % x passed the walk", malformed)
+		}
+	}
+}
+
+// Only a message carries content: any other frame past the control size, or
+// carrying content or data at all, is refused, and a message is not.
+func TestFrameReadHoldsControlFramesToTheirSize(t *testing.T) {
+	read := func(f *Frame) error {
+		var buffer bytes.Buffer
+		if err := frame_write(&buffer, f); err != nil {
+			t.Fatalf("frame_write: %v", err)
+		}
+		_, err := frame_read(&buffer)
+		return err
+	}
+	large := map[string]any{"pad": make([]byte, frame_control_maximum)}
+	if err := read(&Frame{Type: frame_type_ping, ID: "p", Content: large}); err == nil {
+		t.Error("THE POINT: a ping past the control size was decoded")
+	}
+	if err := read(&Frame{Type: frame_type_ping, ID: "p", Content: map[string]any{"x": 1}}); err == nil {
+		t.Error("THE POINT: a ping carrying content was taken")
+	}
+	if err := read(&Frame{Type: frame_type_ack, Replies: []string{"a"}, Data: []byte{1}}); err == nil {
+		t.Error("THE POINT: an ack carrying data was taken")
+	}
+	if err := read(&Frame{Type: frame_type_message, ID: "m", Content: large}); err != nil {
+		t.Errorf("control: a large message was refused: %v", err)
+	}
+	if err := read(&Frame{Type: frame_type_ping, ID: "p"}); err != nil {
+		t.Errorf("control: a plain ping was refused: %v", err)
+	}
+
+	// Refused from its head, before the rest is built: a ping within the item
+	// budget but holding half a million empty maps decoded to some 30 MB first.
+	inner := make([]any, cbor_maximum_elements)
+	for i := range inner {
+		inner[i] = map[string]any{}
+	}
+	outer := make([]any, 50)
+	for i := range outer {
+		outer[i] = inner
+	}
+	body, err := cbor.Marshal(map[string]any{"type": frame_type_ping, "id": "p", "content": map[string]any{"x": outer}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err = frame_read(frame_prefixed(body))
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Error("a ping of half a million items was decoded")
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > uint64(8*len(body)) {
+		t.Errorf("THE POINT: refusing a large ping allocated %d bytes for a %d-byte body", grown, len(body))
+	}
+}
+
+// The body is allocated as it arrives, not at the length its prefix claims: a
+// four-byte prefix pinned 16 MB until the peer sent the rest, or never did.
+func TestFrameReadAllocatesAsTheBodyArrives(t *testing.T) {
+	var prefix [frame_length_size]byte
+	binary.BigEndian.PutUint32(prefix[:], frame_maximum)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := frame_read(io.MultiReader(bytes.NewReader(prefix[:]), bytes.NewReader([]byte{0xa1, 0x64})))
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("a body cut short read as %v", err)
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 1<<20 {
+		t.Errorf("THE POINT: a 16 MB prefix and two bytes allocated %d bytes", grown)
+	}
+}
+
 func TestFrameWriteReadRoundTrip(t *testing.T) {
 	cases := []*Frame{
 		{Type: frame_type_hello, Version: 2, Session: "abcd1234", Challenge: bytes.Repeat([]byte{0x01}, challenge_size_v2), Codecs: []string{"zstd"}, Features: nil},
@@ -41,8 +256,8 @@ func TestFrameWriteReadRoundTrip(t *testing.T) {
 		{Type: frame_type_claim, From: test_entity_id('a'), Signature: bytes.Repeat([]byte{0x02}, ed25519.SignatureSize)},
 		{Type: frame_type_message, ID: "msg-1", From: test_entity_id('b'), To: test_entity_id('c'),
 			Service: "feeds", Event: "post/novelty", FromApp: "feeds",
-			Services: []string{"feeds"}, Priority: frame_priority_interactive,
-			Content: map[string]any{"k": "v"}, Data: []byte{0x09, 0x0a, 0x0b}},
+			Services: []string{"feeds"},
+			Content:  map[string]any{"k": "v"}, Data: []byte{0x09, 0x0a, 0x0b}},
 		{Type: frame_type_ack, Replies: []string{"id-1", "id-2", "id-3"}},
 		{Type: frame_type_fail, Replies: []string{"id-9"}, Reason: fail_unclaimed},
 		{Type: frame_type_ping, ID: "ping-1"},
@@ -439,29 +654,6 @@ func TestFeaturesIntersectStrict(t *testing.T) {
 	}
 }
 
-// --- Priority mapping --------------------------------------------------
-
-func TestFramePriorityForMapsQueueTiers(t *testing.T) {
-	cases := []struct {
-		queue int
-		want  byte
-	}{
-		{priority_replay, frame_priority_control},
-		{priority_interactive, frame_priority_interactive},
-		{0, frame_priority_interactive}, // default
-		// The wire keeps three tiers; the queue has two producers. A stored
-		// priority from the removed control/bulk lanes maps to interactive,
-		// which is what an unrecognised value has always done.
-		{40, frame_priority_interactive},
-		{10, frame_priority_interactive},
-	}
-	for _, c := range cases {
-		if got := frame_priority_for(c.queue); got != c.want {
-			t.Errorf("frame_priority_for(%d): got %d, want %d", c.queue, got, c.want)
-		}
-	}
-}
-
 // TestFrameDecompressBounded pins the zstd-bomb defence: a frame tiny on the
 // wire that expands past frame_maximum must be rejected before it is allocated.
 func TestFrameDecompressBounded(t *testing.T) {
@@ -565,12 +757,10 @@ func TestWorkerDispatchBackpressure(t *testing.T) {
 	}
 }
 
-// Mochi server: #47 - peer_protocol_open must not hang when a stale "Connected"
-// peer forces net_me.NewStream to dial an unreachable address; the open is
-// bounded by peer_stream_open_timeout.//
-// Application Interface Exception - see license.txt and license-exception.md.
-// TestPeerProtocolOpenTimesOut: a peer believed connected whose only address is
-// black-holed must fail within the timeout, not hang.
+// TestPeerProtocolOpenTimesOut is #47: peer_protocol_open must not hang when a
+// stale "Connected" peer forces net_me.NewStream to dial an unreachable
+// address. A peer believed connected whose only address is black-holed must
+// fail within peer_stream_open_timeout.
 func TestPeerProtocolOpenTimesOut(t *testing.T) {
 	setup_peer_discovery_test(t)
 

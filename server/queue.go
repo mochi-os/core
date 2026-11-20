@@ -24,14 +24,9 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
-// queue_per_peer_concurrency caps in-flight sends to one peer per tick.
-// Concurrent streams to a peer are safe: libp2p multiplexes, ACK dedup keys are
-// per-message, and SQL ops apply by sequence number, so wire order is rebuilt.
+// queue_per_peer_concurrency caps the broadcasts queue_process publishes at
+// once in a pass; direct rows run one at a time per (target, sender).
 const queue_per_peer_concurrency = 8
-
-// File pushes stay serial per peer — one in-flight file at a time per
-// peer. Parallel file pushes only divide the same bandwidth.
-const queue_per_peer_file_concurrency = 1
 
 // How long a row may stay claimed before the safety net assumes the sender
 // holding it is gone. Long enough that a slow but live send is never taken
@@ -45,9 +40,8 @@ const queue_claim_timeout = 60
 // without renumbering, since the values are purely ordinal.
 const (
 	// 40 was priority_control and 10 was priority_bulk, both produced only by
-	// queue_priority's replication branch. The wire still has all three tiers
-	// (frame_priority_*), which is a receiver-side vocabulary and outlives the
-	// queue lanes that fed it.
+	// queue_priority's replication branch. Priority orders the queue only;
+	// nothing of it is sent.
 	priority_replay      = 30 // broadcast resync replies: jump live broadcast queue
 	priority_interactive = 20 // normal app and entity messages (the default)
 )
@@ -112,8 +106,8 @@ var self_loop_wake_ch = make(chan struct{}, 1)
 //
 //   - Senders' pull_loop: direct rows with target == <its peer>
 //   - self_loop_drain: direct rows with target == net_id
-//   - queue_process: everything else (broadcasts, file pushes,
-//     offline-peer fast-fails, empty-target rows)
+//   - queue_process: everything else (broadcasts, offline-peer
+//     fast-fails, empty-target rows)
 func queue_wake() {
 	select {
 	case queue_wake_ch <- struct{}{}:
@@ -142,30 +136,36 @@ func senders_wake_all() {
 }
 
 // queue_claim_for_peer atomically claims up to `limit` rows targeting `peer`,
-// marking them 'sending' so queue_process will not double-pick them. File
-// pushes are excluded: they ride /mochi/2/stream, not the Sender's persistent
-// stream.
+// marking them 'sending' so queue_process will not double-pick them, and holds
+// them (queue_hold). A row past its expiry is not handed out: nothing on the
+// wire carries the expiry for its receiver to check. File pushes are excluded:
+// they ride /mochi/2/stream, not the Sender's persistent stream.
 func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 	if peer == "" || limit <= 0 {
 		return nil
 	}
 	db := db_open("db/queue.db")
 	var rows []QueueEntry
+	moment := now()
 	err := db.scans(&rows, `update queue set status='sending', claimed=?
 		where id in (
 			select id from queue
 			where target=? and status='pending' and next_retry<=?
-				and type='direct' and event != 'file/push'
+				and (expires=0 or expires>?)
+				and type='direct'
 			order by priority desc, next_retry asc
 			limit ?
 		)
 		returning id, type, target, from_entity, to_entity, service, event,
 			from_app, from_services, content, data, file, expires, status,
 			attempts, next_retry, created, priority`,
-		now(), peer, now(), limit)
+		moment, peer, moment, moment, limit)
 	if err != nil {
 		info("queue_claim_for_peer error peer=%q: %v", peer, err)
 		return nil
+	}
+	for i := range rows {
+		queue_hold(rows[i].ID)
 	}
 	queue_claim_order(rows)
 	return rows
@@ -185,32 +185,44 @@ func queue_claim_order(rows []QueueEntry) {
 }
 
 // queue_claim_for_self is queue_claim_for_peer for target == net_id, claimed by
-// self_loop_drain. File pushes are excluded: file/push to self is a no-op
-// nobody emits, and queue_process picks one up if it ever appears.
+// self_loop_drain.
 func queue_claim_for_self(limit int) []QueueEntry {
-	if net_id == "" || limit <= 0 {
-		return nil
+	return queue_claim_for_peer(net_id, limit)
+}
+
+// queue_holding is every row this process has marked 'sending' and not yet
+// resolved: claimed by a Sender's pull_loop or self_loop_drain, or marked by an
+// inline send (queue_sending), and held from then until it is acknowledged,
+// failed, dropped or handed back. A row in it has a live holder, however long
+// that holder takes - a handler may run for minutes - so the stuck-sending
+// sweep (queue_check_ack_timeout) leaves it alone and takes back only rows
+// whose holder is gone.
+var (
+	queue_holding      = map[string]bool{}
+	queue_holding_lock sync.Mutex
+)
+
+// queue_hold records a row as held by a live holder in this process.
+func queue_hold(id string) {
+	queue_holding_lock.Lock()
+	queue_holding[id] = true
+	queue_holding_lock.Unlock()
+}
+
+// queue_release records that a row's holder is done with it, however it ended.
+func queue_release(ids ...string) {
+	queue_holding_lock.Lock()
+	for _, id := range ids {
+		delete(queue_holding, id)
 	}
-	db := db_open("db/queue.db")
-	var rows []QueueEntry
-	err := db.scans(&rows, `update queue set status='sending', claimed=?
-		where id in (
-			select id from queue
-			where target=? and status='pending' and next_retry<=?
-				and type='direct' and event != 'file/push'
-			order by priority desc, next_retry asc
-			limit ?
-		)
-		returning id, type, target, from_entity, to_entity, service, event,
-			from_app, from_services, content, data, file, expires, status,
-			attempts, next_retry, created, priority`,
-		now(), net_id, now(), limit)
-	if err != nil {
-		info("queue_claim_for_self error: %v", err)
-		return nil
-	}
-	queue_claim_order(rows)
-	return rows
+	queue_holding_lock.Unlock()
+}
+
+// queue_held reports whether a live holder in this process holds the row.
+func queue_held(id string) bool {
+	queue_holding_lock.Lock()
+	defer queue_holding_lock.Unlock()
+	return queue_holding[id]
 }
 
 // Retry delays: 1m, 2m, 4m, 8m, 15m, 30m, 1h
@@ -662,6 +674,7 @@ func queue_add_sibling(q *QueueEntry, peer string) error {
 // path skips that, and partial coverage is fine since learned rows never age
 // out.
 func queue_ack(id string) {
+	queue_release(id)
 	db := db_open("db/queue.db")
 	var q QueueEntry
 	if db.scan(&q, "select from_entity, to_entity, target from queue where id = ?", id) {
@@ -707,9 +720,9 @@ func queue_ack_async(id string) {
 }
 
 // queue_ack_batcher drains queue_ack_ch into one DELETE per flush, saving a
-// SQLite transaction per ack. An ID buffered when the process dies replays
-// after restart: the row stays 'sending' until the timeout, and message_seen
-// dedups it.
+// SQLite transaction per ack. An ID buffered when the process dies is sent
+// again after restart (queue_restore), and a receiver that still holds the
+// message's dedup record acknowledges it as a copy.
 func queue_ack_batcher() {
 	batch := make([]string, 0, queue_ack_batch)
 	timer := time.NewTimer(queue_ack_interval)
@@ -742,29 +755,13 @@ func queue_ack_batcher() {
 	}
 }
 
-// queue_ack_drain pulls every queued ack from queue_ack_ch and
-// flushes them synchronously. Used by tests that verify queue state
-// after an ack — production has queue_ack_batcher draining the
-// channel, but tests don't start that goroutine.
-func queue_ack_drain() {
-	batch := make([]string, 0, queue_ack_batch)
-	for {
-		select {
-		case id := <-queue_ack_ch:
-			batch = append(batch, id)
-		default:
-			queue_ack_flush(batch)
-			return
-		}
-	}
-}
-
 // queue_ack_flush issues one DELETE for the given IDs. Caller must
 // hold no locks; this opens db/queue.db via the cached handle.
 func queue_ack_flush(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
+	queue_release(ids...)
 	db := db_open("db/queue.db")
 	placeholders := make([]byte, 0, len(ids)*2)
 	args := make([]any, len(ids))
@@ -916,6 +913,7 @@ func delivered_drop(q *QueueEntry) bool {
 	if !found {
 		return false
 	}
+	queue_release(q.ID)
 	db.exec_bg("queue delivered drop", "delete from queue where id = ?", q.ID)
 	info("Queue dropping %q for peer %q: its message was delivered there already", q.ID, q.Target)
 	return true
@@ -924,7 +922,8 @@ func delivered_drop(q *QueueEntry) bool {
 // queue_drain_entity waits up to `wait` for every queued message from `entity`
 // to leave the queue. Teardown deletes the signing key, after which unsent rows
 // can never be claimed; on timeout the farewell is lost and receivers
-// self-heal.
+// self-heal. A read that fails says nothing about the rows, so it is waited
+// out like rows still queued, never taken as drained.
 func queue_drain_entity(entity string, wait time.Duration) {
 	if entity == "" {
 		return
@@ -932,8 +931,8 @@ func queue_drain_entity(entity string, wait time.Duration) {
 	db := db_open("db/queue.db")
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
-		exists, _ := db.exists("select 1 from queue where from_entity=? limit 1", entity)
-		if !exists {
+		exists, err := db.exists("select 1 from queue where from_entity=? limit 1", entity)
+		if err == nil && !exists {
 			return
 		}
 		queue_wake()
@@ -942,47 +941,123 @@ func queue_drain_entity(entity string, wait time.Duration) {
 	info("Queue drain timeout: farewell messages from entity %q still queued at teardown", entity)
 }
 
+// queue_entry reads one row: nil with no error when there is no such row, and
+// an error when queue.db would not answer, which is not the same thing.
+func queue_entry(db *DB, id string) (*QueueEntry, error) {
+	if db == nil {
+		return nil, error_queue_unavailable
+	}
+	var found []QueueEntry
+	if err := db.scans(&found, "select * from queue where id=?", id); err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, nil
+	}
+	return &found[0], nil
+}
+
 // queue_drop removes a queue row without scheduling a retry. Use when the
 // receiver's NACK reason says another attempt would fail identically (e.g.
 // "broadcast-gap", already being caught up by resync). queue_fail is the
-// default.
+// default. Its report to the sending app runs off the caller (queue_errors).
+// A row queue.db will not read is left as it is: deleted unread, its sending
+// app would never hear of the drop. Unheld, the stuck-sending sweep hands it
+// back to be sent again, and its receiver answers it again.
 func queue_drop(id, reason string) {
-	if report := queue_drop_row(id, reason); report != nil {
-		report()
-	}
-}
-
-// queue_drop_row is queue_drop without its report to the sending app, which it
-// returns (nil when there is none) for a caller that runs the app's handler on
-// another goroutine.
-func queue_drop_row(id, reason string) func() {
+	queue_release(id)
 	db := db_open("db/queue.db")
-	var q QueueEntry
-	have := db.scan(&q, "select * from queue where id = ?", id)
+	q, err := queue_entry(db, id)
+	if err != nil {
+		info("Queue unable to read %q to drop it on NACK reason %q; it stays for a later pass: %v", id, reason, err)
+		return
+	}
+	if q == nil {
+		return
+	}
 	db.exec_bg("queue drop on nack", "delete from queue where id = ?", id)
 	debug("Queue dropping message %q on NACK reason %q (no retry)", id, reason)
 	// Surface a terminal NACK to the sending app — after the delete, so the
-	// handler never runs while the row is being removed. unknown/rejected
-	// map to a code; fail_dedup and unmapped reasons dispatch nothing.
-	if !have {
-		return nil
-	}
+	// handler never runs while the row is being removed.
 	if reason == fail_unknown_user {
 		// The recipient's host answered and said they don't exist
-		// there — authoritative evidence for the health record.
+		// there — authoritative evidence for the health record, and the
+		// end of the learned route to it there.
 		health_denial(q.ToEntity)
+		if q.Target != "" {
+			if user := user_owning_entity(q.FromEntity); user != nil {
+				directory_user_forget(user, q.ToEntity, q.Target)
+			}
+		}
 	}
 	code, error_reason, ok := error_code_for_nack(reason)
 	if !ok {
-		return nil
+		return
 	}
-	return func() { queue_error_dispatch(&q, code, error_reason) }
+	queue_error_report(q, code, error_reason)
 }
 
-// queue_error_dispatch surfaces a terminal send failure as a core error
-// event to the app that queued the row. Indirected through a var so tests
-// can capture the call sites (reason->code mapping, dedup) without standing
-// up an app/user. Call AFTER the row is removed from queue.db.
+// queue_errors_concurrency is how many app error handlers run at once for
+// queue failures. The callers are transport goroutines - a Sender's read loop,
+// the sweeper, a Sender shutting down - and a handler may run for the Starlark
+// timeout, so none of them may wait on one; a burst of drops queues behind
+// these few rather than starting a goroutine apiece.
+const queue_errors_concurrency = 4
+
+// queue_error_job is a report waiting for an error handler: what of the row it
+// needs, without the message's content and data.
+type queue_error_job struct {
+	entry  QueueEntry
+	code   string
+	reason string
+}
+
+var (
+	queue_errors_lock    sync.Mutex
+	queue_errors_waiting []queue_error_job
+	queue_errors_running int
+)
+
+// queue_error_report surfaces a terminal send failure as a core error event to
+// the app that queued the row: handed to the queue_errors pool, which runs
+// queue_error_dispatch, and returned from at once. Call AFTER the row is
+// removed from queue.db.
+func queue_error_report(q *QueueEntry, code, reason string) {
+	job := queue_error_job{entry: *q, code: code, reason: reason}
+	job.entry.Content = nil
+	job.entry.Data = nil
+	queue_errors_lock.Lock()
+	queue_errors_waiting = append(queue_errors_waiting, job)
+	start := queue_errors_running < queue_errors_concurrency
+	if start {
+		queue_errors_running++
+	}
+	queue_errors_lock.Unlock()
+	if start {
+		go queue_errors_run()
+	}
+}
+
+// queue_errors_run delivers waiting reports until there are none, then ends.
+func queue_errors_run() {
+	for {
+		queue_errors_lock.Lock()
+		if len(queue_errors_waiting) == 0 {
+			queue_errors_running--
+			queue_errors_waiting = nil
+			queue_errors_lock.Unlock()
+			return
+		}
+		job := queue_errors_waiting[0]
+		queue_errors_waiting = queue_errors_waiting[1:]
+		queue_errors_lock.Unlock()
+		guard("queue error dispatch", nil, func() { queue_error_dispatch(&job.entry, job.code, job.reason) })
+	}
+}
+
+// queue_error_dispatch runs the app's handler for one report, on a
+// queue_errors goroutine. Indirected through a var so tests can capture the
+// call sites (reason->code mapping, dedup) without standing up an app/user.
 var queue_error_dispatch = queue_error_dispatch_real
 
 // queue_error_dispatch_real resolves the row's owning user and app, then
@@ -1022,39 +1097,55 @@ func queue_error_dispatch_real(q *QueueEntry, code, reason string) {
 	error_dispatch(user, app, code, reason, q.Service, q.ToEntity, original, detail)
 }
 
-// Mark a message as being sent (prevents other processors from picking it up)
-func queue_sending(id string) {
+// queue_sending claims a pending row for a send about to be made, marking it
+// 'sending' and holding it (queue_hold), and reports whether it did. A row
+// another path has claimed already - a Sender's pull_loop takes a new
+// message's row as readily as the inline send does - or that has gone is not
+// claimed, and the caller does not send it: two sends of one row share one
+// in-flight entry and write the frame twice.
+func queue_sending(id string) bool {
 	db := db_open("db/queue.db")
-	db.exec_bg("queue mark sending", "update queue set status='sending', claimed=? where id=?", now(), id)
+	if db == nil {
+		return false
+	}
+	result, err := db.internal.Exec("update queue set status='sending', claimed=? where id=? and status='pending'", now(), id)
+	if err != nil {
+		info("Queue unable to claim %q for sending: %v", id, err)
+		return false
+	}
+	if changed, _ := result.RowsAffected(); changed == 0 {
+		return false
+	}
+	queue_hold(id)
+	return true
 }
 
-// queue_unsending rolls back queue_sending when the async send path
-// fails before the row enters its inflight tracking (e.g. peer_send
-// returns error_sender_unreachable). Returns the row to 'pending' so the
-// next queue_select picks it up.
+// queue_unsending hands back a row its holder will not send after all - a
+// Sender that could not take it, or that closed before writing it - to
+// 'pending', due as it was, with no attempt counted: nothing of it reached the
+// peer.
 func queue_unsending(id string) {
+	queue_release(id)
 	db := db_open("db/queue.db")
 	db.exec_bg("queue unsending rollback", "update queue set status='pending' where id=? and status='sending'", id)
 }
 
-// queue_is_inflight returns true when the row is currently owned by
-// the /mochi/2 async resolver (status='sending'). queue_process uses
-// this to skip queue_fail for rows the resolver will resolve itself.
-func queue_is_inflight(id string) bool {
+// queue_untouched reports whether a send left the row as it found it: still
+// pending and due. queue_process fails only such a row; one the send claimed,
+// deferred, dropped or acknowledged is its own path's to resolve.
+func queue_untouched(id string) bool {
 	db := db_open("db/queue.db")
-	row, err := db.row("select status from queue where id=?", id)
-	if err != nil || row == nil {
-		return false
-	}
-	s, _ := row["status"].(string)
-	return s == "sending"
+	found, err := db.exists("select 1 from queue where id=? and status='pending' and next_retry<=?", id, now())
+	return err == nil && found
 }
 
-// queue_defer pushes a row's next_retry forward without incrementing attempts:
-// a deliberately skipped row is not failing, so the backoff must not escalate.
+// queue_defer hands a row back to 'pending' due after delay, without counting
+// an attempt: a row deliberately put off is not failing, so the backoff must
+// not escalate.
 func queue_defer(id string, delay int64) {
+	queue_release(id)
 	db := db_open("db/queue.db")
-	db.exec_bg("queue defer", "update queue set next_retry = ? where id = ?", now()+delay, id)
+	db.exec_bg("queue defer", "update queue set status='pending', next_retry=? where id=?", now()+delay, id)
 }
 
 // queue_defer_target pushes every pending row for a target forward in one
@@ -1087,8 +1178,10 @@ func queue_resurrect_peer(target string) {
 	queue_wake()
 }
 
-// Mark a message as failed and schedule retry or drop
+// Mark a message as failed and schedule retry or drop. The first failure waits
+// the first step of retry_delays, each later one the next.
 func queue_fail(id string, err string) {
+	queue_release(id)
 	db := db_open("db/queue.db")
 
 	var q QueueEntry
@@ -1110,7 +1203,7 @@ func queue_fail(id string, err string) {
 				directory_user_forget(user, q.ToEntity, q.Target)
 			}
 		}
-		queue_error_dispatch(&q, error_code_message_timeout, "timeout")
+		queue_error_report(&q, error_code_message_timeout, "timeout")
 	} else if queue_retarget(db, &q) {
 		// The failure was our routing, not the peer: the row is now aimed at a
 		// live route with a fresh budget. Checked before parking, so a row does
@@ -1132,8 +1225,8 @@ func queue_fail(id string, err string) {
 			info("Queue parked a delivery for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_age_maximum/86400)
 		}
 	} else {
-		// Schedule retry
-		next := queue_next_retry(attempts)
+		// Schedule retry, a step up the ladder for each attempt already made.
+		next := queue_next_retry(q.Attempts)
 		db.exec_bg("queue fail retry reschedule", "update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?", attempts, next, err, id)
 		//debug("Queue message %q scheduled for retry %d at %d: %s", id, attempts, next, err)
 	}
@@ -1299,9 +1392,10 @@ var queue_parked_page = 500
 // var so tests can stand in for it.
 var queue_direct = queue_send_direct
 
-// Send a queued direct message (reads challenge before sending, waits for ACK).
-// A row with an empty target is not sent itself: it is spread into a copy per
-// live peer of its recipient, which later passes send.
+// Send a queued direct message by its peer's Sender, which claims the sending
+// entity, frames it and resolves the row on the peer's answer. A row with an
+// empty target is not sent itself: it is spread into a copy per live peer of
+// its recipient, which later passes send.
 func queue_send_direct(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
@@ -1314,10 +1408,13 @@ func queue_send_direct(q *QueueEntry) bool {
 
 	// Self-loop fast path: the wire envelope is wasted when the receiver is this
 	// process. Every queue_add_* call site validates from_entity against the
-	// writing user, so the row itself is the proof. File sends still need the slow
-	// path.
+	// writing user, so the row itself is the proof. A row another path claimed
+	// first is left to it.
 	if peer == net_id {
-		return queue_send_self_loop_fast(q)
+		if queue_sending(q.ID) {
+			queue_send_self_loop_fast(q)
+		}
+		return false
 	}
 
 	// /mochi/2/messages path: the Sender owns claim, framing, ack matching and
@@ -1328,34 +1425,73 @@ func queue_send_direct(q *QueueEntry) bool {
 		frame_drop(q.ID, peer, err)
 		return false
 	}
-	// Mark in-flight BEFORE handing off, so queue_process's post-call
-	// status check sees 'sending' and doesn't queue_fail an in-flight row.
-	queue_sending(q.ID)
-	if send_error := peer_send(peer, q.ID, f); send_error != nil {
-		// peer_send failed before queueing. Roll back 'sending' so
-		// queue_process re-pends the row for a later retry.
-		queue_unsending(q.ID)
+	// Claimed BEFORE handing off, so queue_process's post-call check sees the
+	// row taken and does not queue_fail it; a row a Sender's pull_loop claimed
+	// in the meantime is its to send.
+	if !queue_sending(q.ID) {
+		return false
 	}
+	if senders_has(peer) {
+		if send_error := peer_send(peer, q.ID, f); send_error != nil {
+			// peer_send failed before queueing. Roll back 'sending' so
+			// queue_process re-pends the row for a later retry.
+			queue_unsending(q.ID)
+		}
+		return false
+	}
+	// No Sender yet: opening one waits on the peer - a connect, the stream's
+	// negotiation, its hello - for up to tens of seconds, and queue_process
+	// waits for every send of its pass, so done here one slow or withholding
+	// peer would hold every other target's sends behind it. The open runs on
+	// its own; the row stays 'sending' and is resolved by it, and
+	// queue_select leaves the target to the opening Sender meanwhile.
+	go guard("queue sender open", func() { queue_unsending(q.ID) }, func() {
+		send_error := peer_send(peer, q.ID, f)
+		switch {
+		case send_error == nil:
+		case sender_refused(send_error):
+			// Draining for shutdown, or closed under the open: nothing was
+			// attempted.
+			queue_unsending(q.ID)
+		default:
+			queue_fail(q.ID, "send failed")
+		}
+	})
 	return false
 }
 
+// queue_busy_defer is how long a self-loop row whose worker's inbox is full is
+// put off, with no attempt counted, and the rest of its recipient's rows for
+// the service with it: long enough for a slow handler to make room, short
+// enough that a row does not wait much past it.
+const queue_busy_defer = 2
+
 // queue_send_self_loop_fast bypasses the wire envelope when delivering to
 // ourselves, via the per-(user, app) worker pool so self-loop frames serialise
-// with remote ones. True means enqueued, not handled; queue_reply resolves the
-// row.
-func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
+// with remote ones. The row is claimed and held; the worker's reply
+// (queue_reply) resolves it, and a row that cannot be delivered is resolved
+// here. Busy is true when the worker's inbox was full, and the row has been put
+// off (queue_defer) rather than waiting for room: one slow handler would hold
+// every other local delivery behind it.
+func queue_send_self_loop_fast(q *QueueEntry) (busy bool) {
 	defer func() {
 		if r := recover(); r != nil {
+			// A fault of this server's, not the message's for certain: an
+			// attempt is counted, so a row that faults every time parks.
 			warn("Queue self-loop fast path: dispatch panic for %q: %v\n%s",
 				q.ID, r, rd.Stack())
-			ok = false
+			queue_fail(q.ID, fmt.Sprintf("self-loop dispatch panic: %v", r))
+			busy = false
 		}
 	}()
 
 	var content map[string]any
 	if len(q.Content) > 0 {
 		if err := cbor.Unmarshal(q.Content, &content); err != nil {
+			// What frame_drop does for a remote row whose content will not
+			// decode: no retry decodes it, and the sending app hears why.
 			info("Queue self-loop fast path: content decode failed for %q: %v", q.ID, err)
+			queue_drop(q.ID, fail_unsupported)
 			return false
 		}
 	} else {
@@ -1367,57 +1503,88 @@ func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
 		services = strings.Split(q.FromServices, ",")
 	}
 
-	// Resolve user from To (or accept "" if no To — anonymous self-loop
-	// is a corner case the worker key copes with).
-	to := q.ToEntity
-	if to != "" && valid(to, "fingerprint") {
-		if ent := entity_by_any(to); ent != nil {
-			to = ent.ID
-		}
+	// Resolve the recipient and the app the frame runs in, which keys its worker
+	// as it keys a remote frame's, so the two serialise. One that will not be
+	// delivered is dropped as the receiver of a remote one would answer it, and
+	// the sending app told.
+	to, user, local := target_resolve(q.ToEntity)
+	reason := fail_unknown_user
+	var a *App
+	if local {
+		a, reason = event_admit(user, to, q.Service, q.Event, q.FromEntity)
 	}
-	user := ""
-	if to != "" {
-		if u := user_owning_entity(to); u != nil {
-			user = u.UID
-		}
+	reply := queue_reply{id: q.ID}
+	if reason != "" {
+		reply.fail(reason)
+		return false
 	}
-
-	f := &Frame{
-		Type:     frame_type_message,
-		ID:       q.ID,
-		From:     q.FromEntity,
-		To:       to,
-		Service:  q.Service,
-		Event:    q.Event,
-		FromApp:  q.FromApp,
-		Services: services,
-		Priority: frame_priority_for(q.Priority),
-		Content:  content,
-		Data:     q.Data,
+	key := ""
+	if user != nil {
+		key = user.UID
 	}
 
-	// Mark sending so queue_process knows the resolver owns this row.
-	// Return false (NOT true) so queue_process doesn't delete the row
-	// — the worker's queue_reply will queue_ack on success or
-	// queue_fail/drop on failure.
-	queue_sending(q.ID)
-
-	worker_dispatch(user, q.Service, &worker_frame{
-		frame: f,
+	wf := &worker_frame{
+		frame: &Frame{
+			Type:     frame_type_message,
+			ID:       q.ID,
+			From:     q.FromEntity,
+			To:       to,
+			Service:  q.Service,
+			Event:    q.Event,
+			FromApp:  q.FromApp,
+			Services: services,
+			Content:  content,
+			Data:     q.Data,
+		},
 		peer:  net_id, // self-loop: originating peer is us
-		reply: queue_reply{id: q.ID},
-	})
+		user:  user,
+		reply: reply,
+	}
+
+	// A message from a sender takes the dedup record a remote one does, so a
+	// row sent a second time - its acknowledgement lost to queue.db and the row
+	// handed back - is answered from the record rather than run again.
+	if q.FromEntity != "" {
+		state, refusal := message_begin(q.ID, net_id, reply)
+		switch state {
+		case message_running:
+			if refusal != "" {
+				reply.fail(refusal)
+			}
+			return false
+		case message_applied:
+			reply.ack()
+			return false
+		case message_refused:
+			reply.fail(refusal)
+			return false
+		}
+		wf.marked = true
+	}
+
+	if !worker_inbox_offer(key, a.id, wf) {
+		if wf.marked {
+			// Not run: the record goes back to due, and any copy that waited
+			// on it is told to come again.
+			for _, waiting := range message_end(q.ID, fail_buffer_full) {
+				waiting.fail(fail_buffer_full)
+			}
+		}
+		queue_defer(q.ID, queue_busy_defer)
+		return true
+	}
 	return false
 }
 
-// Send a queued broadcast message (no challenge for broadcasts)
+// Send a queued broadcast message, flooded over pubsub under the entity's
+// signature. False leaves the row for a retry: no mesh to flood to, or the
+// publish failed.
 func queue_send_broadcast(q *QueueEntry) bool {
 	if !peers_sufficient() {
 		return false
 	}
 
-	pubsub_publish(q.FromEntity, q.Service, q.Event, q.ID, q.Content)
-	return true
+	return pubsub_publish(q.FromEntity, q.Service, q.Event, q.ID, q.Content) == nil
 }
 
 // queue_select pulls the next batch of due rows: one row per distinct target
@@ -1521,10 +1688,9 @@ func queue_select(db *DB) ([]QueueEntry, []QueueEntry) {
 	heads := []QueueEntry{}
 	for _, q := range best {
 		// A target whose Sender is open, or opening, is drained by that Sender's
-		// pull_loop, and the self-loop by self_loop_drain, but for file pushes,
-		// which neither takes. A send to a Sender still opening would wait out
-		// the open and hold up the whole tick.
-		if q.Event != "file/push" && (q.Target == net_id || senders_has(q.Target) || senders_opening_has(q.Target)) {
+		// pull_loop, and the self-loop by self_loop_drain. A send to a Sender
+		// still opening would wait out the open and hold up the whole tick.
+		if q.Target == net_id || senders_has(q.Target) || senders_opening_has(q.Target) {
 			heads = append(heads, q)
 			continue
 		}
@@ -1612,7 +1778,8 @@ func queue_rows(db *DB, ids []any) []QueueEntry {
 
 // queue_screen reports whether q was dealt with before any send: deleted as
 // expired or as from a deleted entity, or its target's backlog deferred because
-// the peer is silent or stalled.
+// the peer is silent or stalled. A sending entity users.db will not confirm or
+// deny is not taken for deleted: the row stays for a later pass.
 func queue_screen(db *DB, udb *DB, q *QueueEntry) bool {
 	if q.Expires > 0 && q.Expires < now() {
 		debug("Queue message %q expired", q.ID)
@@ -1620,7 +1787,12 @@ func queue_screen(db *DB, udb *DB, q *QueueEntry) bool {
 		return true
 	}
 	if q.FromEntity != "" {
-		if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
+		exists, err := udb.exists("select 1 from entities where id=?", q.FromEntity)
+		if err != nil {
+			info("Queue unable to check the sender of %q, %q, is still here; leaving it: %v", q.ID, q.FromEntity, err)
+			return false
+		}
+		if !exists {
 			info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
 			db.exec_bg("queue gc deleted-entity delete", "delete from queue where id = ?", q.ID)
 			return true
@@ -1678,17 +1850,14 @@ func queue_process() int {
 		}
 		// Sender pre-filter: pull_loop owns direct rows for a peer with an active
 		// Sender. Competing for the same outbox blocks peer_send for
-		// sender_send_timeout and drags out the tick. File pushes ride their own
-		// stream.
-		if q.Type == "direct" && q.Event != "file/push" && q.Target != "" && senders_has(q.Target) {
+		// sender_send_timeout and drags out the tick.
+		if q.Type == "direct" && q.Target != "" && senders_has(q.Target) {
 			// Don't increment processed — the row isn't drained or
 			// deferred, just routed to a different mechanism.
 			continue
 		}
-		// Self-loop pre-filter: self_loop_drain owns rows targeting net_id. File
-		// pushes to self are a no-op nobody emits; queue_process handles one if it
-		// appears.
-		if q.Type == "direct" && q.Event != "file/push" && q.Target != "" && q.Target == net_id {
+		// Self-loop pre-filter: self_loop_drain owns rows targeting net_id.
+		if q.Type == "direct" && q.Target != "" && q.Target == net_id {
 			continue
 		}
 		valid = append(valid, q)
@@ -1699,8 +1868,7 @@ func queue_process() int {
 	}
 
 	// Per-peer semaphore: at most N in-flight sends per target peer, allocated
-	// lazily and GC'd when this function returns. Broadcasts share one bucket;
-	// file pushes use concurrency 1, since parallel pushes only divide bandwidth.
+	// lazily and GC'd when this function returns. Broadcasts share one bucket.
 	semaphores := map[string]chan struct{}{}
 	var semaphore_lock sync.Mutex
 	get_semaphore := func(peer string, cap int) chan struct{} {
@@ -1723,9 +1891,6 @@ func queue_process() int {
 		switch {
 		case q.Type == "broadcast":
 			bucket = "\x00broadcast\x00"
-		case q.Event == "file/push":
-			bucket = "\x00file\x00" + q.Target
-			cap = queue_per_peer_file_concurrency
 		default:
 			// Serialise per (target peer, from-entity) so one user's ops apply in order
 			// on the receiver: otherwise a child row can land before its parent and fail
@@ -1741,8 +1906,9 @@ func queue_process() int {
 
 			// Guarded per row, like the pass that spawned it: a fault sending
 			// one row costs that row's attempt, and an unguarded panic on this
-			// goroutine ends the process.
-			guard("queue send", nil, func() {
+			// goroutine ends the process. A row it had claimed is released, so
+			// the stuck-sending sweep hands it back.
+			guard("queue send", func() { queue_release(q.ID) }, func() {
 				var ok bool
 				switch {
 				case q.Type == "broadcast":
@@ -1753,11 +1919,12 @@ func queue_process() int {
 
 				if ok {
 					db.exec_bg("queue process sent delete", "delete from queue where id = ?", q.ID)
-				} else if !queue_is_inflight(q.ID) {
-					// /mochi/2 paths set status='sending' and return
-					// false; the async resolver (sender_read /
-					// queue_reply) will queue_ack / queue_fail when the
-					// receiver replies. Don't touch in-flight rows here.
+				} else if queue_untouched(q.ID) {
+					// /mochi/2 paths claim the row and return false; the
+					// async resolver (the Sender's read_loop / queue_reply) will
+					// queue_ack / queue_fail when the receiver replies, and
+					// a row put off or dropped is settled. Only a row the
+					// send left as it was failed.
 					queue_fail(q.ID, "send failed")
 				}
 			})
@@ -1767,22 +1934,54 @@ func queue_process() int {
 	return processed + len(valid)
 }
 
-// Check for sent messages that haven't received ACK (timeout)
+// queue_check_ack_timeout hands back rows left 'sending' with no holder: a
+// holder that ended without resolving its row, or a resolution queue.db did not
+// take. A row a live holder in this process holds (queue_holding) is left to
+// it however long it takes: a worker's handler may run for minutes, and taken
+// from it the row is sent a second time. Rows claimed less than 60 seconds ago
+// are not looked at. Keyed on `claimed`, not `created` - created is the
+// enqueue time and is never rewritten, so any retried row would be swept the
+// instant its sender claimed it.
 func queue_check_ack_timeout() {
 	db := db_open("db/queue.db")
-	// Rows still claimed 60 seconds on: a sender that died mid-flight. Keyed on
-	// `claimed`, not `created` - created is the enqueue time and is never
-	// rewritten, so any retried row would be swept the instant its sender claimed
-	// it.
 	stuck := now() - queue_claim_timeout
-	db.exec_bg("queue stuck-sending requeue", "update queue set status = 'pending', next_retry = ? where status = 'sending' and claimed < ?",
-		queue_next_retry(0), stuck)
+	var ids []string
+	if err := db.scans(&ids, "select id from queue where status = 'sending' and claimed < ?", stuck); err != nil {
+		info("Queue unable to read rows left sending: %v", err)
+		return
+	}
+	for _, id := range ids {
+		if queue_held(id) {
+			continue
+		}
+		db.exec_bg("queue stuck-sending requeue", "update queue set status = 'pending', next_retry = ? where id = ? and status = 'sending' and claimed < ?",
+			queue_next_retry(0), id, stuck)
+	}
 }
 
-// queue_check_entity is called when an entity's location is discovered. Nudge
-// the queue manager rather than scanning here: concurrent discovery events each
-// cloning every row's content blob pinned gigabytes.
+// queue_restore hands back to 'pending' every row a previous run left
+// 'sending': this process holds none of them yet. Called once at startup,
+// before anything claims a row, so they go again at once rather than after the
+// stuck-sending sweep's minute.
+func queue_restore() {
+	db := db_open("db/queue.db")
+	if db == nil {
+		return
+	}
+	db.exec_bg("queue restore", "update queue set status='pending' where status='sending'")
+}
+
+// queue_check_entity is called when an entity's location is discovered. Its
+// rows with no target - waiting out their backoff, or parked after a retry
+// budget with no host found - are made due at once, so the next pass spreads
+// them over the hosts now known. One update, which reads no row's content.
 func queue_check_entity(entity string) {
+	if entity == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	moment := now()
+	db.exec_bg("queue check entity", "update queue set status='pending', next_retry=? where target='' and to_entity=? and (status='parked' or (status='pending' and next_retry>?))", moment, entity, moment)
 	queue_wake()
 }
 
@@ -1792,52 +1991,86 @@ func queue_check_peer(peer string) {
 	queue_wake()
 }
 
-// Clean up old entries
+// queue_cleanup_page is how many aged rows queue_cleanup reads and deletes at a
+// time. A var so tests can shorten it.
+var queue_cleanup_page = 1000
+
+// queue_cleanup_query reads a page of aged rows, oldest first, along the
+// queue_created index.
+const queue_cleanup_query = "select id, from_entity, from_app, to_entity, service, event, created from queue where created<? order by created limit ?"
+
+// queue_aged is what queue_cleanup reads of an aged row: what its timeout
+// report and the health record need, without the message's content and data.
+type queue_aged struct {
+	ID         string `db:"id"`
+	FromEntity string `db:"from_entity"`
+	FromApp    string `db:"from_app"`
+	ToEntity   string `db:"to_entity"`
+	Service    string `db:"service"`
+	Event      string `db:"event"`
+	Created    int64  `db:"created"`
+}
+
+// Clean up old entries. Aged rows are read a page at a time along the created
+// index, oldest first, each page deleted before its rows are reported and the
+// next read: the queue has held rows by the million, and after downtime or a
+// large fan-out a week's worth age out together.
 func queue_cleanup() {
 	db := db_open("db/queue.db")
-	aged := "created < ?"
 	cutoff := now() - queue_age_maximum
-
-	// Log and delete expired messages
-	var old []QueueEntry
-	err := db.scans(&old, "select * from queue where "+aged, cutoff)
-	if err != nil {
-		warn("Database error loading expired queue entries: %v", err)
-		return
-	}
-	db.exec_bg("queue cleanup", "delete from queue where "+aged, cutoff)
-	// A delivery record goes once it is past the age and no row of its message
-	// is left to guard: a spread can queue a copy days after the message, and
-	// the copy outlives the age counted from its message.
-	db.exec_bg("queue delivered cleanup", "delete from delivered where created < ? and not exists (select 1 from queue where queue.id = delivered.stem or (queue.id > delivered.stem || '-' and queue.id < delivered.stem || '.'))", cutoff)
 
 	// Surface each aged-out send as message/timeout to its sending app,
 	// deduped per sweep by (from_entity, from_app, to_entity): fan-out makes
 	// one row per (recipient, host), so a gone recipient yields many rows.
+	// A row that burned its whole retention undelivered is the ONLY failure
+	// signal for recipients whose attempts never climb (a ghost peer with no
+	// addresses short-circuits before queue_fail), so feed health here too.
 	seen := map[string]bool{}
-	for i := range old {
-		q := &old[i]
-		key := q.FromEntity + "|" + q.FromApp + "|" + q.ToEntity
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		queue_error_dispatch(q, error_code_message_timeout, "timeout")
-	}
-
-	// A row that burned its whole retention undelivered is the ONLY failure signal
-	// for recipients whose attempts never climb (a ghost peer with no addresses
-	// short-circuits before queue_fail), so feed health here too.
 	reaped := map[string]int64{}
-	for i := range old {
-		q := &old[i]
-		if q.Created > reaped[q.ToEntity] {
-			reaped[q.ToEntity] = q.Created
+	for {
+		var page []queue_aged
+		if err := db.scans(&page, queue_cleanup_query, cutoff, queue_cleanup_page); err != nil {
+			warn("Database error loading expired queue entries: %v", err)
+			break
+		}
+		if len(page) == 0 {
+			break
+		}
+		ids := make([]any, len(page))
+		for i := range page {
+			ids[i] = page[i].ID
+		}
+		if err := db.exec_e("delete from queue where id in ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...); err != nil {
+			warn("Database error deleting expired queue entries: %v", err)
+			break
+		}
+		for i := range page {
+			a := &page[i]
+			if a.Created > reaped[a.ToEntity] {
+				reaped[a.ToEntity] = a.Created
+			}
+			key := a.FromEntity + "|" + a.FromApp + "|" + a.ToEntity
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			queue_error_report(&QueueEntry{ID: a.ID, FromEntity: a.FromEntity, FromApp: a.FromApp, ToEntity: a.ToEntity, Service: a.Service, Event: a.Event, Created: a.Created}, error_code_message_timeout, "timeout")
+		}
+		if len(page) < queue_cleanup_page {
+			break
 		}
 	}
 	for recipient, created := range reaped {
 		health_failure(recipient, created)
 	}
+
+	// Rows past their own expiry: never handed out (queue_claim_for_peer,
+	// queue_screen), and gone here rather than when they reach a target's head.
+	db.exec_bg("queue expired cleanup", "delete from queue where expires>0 and expires<? and status!='sending'", now())
+	// A delivery record goes once it is past the age and no row of its message
+	// is left to guard: a spread can queue a copy days after the message, and
+	// the copy outlives the age counted from its message.
+	db.exec_bg("queue delivered cleanup", "delete from delivered where created < ? and not exists (select 1 from queue where queue.id = delivered.stem or (queue.id > delivered.stem || '-' and queue.id < delivered.stem || '.'))", cutoff)
 
 	// Health residue: delete a suspended row only once its app has been told to
 	// drop the subscriber. On age alone the row reads healthy again while the
@@ -1897,19 +2130,39 @@ func self_loop_drain() {
 
 // self_loop_pass claims a batch of the rows for this server and hands each to
 // its worker, dropping one whose message was delivered there already. Answers
-// how many it claimed.
+// how many it claimed. A row whose worker's inbox is full is put off rather
+// than waited on, and the rest of its recipient's rows for that service with
+// it, in the batch and in queue.db: one slow handler holds back only its own.
 func self_loop_pass() int {
 	rows := queue_claim_for_self(self_loop_batch)
+	busy := map[string]bool{}
 	for i := range rows {
-		if delivered_drop(&rows[i]) {
+		q := &rows[i]
+		key := q.ToEntity + "\x00" + q.Service
+		if busy[key] {
+			queue_defer(q.ID, queue_busy_defer)
 			continue
 		}
-		// Worker dispatch is blocking; if the worker inbox is full
-		// we wait here. That's the backpressure path — visible as
-		// queue depth growing rather than as an invisible stall.
-		queue_send_self_loop_fast(&rows[i])
+		if delivered_drop(q) {
+			continue
+		}
+		if queue_send_self_loop_fast(q) {
+			busy[key] = true
+			queue_defer_backlog(q.ToEntity, q.Service, now()+queue_busy_defer)
+		}
 	}
 	return len(rows)
+}
+
+// queue_defer_backlog puts off every due self-loop row for a recipient and
+// service until `until`, without counting an attempt: their worker's inbox is
+// full, and claimed meanwhile they would fill each batch only to be put off.
+func queue_defer_backlog(to, service string, until int64) {
+	if net_id == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	db.exec_bg("queue defer backlog", "update queue set next_retry=? where target=? and to_entity=? and service=? and status='pending' and next_retry<?", until, net_id, to, service, until)
 }
 
 // Queue manager goroutine. One processing loop owns every outbound send, so

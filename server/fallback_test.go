@@ -7,13 +7,23 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	p2p "github.com/libp2p/go-libp2p"
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	p2p_websocket "github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	multiaddr "github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 func TestFallbackIsWebsocketUpgrade(t *testing.T) {
@@ -153,24 +163,32 @@ func TestFallbackAutoEnable(t *testing.T) {
 	}
 }
 
-// TestFallbackMiddleware: only a root-path WebSocket upgrade is bridged
-// to the libp2p loopback listener; everything else passes through to the
-// web app. The off case (port 0) never bridges.
+// fallback_test_listener installs a bridge listener for the rest of the test and
+// collects what it is handed.
+func fallback_test_listener(t *testing.T) chan manet.Conn {
+	t.Helper()
+	l := &fallback_listener{address: multiaddr.StringCast(fallback_bridge_address), incoming: make(chan manet.Conn), closed: make(chan struct{})}
+	fallback_bridge.Store(l)
+	t.Cleanup(func() { l.Close() })
+	bridged := make(chan manet.Conn, 8)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			bridged <- c
+		}
+	}()
+	return bridged
+}
+
+// TestFallbackMiddleware: only a root-path WebSocket upgrade is handed to the
+// bridge's libp2p listener; everything else passes through to the web app. With
+// no bridge listener the fallback is off and nothing is bridged.
 func TestFallbackMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-
-	backend_hit := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backend_hit = true
-		w.WriteHeader(200)
-	}))
-	defer backend.Close()
-	backend_port := backend.Listener.Addr().(interface{ String() string }).String()
-	// Extract the numeric port from "127.0.0.1:NNNN".
-	if i := strings.LastIndex(backend_port, ":"); i >= 0 {
-		fallback_ws_port = int(atoi(backend_port[i+1:], 0))
-	}
-	defer func() { fallback_ws_port = 0 }()
+	bridged := fallback_test_listener(t)
 
 	passed_through := false
 	engine := gin.New()
@@ -179,8 +197,8 @@ func TestFallbackMiddleware(t *testing.T) {
 	front := httptest.NewServer(engine)
 	defer front.Close()
 
-	do := func(path string, ws bool) {
-		backend_hit, passed_through = false, false
+	do := func(path string, ws bool) bool {
+		passed_through = false
 		req, _ := http.NewRequest("GET", front.URL+path, nil)
 		if ws {
 			req.Header.Set("Connection", "Upgrade")
@@ -192,20 +210,25 @@ func TestFallbackMiddleware(t *testing.T) {
 		if err == nil {
 			resp.Body.Close()
 		}
+		select {
+		case c := <-bridged:
+			c.Close()
+			return true
+		case <-time.After(300 * time.Millisecond):
+			return false
+		}
 	}
 
-	// Root WebSocket upgrade → bridged to the libp2p backend.
-	do("/", true)
-	if !backend_hit {
-		t.Error("root WS upgrade was not bridged to the libp2p listener")
+	// Root WebSocket upgrade → handed to libp2p.
+	if !do("/", true) {
+		t.Error("root WS upgrade was not handed to the libp2p listener")
 	}
 	if passed_through {
 		t.Error("root WS upgrade also reached the web app")
 	}
 
 	// Root plain GET → web app, not bridged.
-	do("/", false)
-	if backend_hit {
+	if do("/", false) {
 		t.Error("plain root GET was bridged")
 	}
 	if !passed_through {
@@ -213,21 +236,131 @@ func TestFallbackMiddleware(t *testing.T) {
 	}
 
 	// App-path WebSocket upgrade (an app's own socket) → web app.
-	do("/feeds/abc/-/socket", true)
-	if backend_hit {
+	if do("/feeds/abc/-/socket", true) {
 		t.Error("app-path WS upgrade was bridged")
 	}
 	if !passed_through {
 		t.Error("app-path WS upgrade did not reach the web app")
 	}
 
-	// Off (port 0): even a root WS upgrade passes through.
-	fallback_ws_port = 0
-	do("/", true)
-	if backend_hit {
+	// Off (no bridge listener): even a root WS upgrade passes through.
+	fallback_bridge.Load().Close()
+	if do("/", true) {
 		t.Error("root WS upgrade bridged while fallback off")
 	}
 	if !passed_through {
 		t.Error("root WS upgrade did not reach the web app while fallback off")
+	}
+}
+
+// TestFallbackBridgeCarriesTheClientAddress is #136. The bridge reverse-proxied
+// to a loopback libp2p listener, so libp2p saw every bridged peer at
+// 127.0.0.1 and the proxy's own port: loopback is exempt from libp2p's
+// per-address connection limits and rate limit, the relay counted every bridged
+// reservation against one address, and the address recorded for the peer was
+// this host's own loopback. libp2p must see the client socket itself.
+func TestFallbackBridgeCarriesTheClientAddress(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server, err := p2p.New(p2p.ListenAddrStrings(fallback_bridge_address), p2p.Transport(fallback_transport_new))
+	if err != nil {
+		t.Fatalf("server host: %v", err)
+	}
+	defer server.Close()
+	if fallback_bridge.Load() == nil {
+		t.Fatal("libp2p did not ask the bridge transport for the bridge's listener")
+	}
+
+	engine := gin.New()
+	engine.Use(fallback_middleware)
+	front := httptest.NewServer(engine)
+	defer front.Close()
+
+	client, err := p2p.New(p2p.NoListenAddrs, p2p.Transport(p2p_websocket.New))
+	if err != nil {
+		t.Fatalf("client host: %v", err)
+	}
+	defer client.Close()
+
+	port := front.Listener.Addr().(*net.TCPAddr).Port
+	target := multiaddr.StringCast(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/ws", port))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx, p2p_peer.AddrInfo{ID: server.ID(), Addrs: []multiaddr.Multiaddr{target}}); err != nil {
+		t.Fatalf("the client could not connect through the bridge: %v", err)
+	}
+
+	var inbound []p2p_network.Conn
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if inbound = server.Network().ConnsToPeer(client.ID()); len(inbound) > 0 {
+			break
+		}
+	}
+	if len(inbound) == 0 {
+		t.Fatal("the server holds no connection from the client")
+	}
+	outbound := client.Network().ConnsToPeer(server.ID())
+	if len(outbound) == 0 {
+		t.Fatal("the client holds no connection to the server")
+	}
+	remote := inbound[0].RemoteMultiaddr()
+	local := outbound[0].LocalMultiaddr()
+	remote_port, _ := remote.ValueForProtocol(multiaddr.P_TCP)
+	local_port, _ := local.ValueForProtocol(multiaddr.P_TCP)
+	if remote_port == "" || remote_port != local_port {
+		t.Errorf("THE POINT: libp2p sees the bridged peer at %s, not at the client's own socket %s", remote, local)
+	}
+	if _, err := remote.ValueForProtocol(multiaddr.P_WS); err != nil {
+		t.Errorf("the bridged connection's address %s is not a WebSocket one", remote)
+	}
+}
+
+// fallback_test_conn is a connection seen from a given remote address.
+type fallback_test_conn struct {
+	p2p_network.Conn
+	remote multiaddr.Multiaddr
+}
+
+func (c *fallback_test_conn) RemoteMultiaddr() multiaddr.Multiaddr { return c.remote }
+
+// TestBridgedPeerAddressIsNotRecorded: a bridged connection's remote address is
+// the client's socket, which no one can dial back, and was recorded for the
+// peer - as this host's own loopback, while the bridge was a reverse proxy.
+func TestBridgedPeerAddressIsNotRecorded(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	id, _ := test_host(t)
+	peer_observed(id, &fallback_test_conn{remote: multiaddr.StringCast("/ip4/198.51.100.5/tcp/50123/wss")})
+	if peer_held(id) {
+		t.Error("THE POINT: a WebSocket client's socket address was recorded for the peer")
+	}
+	peer_observed(id, &fallback_test_conn{remote: multiaddr.StringCast("/ip4/198.51.100.5/tcp/1443")})
+	if !peer_held(id) {
+		t.Error("control: a dialable inbound address was not recorded")
+	}
+}
+
+// TestNetStartInstallsTheBridgeAndTheRelayCandidates pins net_start's options:
+// libp2p's default transports with the WebSocket one replaced by the bridge's,
+// so the 443 bridge has its listener and no default transport is lost; and
+// AutoRelay waiting for, and holding, the relays it wants rather than its
+// defaults, which net_relay_candidates' configured-first rule relies on.
+func TestNetStartInstallsTheBridgeAndTheRelayCandidates(t *testing.T) {
+	source, err := os.ReadFile("net.go")
+	if err != nil {
+		t.Fatalf("reading net.go: %v", err)
+	}
+	for _, want := range []string{
+		"p2p.Transport(p2p_tcp.NewTCPTransport)",
+		"p2p.Transport(p2p_quic.NewTransport)",
+		"p2p.Transport(fallback_transport_new)",
+		"p2p.Transport(p2p_webtransport.New)",
+		"p2p.Transport(p2p_webrtc.New)",
+		"autorelay.WithNumRelays(relay_wanted)",
+		"autorelay.WithMinCandidates(relay_wanted)",
+		"autorelay.WithMaxCandidates(relay_candidates_maximum)",
+	} {
+		if !strings.Contains(string(source), want) {
+			t.Errorf("net.go no longer contains %q", want)
+		}
 	}
 }

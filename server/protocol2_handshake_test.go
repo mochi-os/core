@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -210,9 +211,9 @@ func TestClaimSignVerifyRoundTrip(t *testing.T) {
 	if _, err := rand.Read(challenge); err != nil {
 		t.Fatalf("rand.Read: %v", err)
 	}
-	sig := claim_sign(id, challenge, test_receiver, protocol_messages)
-	if sig == nil {
-		t.Fatal("claim_sign returned nil for valid entity")
+	sig, err := claim_sign(id, challenge, test_receiver, protocol_messages)
+	if err != nil {
+		t.Fatalf("claim_sign for a valid entity: %v", err)
 	}
 	if err := claim_verify(id, challenge, sig, test_receiver, protocol_messages); err != nil {
 		t.Errorf("claim_verify rejected own signature: %v", err)
@@ -226,17 +227,30 @@ func TestClaimSignMissingEntityReturnsNil(t *testing.T) {
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
 	// entity not in users.db
-	if sig := claim_sign(test_entity_id('z'), challenge, test_receiver, protocol_messages); sig != nil {
-		t.Error("claim_sign for unknown entity returned non-nil")
+	if sig, err := claim_sign(test_entity_id('z'), challenge, test_receiver, protocol_messages); sig != nil || !errors.Is(err, error_claim_unsignable) {
+		t.Errorf("claim_sign for an unknown entity gave %v, %v; want error_claim_unsignable", sig, err)
+	}
+}
+
+// A users.db that will not answer is not an entity that cannot sign: a Sender
+// drops a row for the one and retries it for the other (#140).
+func TestClaimSignUnreadableKeyIsNotUnsignable(t *testing.T) {
+	setup_replication_test(t)
+	challenge := make([]byte, challenge_size_v2)
+	rand.Read(challenge)
+	// No users schema: the read fails.
+	sig, err := claim_sign(test_entity_id('z'), challenge, test_receiver, protocol_messages)
+	if sig != nil || !errors.Is(err, error_claim_unreadable) || errors.Is(err, error_claim_unsignable) {
+		t.Errorf("claim_sign on an unreadable users.db gave %v, %v; want error_claim_unreadable alone", sig, err)
 	}
 }
 
 func TestClaimSignBadChallengeReturnsNil(t *testing.T) {
-	if sig := claim_sign(test_entity_id('a'), make([]byte, 16), test_receiver, protocol_messages); sig != nil {
-		t.Error("claim_sign with wrong-length challenge returned non-nil")
+	if sig, err := claim_sign(test_entity_id('a'), make([]byte, 16), test_receiver, protocol_messages); sig != nil || err == nil || errors.Is(err, error_claim_unsignable) {
+		t.Errorf("claim_sign with a wrong-length challenge gave %v, %v; want an error about the stream, not the entity", sig, err)
 	}
-	if sig := claim_sign("", make([]byte, challenge_size_v2), test_receiver, protocol_messages); sig != nil {
-		t.Error("claim_sign with empty entity returned non-nil")
+	if sig, err := claim_sign("", make([]byte, challenge_size_v2), test_receiver, protocol_messages); sig != nil || err == nil {
+		t.Errorf("claim_sign with an empty entity gave %v, %v", sig, err)
 	}
 }
 
@@ -272,7 +286,7 @@ func TestClaimVerifyRejectsCrossStreamReplay(t *testing.T) {
 	if bytes.Equal(channel_a, channel_b) {
 		t.Fatal("test setup: challenges collided")
 	}
-	sig_a := claim_sign(id, channel_a, test_receiver, protocol_messages)
+	sig_a, _ := claim_sign(id, channel_a, test_receiver, protocol_messages)
 	if sig_a == nil {
 		t.Fatal("claim_sign A failed")
 	}
@@ -293,7 +307,7 @@ func TestClaimVerifyRejectsCrossEntityReplay(t *testing.T) {
 
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
-	sig_a := claim_sign(id_a, challenge, test_receiver, protocol_messages)
+	sig_a, _ := claim_sign(id_a, challenge, test_receiver, protocol_messages)
 	if sig_a == nil {
 		t.Fatal("claim_sign A failed")
 	}
@@ -317,7 +331,7 @@ func TestClaimVerifyRejectsRelayedClaim(t *testing.T) {
 	const attacker = "12D3KooWAttackerPeer"
 
 	// The key holder signs for the peer it is actually talking to: M.
-	sig := claim_sign(id, challenge, attacker, protocol_messages)
+	sig, _ := claim_sign(id, challenge, attacker, protocol_messages)
 	if sig == nil {
 		t.Fatal("claim_sign failed")
 	}
@@ -343,7 +357,7 @@ func TestClaimVerifyRejectsCrossProtocolReplay(t *testing.T) {
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
 
-	sig := claim_sign(id, challenge, test_receiver, protocol_messages)
+	sig, _ := claim_sign(id, challenge, test_receiver, protocol_messages)
 	if sig == nil {
 		t.Fatal("claim_sign failed")
 	}
@@ -363,13 +377,13 @@ func TestClaimRequiresReceiverAndProtocol(t *testing.T) {
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
 
-	if sig := claim_sign(id, challenge, "", protocol_messages); sig != nil {
+	if sig, _ := claim_sign(id, challenge, "", protocol_messages); sig != nil {
 		t.Error("claim_sign produced a signature with no receiver")
 	}
-	if sig := claim_sign(id, challenge, test_receiver, ""); sig != nil {
+	if sig, _ := claim_sign(id, challenge, test_receiver, ""); sig != nil {
 		t.Error("claim_sign produced a signature with no protocol")
 	}
-	sig := claim_sign(id, challenge, test_receiver, protocol_messages)
+	sig, _ := claim_sign(id, challenge, test_receiver, protocol_messages)
 	if sig == nil {
 		t.Fatal("claim_sign failed")
 	}
@@ -433,84 +447,6 @@ func TestClaimWriteFailsForUnknownEntity(t *testing.T) {
 	err := claim_write(&buf, test_entity_id('q'), challenge, test_receiver, protocol_messages) // not in db
 	if err == nil {
 		t.Error("claim_write succeeded for unknown entity")
-	}
-}
-
-// --- senders_entity_invalidate (key-rotation hook) --------------------
-
-func TestSendersEntityInvalidateClosesMatching(t *testing.T) {
-	// Plan: rotation handler closes any open Sender holding a claim
-	// for the rotated entity. We can't easily spin up a real Sender
-	// without libp2p, so install a synthetic one by hand into the
-	// senders registry and verify the helper finds + tears it down.
-	setup_replication_test(t)
-	setup_users_test_schema()
-	const peer = "peer-rotate-test"
-	id, _ := new_entity_keys(t)
-
-	// Stash any existing entry under peer so we restore it on cleanup
-	// and don't disturb other tests.
-	senders_lock.Lock()
-	previous, had_previous := senders[peer]
-	senders[peer] = &Sender{
-		peer:     peer,
-		outbox:   make(chan *outbound, 1),
-		inflight: map[string]*pending{},
-		pings:    map[string]int64{},
-		claimed:  map[string]bool{id: true},
-	}
-	s := senders[peer]
-	senders_lock.Unlock()
-	defer func() {
-		senders_lock.Lock()
-		if had_previous {
-			senders[peer] = previous
-		} else {
-			delete(senders, peer)
-		}
-		senders_lock.Unlock()
-	}()
-
-	// Sanity: it's there.
-	if s.closed.Load() {
-		t.Fatal("setup: Sender is already closed")
-	}
-
-	senders_entity_invalidate(id)
-
-	if !s.closed.Load() {
-		t.Error("senders_entity_invalidate did not mark Sender closed")
-	}
-}
-
-func TestSendersEntityInvalidateNoOpForEmptyEntity(t *testing.T) {
-	// MUST be a no-op so a buggy rotation handler can't sweep
-	// everything by accident.
-	const peer = "peer-noop-test"
-	senders_lock.Lock()
-	previous, had_previous := senders[peer]
-	senders[peer] = &Sender{
-		peer:     peer,
-		outbox:   make(chan *outbound, 1),
-		inflight: map[string]*pending{},
-		pings:    map[string]int64{},
-		claimed:  map[string]bool{"abc": true},
-	}
-	s := senders[peer]
-	senders_lock.Unlock()
-	defer func() {
-		senders_lock.Lock()
-		if had_previous {
-			senders[peer] = previous
-		} else {
-			delete(senders, peer)
-		}
-		senders_lock.Unlock()
-	}()
-
-	senders_entity_invalidate("")
-	if s.closed.Load() {
-		t.Error("senders_entity_invalidate(\"\") closed unrelated Sender")
 	}
 }
 
@@ -652,7 +588,7 @@ func TestResponderProofIsNotAClaim(t *testing.T) {
 	id, _ := new_entity_keys(t)
 	challenge := must_challenge(t)
 
-	claim := claim_sign(id, challenge, test_opener, protocol_stream)
+	claim, _ := claim_sign(id, challenge, test_opener, protocol_stream)
 	if claim == nil {
 		t.Fatal("claim_sign returned nil for a local entity")
 	}

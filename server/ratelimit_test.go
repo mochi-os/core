@@ -7,9 +7,23 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
+
+// reset drops an account's throttle unconditionally, for test cleanup:
+// handlers settle through done so in-flight reservations are respected.
+func (g *account_gate) reset(uid string) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	delete(g.entries, uid)
+	for key := range g.entries {
+		if strings.HasPrefix(key, uid+"\n") {
+			delete(g.entries, key)
+		}
+	}
+}
 
 // Test rate_limiter.allow basic functionality
 func TestRateLimiterAllow(t *testing.T) {

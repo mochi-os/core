@@ -12,6 +12,8 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
+	"strings"
 	"testing"
 
 	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -72,12 +74,12 @@ func TestPeerRecordRoundTrip(t *testing.T) {
 	id, key := test_host(t)
 	encoded := test_signed_record(t, key, id, []string{"/ip4/192.0.2.10/tcp/1443", "/ip4/192.0.2.10/udp/1443/quic-v1"}, 100)
 
-	addresses, ok := peer_record_apply(id, encoded)
-	if !ok {
+	if !peer_record_apply(id, encoded) {
 		t.Fatal("valid record rejected")
 	}
+	addresses := peer_stored_addresses(id)
 	if len(addresses) != 2 {
-		t.Fatalf("returned %d addresses, want 2", len(addresses))
+		t.Fatalf("applied %d addresses, want 2", len(addresses))
 	}
 	for _, a := range addresses {
 		information, err := p2p_peer.AddrInfoFromP2pAddr(multiaddr.StringCast(a))
@@ -100,7 +102,7 @@ func TestPeerRecordRejectsWrongOrigin(t *testing.T) {
 	b, _ := test_host(t)
 	encoded := test_signed_record(t, akey, a, []string{"/ip4/192.0.2.20/tcp/1443"}, 1)
 
-	if _, ok := peer_record_apply(b, encoded); ok {
+	if peer_record_apply(b, encoded) {
 		t.Error("record for A applied under origin B")
 	}
 }
@@ -125,7 +127,7 @@ func TestPeerRecordRejectsForgedKey(t *testing.T) {
 	data, _ := env.Marshal()
 	encoded := base64.StdEncoding.EncodeToString(data)
 
-	if _, ok := peer_record_apply(victim, encoded); ok {
+	if peer_record_apply(victim, encoded) {
 		t.Error("record signed by the wrong key was accepted")
 	}
 }
@@ -136,16 +138,16 @@ func TestPeerRecordReplayRejected(t *testing.T) {
 
 	id, key := test_host(t)
 
-	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.30/tcp/1443"}, 100)); !ok {
+	if !peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.30/tcp/1443"}, 100)) {
 		t.Fatal("first record rejected")
 	}
-	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.31/tcp/1443"}, 100)); ok {
+	if peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.31/tcp/1443"}, 100)) {
 		t.Error("same-sequence replay accepted")
 	}
-	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.32/tcp/1443"}, 50)); ok {
+	if peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.32/tcp/1443"}, 50)) {
 		t.Error("older-sequence rollback accepted")
 	}
-	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.33/tcp/1443"}, 101)); !ok {
+	if !peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.33/tcp/1443"}, 101)) {
 		t.Error("newer sequence rejected")
 	}
 }
@@ -155,7 +157,7 @@ func TestPeerRecordRejectsGarbage(t *testing.T) {
 
 	id, _ := test_host(t)
 	for _, bad := range []string{"", "not base64 !!!", base64.StdEncoding.EncodeToString([]byte("random bytes not an envelope"))} {
-		if _, ok := peer_record_apply(id, bad); ok {
+		if peer_record_apply(id, bad) {
 			t.Errorf("garbage %q accepted", bad)
 		}
 	}
@@ -198,7 +200,7 @@ func TestPeerRecordsLoad(t *testing.T) {
 	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
-	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.50/tcp/1443"}, 200)); !ok {
+	if !peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.50/tcp/1443"}, 200)) {
 		t.Fatal("record rejected")
 	}
 
@@ -208,7 +210,7 @@ func TestPeerRecordsLoad(t *testing.T) {
 	peer_records_lock.Unlock()
 	peer_records_load()
 
-	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.51/tcp/1443"}, 150)); ok {
+	if peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.51/tcp/1443"}, 150)) {
 		t.Error("rollback accepted after reload — sequence not persisted")
 	}
 }
@@ -223,8 +225,8 @@ func TestPeerRecordEventAppliesRelayed(t *testing.T) {
 	subject, subject_key := test_host(t)
 	encoded := test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.60/tcp/1443"}, 10)
 
-	// No origin set: a relay isn't bound to its carrier.
-	peer_record_event(&Event{content: map[string]any{"record": encoded}})
+	// A carrier that is not the subject: a relay isn't bound to its carrier.
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{"record": encoded}})
 
 	if n := peer_addresses_count(subject); n != 1 {
 		t.Errorf("relayed record applied %d addresses, want 1", n)
@@ -240,8 +242,8 @@ func TestPeerRecordEventReplayGuard(t *testing.T) {
 	setup_peer_discovery_test(t)
 
 	subject, subject_key := test_host(t)
-	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.70/tcp/1443"}, 100)}})
-	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.71/tcp/1443"}, 50)}})
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.70/tcp/1443"}, 100)}})
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.71/tcp/1443"}, 50)}})
 
 	// Only the seq=100 address should be present.
 	addresses := peer_stored_addresses(subject)
@@ -260,7 +262,7 @@ func TestPeerRecordEventIgnoresOwn(t *testing.T) {
 	net_id = id
 	defer func() { net_id = saved }()
 
-	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, key, id, []string{"/ip4/192.0.2.80/tcp/1443"}, 1)}})
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{"record": test_signed_record(t, key, id, []string{"/ip4/192.0.2.80/tcp/1443"}, 1)}})
 	if peer_record_envelope(id) != nil {
 		t.Error("our own relayed record was stored")
 	}
@@ -307,7 +309,7 @@ func TestPeerRequestEventRelaysThirdParty(t *testing.T) {
 	subject, subject_key := test_host(t)
 	asker, _ := test_host(t)
 	encoded := test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.90/tcp/1443"}, 1)
-	if _, ok := peer_record_apply(subject, encoded); !ok {
+	if !peer_record_apply(subject, encoded) {
 		t.Fatal("seed record rejected")
 	}
 
@@ -316,5 +318,101 @@ func TestPeerRequestEventRelaysThirdParty(t *testing.T) {
 	peer_request_event(&Event{origin: asker, content: map[string]any{"id": subject}})
 	if rate_limit_record_relay.allow(subject) {
 		t.Error("relay did not consume the rate-limit token for the subject")
+	}
+}
+
+// TestPeerRecordEventAdmitsBeforeStoring is #127. A relayed record was stored
+// in memory and peers.db, and stamped in the relay-suppression map, before the
+// admission ceiling was asked - the ceiling whose own comment names this flood
+// - so each minted id left a record behind for fourteen days.
+func TestPeerRecordEventAdmitsBeforeStoring(t *testing.T) {
+	setup_peer_discovery_test(t)
+	peer_discovery_fill(t)
+
+	subject, key := test_host(t)
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{
+		"record": test_signed_record(t, key, subject, []string{"/ip4/192.0.2.80/tcp/1443"}, 1),
+	}})
+	if peer_record_envelope(subject) != nil {
+		t.Error("THE POINT: a record for a peer refused admission was kept in memory")
+	}
+	if found, _ := db_open("db/peers.db").exists("select 1 from records where id=?", subject); found {
+		t.Error("a record for a peer refused admission was written to peers.db")
+	}
+	if record_answered(subject) {
+		t.Error("a record for a peer refused admission took an entry in the suppression map")
+	}
+	if peer_held(subject) {
+		t.Error("a peer refused admission was registered")
+	}
+}
+
+// TestPeerRecordEventRequiresOrigin: peers/record is broadcast only, and a
+// direct stream with an empty From carried one with no rate limit at all.
+func TestPeerRecordEventRequiresOrigin(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	subject, key := test_host(t)
+	peer_record_event(&Event{content: map[string]any{
+		"record": test_signed_record(t, key, subject, []string{"/ip4/192.0.2.81/tcp/1443"}, 1),
+	}})
+	if peer_held(subject) || peer_record_envelope(subject) != nil {
+		t.Error("a record that did not arrive over pubsub was applied")
+	}
+}
+
+// TestPeerRecordVerifyBoundsTheRecord: a record with thousands of addresses
+// verified like any other and was kept whole. Real records are about 1 KB with
+// at most a few dozen addresses.
+func TestPeerRecordVerifyBoundsTheRecord(t *testing.T) {
+	id, key := test_host(t)
+	var many []string
+	for i := 0; i <= peer_record_addresses_maximum; i++ {
+		many = append(many, fmt.Sprintf("/ip4/10.1.%d.%d/tcp/1443", i/256, i%256))
+	}
+	if _, _, _, _, ok := peer_record_verify(test_signed_record(t, key, id, many, 1)); ok {
+		t.Errorf("a record with %d addresses verified", len(many))
+	}
+	if _, _, _, _, ok := peer_record_verify(test_signed_record(t, key, id, many[:peer_record_addresses_maximum], 1)); !ok {
+		t.Errorf("a record with %d addresses, the bound, was refused", peer_record_addresses_maximum)
+	}
+	long := []string{"/dns/" + strings.Repeat("c", 250) + "/tcp/1443"}
+	for len(long)*260 <= peer_record_maximum {
+		long = append(long, long[0])
+	}
+	if _, _, _, _, ok := peer_record_verify(test_signed_record(t, key, id, long, 1)); ok {
+		t.Error("a record over peer_record_maximum verified")
+	}
+}
+
+// TestPeerRecordEventRestoresAnUnheldPeer is #2105: a relayed record as new as
+// the one held was refused before its addresses were applied, so a peer whose
+// record survived on disk but who had left the registry could not be dialled
+// until it published again.
+func TestPeerRecordEventRestoresAnUnheldPeer(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	subject, key := test_host(t)
+	record := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.82/tcp/1443"}, 5)
+	if !peer_record_apply(subject, record) {
+		t.Fatal("seed record rejected")
+	}
+	peers_lock.Lock()
+	delete(peers, subject)
+	peers_lock.Unlock()
+
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{"record": record}})
+	if addresses := peer_stored_addresses(subject); len(addresses) != 1 {
+		t.Errorf("THE POINT: the relayed record restored %d addresses, want 1", len(addresses))
+	}
+
+	// A stale record still restores nothing.
+	peers_lock.Lock()
+	delete(peers, subject)
+	peers_lock.Unlock()
+	stale := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.83/tcp/1443"}, 4)
+	peer_record_event(&Event{origin: "12D3KooWSomeCarrier", content: map[string]any{"record": stale}})
+	if peer_held(subject) {
+		t.Error("a stale relayed record restored its addresses")
 	}
 }

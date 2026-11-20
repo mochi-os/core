@@ -19,6 +19,15 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
+// segment decodes the event's next segment through the stream's own bounded
+// reader, as a handler's e.read() does.
+func (e *Event) segment(v any) bool {
+	if e.stream == nil || e.stream.reader == nil {
+		return false
+	}
+	return e.stream.read(v) == nil
+}
+
 // TestNoSegmentsGivesNoStream covers both ways a frame can carry nothing. The
 // empty-but-not-nil case is the one the old condition got wrong.
 func TestNoSegmentsGivesNoStream(t *testing.T) {

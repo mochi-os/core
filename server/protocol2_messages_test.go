@@ -13,10 +13,13 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // fake_stream implements receiver_stream for tests — backs onto a
@@ -278,23 +281,18 @@ func TestDispatchMessageDedupsViaMessageSeen(t *testing.T) {
 
 	// Mark the ID as seen first.
 	const id = "dup-msg-id-test"
-	seen_messages_lock.Lock()
-	seen_messages[id] = now()
-	seen_messages_lock.Unlock()
-	defer func() {
-		seen_messages_lock.Lock()
-		delete(seen_messages, id)
-		seen_messages_lock.Unlock()
-	}()
+	dedup_isolate(t)
+	message_seen_mark(id, "earlier")
 
+	from := test_entity_id('a')
 	r := &Receiver{
 		replies: make(chan *Frame, 4),
-		claimed: map[string]bool{},
+		claimed: map[string]bool{from: true},
 	}
 	r.dispatch_message(&Frame{
 		Type:    frame_type_message,
 		ID:      id,
-		From:    test_entity_id('a'),
+		From:    from,
 		Service: "any-service",
 	})
 
@@ -316,6 +314,264 @@ func TestDispatchMessageDedupsViaMessageSeen(t *testing.T) {
 	workers, _ := worker_count()
 	if workers != 0 {
 		t.Errorf("dedup'd frame still created a worker (count=%d)", workers)
+	}
+}
+
+// A frame from no authenticated sender takes no dedup record: its id may be
+// anyone's, and a record for it would let a peer with no credentials pre-empt
+// an honest sender's message or flush the records honest senders rely on.
+func TestDispatchMessageMarksNothingForAnUnsignedFrame(t *testing.T) {
+	setup_replication_test(t)
+	reset_workers(t)
+	defer reset_workers(t)
+	dedup_isolate(t)
+	delivered := make(chan string, 4)
+	test_service(t, "unsigned", "arrive", func(e *Event) { delivered <- e.message })
+
+	r := &Receiver{peer: "12D3KooWUnsigned", replies: make(chan *Frame, 4), claimed: map[string]bool{}}
+	for range 2 {
+		r.dispatch_message(&Frame{Type: frame_type_message, ID: "unsigned-1", Service: "unsigned", Event: "arrive"})
+	}
+	for range 2 {
+		select {
+		case <-delivered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("an unsigned frame was not delivered; with no record its copy runs as well")
+		}
+	}
+	if dedup_held("unsigned-1") {
+		t.Error("THE POINT: an unsigned frame took a dedup record")
+	}
+}
+
+// A copy that arrives while the first is still with its handler waits for the
+// first's outcome. Acknowledged at once, as it was, the sender deleted its row,
+// and when the first then failed for a reason it retries the message was lost.
+func TestDispatchMessageCopyWaitsWhileTheFirstRuns(t *testing.T) {
+	setup_replication_test(t)
+	reset_workers(t)
+	defer reset_workers(t)
+	dedup_isolate(t)
+	gate := make(chan struct{})
+	// Released before reset_workers waits on the worker, however the test ends.
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	started := make(chan struct{}, 4)
+	test_service(t, "copies", "arrive", func(e *Event) {
+		started <- struct{}{}
+		<-gate
+		panic("the first copy fails")
+	})
+
+	from := test_entity_id('c')
+	r := &Receiver{peer: "12D3KooWCopies", replies: make(chan *Frame, 8), claimed: map[string]bool{from: true}}
+	frame := func() *Frame {
+		return &Frame{Type: frame_type_message, ID: "copy-1", From: from, Service: "copies", Event: "arrive"}
+	}
+	r.dispatch_message(frame())
+	<-started
+	r.dispatch_message(frame())
+	select {
+	case f := <-r.replies:
+		t.Fatalf("THE POINT: the copy was answered %s %v while the first still ran", f.Type, f.Replies)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	for i := 0; i < 2; i++ {
+		select {
+		case f := <-r.replies:
+			if f.Type != frame_type_fail || f.Reason != fail_handler_panic {
+				t.Errorf("reply %d was %s %q, want the first's retryable failure", i, f.Type, f.Reason)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("reply %d never came", i)
+		}
+	}
+	// The retry the failure asks for runs.
+	r.dispatch_message(frame())
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Error("the retry after a retryable failure did not run")
+	}
+}
+
+// A prove comes back to the budget only for the first message to an entity
+// this stream proved: any message used to return one, so a peer alternating a
+// prove with an empty message had this host sign with its users' keys at wire
+// speed.
+func TestMessagesProveBudgetReturnsOnlyForAProvenTarget(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	messages_net_id(t)
+	reset_workers(t)
+	defer reset_workers(t)
+	proved, _ := new_entity_keys(t)
+
+	reset := new(atomic.Int32)
+	r := messages_receiver(reset)
+	r.peer = "12D3KooWProves"
+	r.offered = must_challenge(t)
+	r.caps_seen.Store(true)
+
+	r.handle(&Frame{Type: frame_type_prove, To: proved})
+	for i := 1; i < messages_proves_maximum; i++ {
+		r.handle(&Frame{Type: frame_type_prove})
+	}
+	// Junk to no proven entity backs nothing; the first message to the proven
+	// one backs its proof, and a second to it nothing more.
+	r.handle(&Frame{Type: frame_type_message, Service: "no-such-service"})
+	r.handle(&Frame{Type: frame_type_message, To: proved, Service: "no-such-service"})
+	if !r.handle(&Frame{Type: frame_type_prove}) {
+		t.Fatal("control: the first message to the proven entity did not back its proof")
+	}
+	r.handle(&Frame{Type: frame_type_message, To: proved, Service: "no-such-service"})
+	if r.handle(&Frame{Type: frame_type_prove}) {
+		t.Error("THE POINT: a second message to an entity already backed returned another prove")
+	}
+	if reset.Load() != 1 {
+		t.Errorf("stream reset %d times, want once past the budget", reset.Load())
+	}
+}
+
+// A peer needs one messages stream; past receiver_streams_maximum its oldest is
+// reset, so a handful of identities cannot hold every slot of the protocol.
+func TestReceiversKeepAFewStreamsPerPeer(t *testing.T) {
+	receivers_lock.Lock()
+	saved := receivers
+	receivers = map[string][]*Receiver{}
+	receivers_lock.Unlock()
+	t.Cleanup(func() {
+		receivers_lock.Lock()
+		receivers = saved
+		receivers_lock.Unlock()
+	})
+
+	open := func(peer string) (*Receiver, *atomic.Int32) {
+		reset := new(atomic.Int32)
+		r := &Receiver{peer: peer, stream: &fake_stream{buf: &bytes.Buffer{}, reset_count: reset}}
+		receivers_add(r)
+		return r, reset
+	}
+	first, first_reset := open("12D3KooWMany")
+	second, second_reset := open("12D3KooWMany")
+	_, other_reset := open("12D3KooWOther")
+	if first_reset.Load()+second_reset.Load()+other_reset.Load() != 0 {
+		t.Fatal("control: streams within the limit were reset")
+	}
+	third, _ := open("12D3KooWMany")
+	if first_reset.Load() != 1 || second_reset.Load() != 0 {
+		t.Errorf("THE POINT: past the limit the oldest was reset %d times and the next %d", first_reset.Load(), second_reset.Load())
+	}
+	if other_reset.Load() != 0 {
+		t.Error("another peer's stream was reset")
+	}
+	receivers_remove(first)
+	receivers_remove(second)
+	receivers_remove(third)
+	receivers_lock.Lock()
+	left := len(receivers["12D3KooWMany"])
+	receivers_lock.Unlock()
+	if left != 0 {
+		t.Errorf("%d streams recorded after all ended", left)
+	}
+}
+
+// A sender says bye to collect the replies to what it has sent. The receiver
+// stopped at bye and closed at once, so the acks of messages still with their
+// workers were dropped and the sender's drain ran out.
+func TestReceiverRepliesBeforeClosingOnBye(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+	gate := make(chan struct{})
+	test_service(t, "farewell", "arrive", func(*Event) { <-gate })
+
+	s := new_claims_stream_on("12D3KooWBye-1")
+	// A write that takes a while, so the stream would close under the writer
+	// sending the last ack if the receiver did not wait for it.
+	s.delay = 100 * time.Millisecond
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		receive_messages_guarded(s)
+	}()
+	claims_hello(t, s)
+	claims_caps(t, s)
+	claims_send(t, s, &Frame{Type: frame_type_message, ID: "farewell-1", Service: "farewell", Event: "arrive"})
+	claims_send(t, s, &Frame{Type: frame_type_bye})
+
+	time.Sleep(200 * time.Millisecond)
+	close(gate)
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the receiver did not end after bye")
+	}
+	close(s.outbound.chunks)
+	acked := false
+	for {
+		f, err := frame_read(&opener_reader{f: s.outbound})
+		if err != nil {
+			break
+		}
+		if f.Type == frame_type_ack && len(f.Replies) == 1 && f.Replies[0] == "farewell-1" {
+			acked = true
+		}
+	}
+	if !acked {
+		t.Error("THE POINT: the ack of a message still with its worker at bye was not written")
+	}
+}
+
+// Replies queued when the stream ends are written, not left in the channel:
+// write_replies chose at random between a queued reply and the closed `done`.
+func TestWriteRepliesDrainsOnDone(t *testing.T) {
+	for round := 0; round < 32; round++ {
+		var buf bytes.Buffer
+		r := &Receiver{
+			stream:  &fake_stream{buf: &buf},
+			replies: make(chan *Frame, 8),
+			done:    make(chan struct{}),
+			written: make(chan struct{}),
+		}
+		r.replies <- &Frame{Type: frame_type_ack, Replies: []string{"queued"}}
+		close(r.done)
+		r.write_replies()
+		select {
+		case <-r.written:
+		default:
+			t.Fatal("write_replies did not say it had finished")
+		}
+		f, err := frame_read(&buf)
+		if err != nil || f.Type != frame_type_ack || len(f.Replies) != 1 {
+			t.Fatalf("THE POINT: round %d: the reply queued at the end was not written (%v, %v)", round, f, err)
+		}
+	}
+}
+
+// An ack batch is split well inside the size the far side's frame_read holds
+// every frame but a message to.
+func TestWriteRepliesSplitsLargeAckBatches(t *testing.T) {
+	var buf bytes.Buffer
+	r := &Receiver{stream: &fake_stream{buf: &buf}, replies: make(chan *Frame, 2048)}
+	for i := 0; i < 2000; i++ {
+		r.replies <- &Frame{Type: frame_type_ack, Replies: []string{strings.Repeat("i", id_length_maximum-4) + i64toa(int64(1000+i))}}
+	}
+	close(r.replies)
+	r.write_replies()
+	total := 0
+	for {
+		f, err := frame_read(&buf)
+		if err != nil {
+			break
+		}
+		total += len(f.Replies)
+	}
+	if total != 2000 {
+		t.Errorf("THE POINT: %d of 2000 acks read back; a batch past the control size is refused by the far side", total)
 	}
 }
 
@@ -534,6 +790,7 @@ func TestMessagesClaimBudgetReturnsOnDeliveredMessages(t *testing.T) {
 	// unless its inbox is closed.
 	reset_workers(t)
 	defer reset_workers(t)
+	test_service(t, "claimbudget", "arrive", func(*Event) {})
 
 	reset := new(atomic.Int32)
 	r := messages_receiver(reset)
@@ -545,12 +802,41 @@ func TestMessagesClaimBudgetReturnsOnDeliveredMessages(t *testing.T) {
 		if !r.handle(claim) {
 			t.Fatalf("claim %d was refused after %d delivered messages; a peer speaking for more entities than the cap loses delivery mid-session", i+1, i)
 		}
-		if !r.handle(&Frame{Type: frame_type_message, From: claim.From}) {
+		if !r.handle(&Frame{Type: frame_type_message, From: claim.From, Service: "claimbudget", Event: "arrive"}) {
 			t.Fatalf("the message backing claim %d closed the stream", i+1)
 		}
 	}
 	if reset.Load() != 0 {
 		t.Errorf("stream reset %d times; a peer backing every claim with a message must never be cut off", reset.Load())
+	}
+}
+
+// A message no handler takes returns no claim: a peer alternating a claim for
+// a freshly minted entity with junk from it grew `claimed` by one entity a pair
+// for the life of the stream.
+func TestMessagesClaimBudgetIgnoresUndeliveredMessages(t *testing.T) {
+	messages_net_id(t)
+	reset_workers(t)
+	defer reset_workers(t)
+
+	reset := new(atomic.Int32)
+	r := messages_receiver(reset)
+	r.caps_seen.Store(true)
+
+	refused := 0
+	for i := 0; i <= messages_claims_maximum; i++ {
+		claim := messages_claim(t, r.challenge)
+		if !r.handle(claim) {
+			break
+		}
+		r.handle(&Frame{Type: frame_type_message, ID: uid(), From: claim.From, Service: "no-such-service", Event: "junk"})
+		refused++
+	}
+	if reset.Load() != 1 {
+		t.Errorf("stream reset %d times after %d claims each backed only by junk; want it cut off at the cap of %d", reset.Load(), refused, messages_claims_maximum)
+	}
+	if workers, _ := worker_count(); workers != 0 {
+		t.Errorf("junk messages created %d workers", workers)
 	}
 }
 
@@ -610,5 +896,56 @@ func TestMessagesDeadlineRollsOnFirstMessage(t *testing.T) {
 	}
 	if !r.ready {
 		t.Error("receiver did not record that a message arrived")
+	}
+}
+
+// TestReceiverRegistersAPeerOnlyOnEvidence is #154 and the receiving half of
+// #135. The messages handler registered the remote peer and its address on
+// every exit after its hello, whatever the peer sent, so any libp2p node joined
+// the registry - and with it the relay's admission list - by opening one stream
+// and closing it. A completed hello now records the greeting the relay admits
+// on; the registry entry waits for a claim that verifies or a message a handler
+// takes.
+func TestReceiverRegistersAPeerOnlyOnEvidence(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_users_test_schema()
+	relay_test_greetings(t)
+	messages_net_id(t)
+	peer := p2p_peer.ID("12D3KooWClaimsFloodTestPeer").String()
+
+	run := func(connection string, frames func(challenge []byte, s *claims_stream)) {
+		s := new_claims_stream_on(connection)
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			receive_messages_guarded(s)
+		}()
+		challenge := claims_hello(t, s)
+		claims_caps(t, s)
+		frames(challenge, s)
+		close(s.inbound.chunks)
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the receiver did not end")
+		}
+	}
+
+	// Hello and caps, then nothing: a greeting, no registry entry.
+	run("12D3KooWEvidence-1", func([]byte, *claims_stream) {})
+	if !peer_greeted(peer) {
+		t.Error("a completed hello was not recorded as a greeting")
+	}
+	if peer_held(peer) {
+		t.Error("THE POINT: a peer that sent nothing after its hello was registered")
+	}
+
+	// A claim that verifies: registered at the address the connection came from.
+	run("12D3KooWEvidence-2", func(challenge []byte, s *claims_stream) {
+		claims_send(t, s, messages_claim(t, challenge))
+	})
+	addresses := peer_stored_addresses(peer)
+	if len(addresses) != 1 || addresses[0] != "/ip4/192.0.2.1/tcp/1443/p2p/"+peer {
+		t.Errorf("a peer that proved a claim was registered at %v", addresses)
 	}
 }

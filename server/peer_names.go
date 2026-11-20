@@ -164,25 +164,17 @@ func peer_names_save(id string) {
 	peer_names_lock.Unlock()
 
 	db := db_open("db/peers.db")
-	db.exec("delete from names where id=?", id)
+	db.exec_bg("peer names delete", "delete from names where id=?", id)
 	for _, c := range claims {
-		db.exec("replace into names ( id, name, updated ) values ( ?, ?, ? )", id, c.Name, c.Updated)
+		db.exec_bg("peer names save", "replace into names ( id, name, updated ) values ( ?, ?, ? )", id, c.Name, c.Updated)
 	}
-}
-
-// peer_name_fields adds the display fields for a peer to a JSON-bound map
-// (gin handlers): the self-asserted `name` and the authoritative
-// `fingerprint`.
-func peer_name_fields(m map[string]any, id string) {
-	m["name"] = peer_name(id)
-	m["fingerprint"] = fingerprint(id)
 }
 
 // peer_names_sweep drops a peer's name once it has gone quiet, with the
 // same expiry as the peer prune.
 func peer_names_sweep(expiry int64) {
 	db := db_open("db/peers.db")
-	db.exec("delete from names where updated<?", expiry)
+	db.exec_bg("peer names sweep", "delete from names where updated<?", expiry)
 
 	peer_names_lock.Lock()
 	for id, claims := range peer_names {

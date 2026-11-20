@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	cbor "github.com/fxamacker/cbor/v2"
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -97,6 +98,7 @@ type claims_stream struct {
 	deadline time.Time
 	reset    bool
 	closed   bool
+	delay    time.Duration // how long each write takes
 }
 
 func new_claims_stream() *claims_stream {
@@ -118,9 +120,18 @@ func (s *claims_stream) Read(p []byte) (int, error) {
 }
 
 func (s *claims_stream) Write(p []byte) (int, error) {
+	// As a real stream: a write takes its time, and nothing still being
+	// written when the stream is closed or reset arrives.
+	time.Sleep(s.delay)
+	if s.done() {
+		return 0, io.ErrClosedPipe
+	}
 	s.outbound.write(p)
 	return len(p), nil
 }
+
+// SetWriteDeadline is accepted and ignored: writes to the feed never block.
+func (s *claims_stream) SetWriteDeadline(time.Time) error { return nil }
 
 func (s *claims_stream) SetReadDeadline(t time.Time) error {
 	s.lock.Lock()
@@ -248,6 +259,7 @@ func TestStreamCapsClaimsBeforeOpen(t *testing.T) {
 func TestStreamAcceptsALegitimateOpener(t *testing.T) {
 	// Past the ack the handler records the opener's address.
 	setup_peer_discovery_test(t)
+	test_service(t, "claimstest", "open", test_answer)
 	s := new_claims_stream()
 
 	finished := make(chan struct{})
@@ -262,7 +274,7 @@ func TestStreamAcceptsALegitimateOpener(t *testing.T) {
 	claims_send(t, s, claim)
 	// An open naming the claimed entity: past the claim loop, into resolution,
 	// and acknowledged - an empty To is a host-to-host stream.
-	claims_send(t, s, &Frame{Type: frame_type_open, ID: "open-1", From: claim.From, To: ""})
+	claims_send(t, s, &Frame{Type: frame_type_open, ID: "open-1", From: claim.From, To: "", Service: "claimstest", Event: "open"})
 
 	replies := make(chan *Frame, 1)
 	go func() {
@@ -336,6 +348,177 @@ func TestStreamDeadlinesTheSlowDrip(t *testing.T) {
 	}
 	if !s.done() {
 		t.Error("the handler timed out without resetting the stream")
+	}
+}
+
+// TestStreamDeadlinesTheCapsPhase: the pre-open bound covers caps too. A peer
+// that opens the stream and sends nothing at all held the handler and the slot
+// for the life of the connection.
+func TestStreamDeadlinesTheCapsPhase(t *testing.T) {
+	s := new_claims_stream()
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		receive_stream_guarded(s)
+	}()
+	claims_hello(t, s)
+	// And not even caps.
+
+	var deadline time.Time
+	for attempt := 0; attempt < 100; attempt++ {
+		if deadline = s.deadline_set(); !deadline.IsZero() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if deadline.IsZero() {
+		t.Fatal("THE POINT: no read deadline while waiting for caps; a silent peer parks the handler forever")
+	}
+	close(s.inbound.expire)
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the handler did not give up when its read deadline expired")
+	}
+}
+
+// stream_admission runs an open through the receiver and returns its answer,
+// and whether anything after the open was read.
+func stream_admission(t *testing.T, open *Frame, request any) (*Frame, bool) {
+	t.Helper()
+	s := new_claims_stream()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		receive_stream_guarded(s)
+	}()
+	challenge := claims_hello(t, s)
+	claims_caps(t, s)
+	if open.From != "" {
+		claim := claims_signed(t, challenge)
+		open.From = claim.From
+		claims_send(t, s, claim)
+	}
+	claims_send(t, s, open)
+	var buffer bytes.Buffer
+	if err := cbor.NewEncoder(&buffer).Encode(request); err != nil {
+		t.Fatalf("encoding the request: %v", err)
+	}
+	s.inbound.write(buffer.Bytes())
+
+	reply, err := frame_read(&opener_reader{f: s.outbound})
+	if err != nil {
+		t.Fatalf("reading the answer to the open: %v", err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the handler did not end")
+	}
+	close(s.outbound.chunks)
+	return reply, len(s.inbound.chunks) == 0 && len(s.inbound.rest) == 0
+}
+
+// An open no app takes, or from no sender to an event that wants one, is
+// refused before the ack and before any of its request is read: the request
+// used to be read first, up to 100 MB of it, whoever sent it.
+func TestStreamRefusesAnOpenBeforeReadingIt(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_users_test_schema()
+	delivered := make(chan string, 4)
+	a := app("signed")
+	a.service("signed")
+	a.internal.Events["arrive"] = AppEvent{internal_function: func(e *Event) { delivered <- e.message }}
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		delete(apps, "signed")
+		delete(internal_services, "signed")
+		apps_lock.Unlock()
+		resolution_invalidate()
+	})
+	resolution_invalidate()
+
+	for name, open := range map[string]*Frame{
+		"no app":          {Type: frame_type_open, ID: "open-1", Service: "no-such-service", Event: "arrive"},
+		"no such event":   {Type: frame_type_open, ID: "open-2", Service: "signed", Event: "no-such-event"},
+		"unsigned sender": {Type: frame_type_open, ID: "open-3", Service: "signed", Event: "arrive"},
+	} {
+		reply, read := stream_admission(t, open, map[string]any{"n": 1})
+		if reply.Type != frame_type_fail || reply.Reason != fail_unsupported {
+			t.Errorf("THE POINT: %s: the open was answered %s %q, want fail %q", name, reply.Type, reply.Reason, fail_unsupported)
+		}
+		if read {
+			t.Errorf("THE POINT: %s: the request of a refused open was read", name)
+		}
+	}
+
+	// Control: a claimed sender to the same event is served.
+	reply, _ := stream_admission(t, &Frame{Type: frame_type_open, ID: "open-4", From: "claimed", Service: "signed", Event: "arrive"}, map[string]any{"n": 1})
+	if reply.Type != frame_type_ack {
+		t.Fatalf("control: a claimed sender's open was answered %s %q", reply.Type, reply.Reason)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Error("control: the admitted open's handler did not run")
+	}
+}
+
+// The request read before any handler runs is held to stream_content_maximum,
+// the handler's own reads taking the stream's whole budget after it.
+func TestStreamHoldsTheRequestToItsCap(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_users_test_schema()
+	delivered := make(chan string, 4)
+	test_service(t, "capped", "arrive", func(e *Event) { delivered <- e.message })
+
+	reply, _ := stream_admission(t, &Frame{Type: frame_type_open, ID: "open-big", Service: "capped", Event: "arrive"},
+		map[string]any{"data": make([]byte, stream_content_maximum)})
+	if reply.Type != frame_type_ack {
+		t.Fatalf("control: the open was answered %s %q", reply.Type, reply.Reason)
+	}
+	select {
+	case id := <-delivered:
+		t.Errorf("THE POINT: a request past the cap reached the handler (%q)", id)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	reply, _ = stream_admission(t, &Frame{Type: frame_type_open, ID: "open-small", Service: "capped", Event: "arrive"},
+		map[string]any{"data": make([]byte, stream_content_maximum/2)})
+	if reply.Type != frame_type_ack {
+		t.Fatalf("control: the open was answered %s %q", reply.Type, reply.Reason)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Error("control: a request within the cap did not reach the handler")
+	}
+}
+
+// TestStreamSelfLoopIsGuarded: the loopback's dispatch runs on a goroutine of
+// its own, and a panic at the top of one ends the process; it is guarded as
+// receive_stream is.
+func TestStreamSelfLoopIsGuarded(t *testing.T) {
+	function := function_body(t, "protocol2_stream.go", "func stream_self_loop(")
+	if !strings.Contains(function, `go guard("stream_self_loop", func() { far.reset(); far.close() }, func() {`) {
+		t.Error("THE POINT: stream_self_loop's dispatch goroutine is not guarded, or not reset and closed when it faults")
+	}
+	if strings.Contains(function, "go func()") {
+		t.Error("stream_self_loop starts an unguarded goroutine")
+	}
+}
+
+// TestStreamAnswerErrorIsGuarded is #2111: stream_answer_error's writer was the
+// one transport goroutine with no guard, so a panic there ended the process.
+// Nothing reaches a panic in it from a test, so the guard is pinned.
+func TestStreamAnswerErrorIsGuarded(t *testing.T) {
+	function := function_body(t, "protocol2_stream.go", "func stream_answer_error(")
+	if !strings.Contains(function, `go guard("stream_answer_error", nil, func() {`) {
+		t.Error("THE POINT: stream_answer_error's writer goroutine is not guarded")
+	}
+	if strings.Contains(function, "go func()") {
+		t.Error("stream_answer_error starts an unguarded goroutine")
 	}
 }
 

@@ -1,9 +1,10 @@
-// Mochi server: Peer reachability silent-cache. Three consecutive stream-open
-// failures make peer_protocol_open fast-fail rather than pay the libp2p connect
-// timeout for an offline peer. Silence is DURABLE - there is no time-based
-// trial window, because that put a ~10s dial on whatever queue_process
-// goroutine picked the row. Recovery is event-driven through
-// peer_reconnect_manager. Not persisted.
+// Mochi server: Peer reachability silent-cache. Three consecutive failures to
+// connect make peer_protocol_open fast-fail rather than pay the libp2p connect
+// timeout for an offline peer. A stream that will not open on a live connection
+// is not one: that is peer_progress.go's kind of failure, with a trial window.
+// Silence is DURABLE - there is no time-based trial window, because that put a
+// ~10s dial on whatever queue_process goroutine picked the row. Recovery is
+// event-driven through peer_reconnect_manager. Not persisted.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only

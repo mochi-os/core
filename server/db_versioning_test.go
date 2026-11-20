@@ -839,6 +839,8 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	users.exec("create index tokens_app on tokens(app)")
 	db_upgrade_27()
 	check("db_upgrade_27.users", versioning_schema(users))
+	db_upgrade_28()
+	check("db_upgrade_28.queue", versioning_schema(queue))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

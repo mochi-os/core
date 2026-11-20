@@ -148,10 +148,11 @@ func TestPeerAddKnownFiltersUndialableAddresses(t *testing.T) {
 
 	id := "12D3KooWGPbbqBmyGpTLxVLZzhNYhbHZBMDdFbEcxHnLzVCJmqXt"
 	peer_add_known(id, []string{
-		"not-a-multiaddress",         // unparseable, and handed to the dialer as-is
-		"/ip4/0.0.0.0/tcp/4001",      // unspecified: no host to dial
-		"/ip4/198.51.100.7/tcp/4001", // routable
-		"/ip4/127.0.0.1/tcp/4001",    // loopback, which the two local instances use
+		"not-a-multiaddress",                   // unparseable, and handed to the dialer as-is
+		"/ip4/0.0.0.0/tcp/4001/p2p/" + id,      // unspecified: no host to dial
+		"/ip4/198.51.100.8/tcp/4001",           // no /p2p suffix: the dialer refuses it
+		"/ip4/198.51.100.7/tcp/4001/p2p/" + id, // routable
+		"/ip4/127.0.0.1/tcp/4001/p2p/" + id,    // loopback, which the two local instances use
 	})
 	p, found := peers[id]
 	if !found {

@@ -176,6 +176,14 @@ func TestQueueSendDirectExpandsEmptyTargetRow(t *testing.T) {
 	}
 }
 
+// install_pending_row writes a queue row as queueing a message leaves it:
+// pending and due, for the inline send to claim.
+func install_pending_row(t *testing.T, id string) {
+	t.Helper()
+	install_queue_row(t, id)
+	db_open("db/queue.db").exec("update queue set status='pending' where id=?", id)
+}
+
 // inline_send_row waits for a queue row to settle at `status` with
 // `attempts`, returning its next_retry.
 func inline_send_row(t *testing.T, id, status string, attempts int64) int64 {
@@ -204,7 +212,7 @@ func TestInlineSendBusySenderLeavesRowDue(t *testing.T) {
 	s.outbox = make(chan *outbound) // never read: always full
 	defer stash_sender(t, peer, s)()
 
-	install_queue_row(t, "busy-1")
+	install_pending_row(t, "busy-1")
 	m := message("from-entity", "to-entity", "service", "event")
 	m.ID = "busy-1"
 	message_attempt_send_real(m, peer, nil)
@@ -218,7 +226,7 @@ func TestInlineSendBusySenderLeavesRowDue(t *testing.T) {
 // cannot be reached at all is still retried with backoff.
 func TestInlineSendUnreachablePeerBacksOff(t *testing.T) {
 	setup_replication_test(t)
-	install_queue_row(t, "gone-1")
+	install_pending_row(t, "gone-1")
 	m := message("from-entity", "to-entity", "service", "event")
 	m.ID = "gone-1"
 	message_attempt_send_real(m, "unreachable-peer", nil)

@@ -8,9 +8,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	p2p "github.com/libp2p/go-libp2p"
+	p2p_host "github.com/libp2p/go-libp2p/core/host"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 )
@@ -324,42 +327,226 @@ func TestRelaySaturationAlert(t *testing.T) {
 	}
 }
 
-// TestRelayAccessAdmitsOnlyKnownPeers is #591. libp2p installs no ACL by
-// default, so before this every circuit-v2 client on the internet could reserve
-// a slot and tunnel third-party traffic over the operator's bandwidth - with
-// rc.Limit nil, unmetered and for as long as it liked.
-func TestRelayAccessAdmitsOnlyKnownPeers(t *testing.T) {
-	known := p2p_peer.ID("a-peer-this-host-knows")
-	other := p2p_peer.ID("a-second-known-peer")
-	stranger := p2p_peer.ID("some-random-libp2p-node")
-
-	peers_lock.Lock()
-	saved := peers
-	peers = map[string]Peer{
-		known.String(): {ID: known.String()},
-		other.String(): {ID: other.String()},
-	}
-	peers_lock.Unlock()
+// relay_test_greetings gives the test an empty greetings record.
+func relay_test_greetings(t *testing.T) {
+	t.Helper()
+	peer_greetings_lock.Lock()
+	saved := peer_greetings
+	peer_greetings = map[string]int64{}
+	peer_greetings_lock.Unlock()
 	t.Cleanup(func() {
-		peers_lock.Lock()
-		peers = saved
-		peers_lock.Unlock()
+		peer_greetings_lock.Lock()
+		peer_greetings = saved
+		peer_greetings_lock.Unlock()
 	})
+}
+
+// TestRelayAccessAdmitsOnlyGreetedPeers is #591 and #135. libp2p installs no
+// ACL by default, so every circuit-v2 client on the internet could reserve a
+// slot and tunnel third-party traffic over the operator's bandwidth - with
+// rc.Limit nil, unmetered and for as long as it liked. Membership of peers was
+// the first gate, and any libp2p node joined it by opening one stream: the
+// relay admits only peers that completed a /mochi/2 hello with this host.
+func TestRelayAccessAdmitsOnlyGreetedPeers(t *testing.T) {
+	setup_peer_discovery_test(t)
+	relay_test_greetings(t)
+	saved := net_me
+	net_me = nil // no host to probe from: admission rests on the record alone
+	t.Cleanup(func() { net_me = saved })
+
+	greeted := p2p_peer.ID("a-peer-that-said-hello")
+	other := p2p_peer.ID("a-second-peer-that-said-hello")
+	held := p2p_peer.ID("a-peer-the-registry-holds")
+	stranger := p2p_peer.ID("some-random-libp2p-node")
+	peer_greet(greeted.String())
+	peer_greet(other.String())
+	peer_discovered_address(held.String(), "/ip4/192.0.2.9/tcp/1443/p2p/"+held.String())
 
 	acl := relay_access{}
-	if !acl.AllowReserve(known, nil) {
-		t.Error("a known peer was refused a reservation: relaying for Mochi peers is the point of the service")
+	if !acl.AllowReserve(greeted, nil) {
+		t.Error("a peer that completed a hello was refused a reservation: relaying for Mochi peers is the point of the service")
+	}
+	if acl.AllowReserve(held, nil) {
+		t.Error("THE POINT: a peer the registry merely holds reserved a slot; one stream opened and closed puts any libp2p node there")
 	}
 	if acl.AllowReserve(stranger, nil) {
 		t.Error("an unknown peer reserved a slot: the server is an open relay for the whole internet")
 	}
-	if !acl.AllowConnect(known, nil, other) {
-		t.Error("a connection between two known peers was refused")
+	if !acl.AllowConnect(greeted, nil, other) {
+		t.Error("a connection between two greeted peers was refused")
 	}
-	if acl.AllowConnect(known, nil, stranger) {
-		t.Error("a known peer was allowed to tunnel to an unknown destination")
+	if acl.AllowConnect(greeted, nil, held) {
+		t.Error("a greeted peer was allowed to tunnel to a peer that never said hello")
 	}
-	if acl.AllowConnect(stranger, nil, known) {
-		t.Error("an unknown peer was allowed to tunnel to a known destination")
+	if acl.AllowConnect(stranger, nil, greeted) {
+		t.Error("an unknown peer was allowed to tunnel to a greeted destination")
+	}
+
+	// A greeting older than peer_expiry no longer counts.
+	peer_greetings_lock.Lock()
+	peer_greetings[greeted.String()] = now() - peer_expiry - 1
+	peer_greetings_lock.Unlock()
+	if acl.AllowReserve(greeted, nil) {
+		t.Error("a greeting older than peer_expiry still admitted the peer")
+	}
+}
+
+// TestPeerGreetingsAreBounded: ids are free to mint and a hello costs only a
+// connection, so the record drops its oldest entry at the bound rather than
+// growing.
+func TestPeerGreetingsAreBounded(t *testing.T) {
+	relay_test_greetings(t)
+	peer_greetings_lock.Lock()
+	for i := 0; i < peer_greetings_maximum; i++ {
+		peer_greetings[fmt.Sprintf("greeted-%d", i)] = now() - int64(peer_greetings_maximum-i)
+	}
+	peer_greetings_lock.Unlock()
+
+	peer_greet("one-more")
+	peer_greetings_lock.Lock()
+	size := len(peer_greetings)
+	_, oldest := peer_greetings["greeted-0"]
+	_, newest := peer_greetings["one-more"]
+	peer_greetings_lock.Unlock()
+	if size != peer_greetings_maximum {
+		t.Errorf("the record holds %d greetings, want its bound %d", size, peer_greetings_maximum)
+	}
+	if oldest {
+		t.Error("the oldest greeting survived a new one at the bound")
+	}
+	if !newest {
+		t.Error("the new greeting was not recorded")
+	}
+}
+
+// TestRelayProbeAdmitsAMochiServer: a peer with no greeting on record is asked
+// for a hello over its connection when it asks the relay for something. A
+// Mochi server answers and is admitted; a libp2p node that does not speak
+// /mochi/2 is refused.
+func TestRelayProbeAdmitsAMochiServer(t *testing.T) {
+	setup_peer_discovery_test(t)
+	relay_test_greetings(t)
+	host := func() p2p_host.Host {
+		h, err := p2p.New(p2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+		if err != nil {
+			t.Fatalf("test host: %v", err)
+		}
+		t.Cleanup(func() { h.Close() })
+		return h
+	}
+	relay, mochi, plain := host(), host(), host()
+	mochi.SetStreamHandler(protocol_messages, receive_messages)
+
+	saved_me, saved_id := net_me, net_id
+	net_me, net_id = relay, relay.ID().String()
+	t.Cleanup(func() { net_me, net_id = saved_me, saved_id })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, h := range []p2p_host.Host{mochi, plain} {
+		if err := relay.Connect(ctx, p2p_peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()}); err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+	}
+
+	acl := relay_access{}
+	if !acl.AllowReserve(mochi.ID(), nil) {
+		t.Fatal("a Mochi server that answers the probe was refused a reservation")
+	}
+	if !peer_greeted(mochi.ID().String()) {
+		t.Error("the probe's hello was not recorded, so the server is probed on every request")
+	}
+	if acl.AllowReserve(plain.ID(), nil) {
+		t.Error("a libp2p node that does not speak /mochi/2 was admitted")
+	}
+}
+
+// TestNetRelayCandidatesPrefersConfiguredRelays is #160. AutoRelay reserves on
+// candidates picked at random, so while enough configured relays are reachable
+// and announce a relay with room, an announced relay must not be offered at
+// all; one is offered only to make up for a configured relay that is full,
+// unreachable or running no relay.
+func TestNetRelayCandidatesPrefersConfiguredRelays(t *testing.T) {
+	setup_peer_discovery_test(t)
+	reset_peer_reachability(t)
+
+	first, _ := test_host(t)
+	second, _ := test_host(t)
+	saved := peers_bootstrap
+	peers_bootstrap = []Peer{
+		{ID: first, addresses: []PeerAddress{{Address: "/ip4/198.51.100.11/tcp/1443/p2p/" + first}}},
+		{ID: second, addresses: []PeerAddress{{Address: "/ip4/198.51.100.12/tcp/1443/p2p/" + second}}},
+	}
+	t.Cleanup(func() { peers_bootstrap = saved })
+	peer_relay_seen(first, 0)
+	peer_relay_seen(second, 0)
+	var announced []string
+	for i := 0; i < 3; i++ {
+		id, _ := test_host(t)
+		peer_discovered_address(id, fmt.Sprintf("/ip4/203.0.113.%d/tcp/1443/p2p/%s", 20+i, id))
+		peer_relay_seen(id, 0)
+		announced = append(announced, id)
+	}
+
+	offered := func() map[string]bool {
+		got := map[string]bool{}
+		for ai := range net_relay_candidates(context.Background(), relay_candidates_maximum) {
+			got[ai.ID.String()] = true
+		}
+		return got
+	}
+
+	got := offered()
+	if !got[first] || !got[second] {
+		t.Errorf("the configured relays were not both offered: %v", got)
+	}
+	for _, id := range announced {
+		if got[id] {
+			t.Errorf("THE POINT: an announced relay was offered while both configured relays had room")
+		}
+	}
+
+	// One configured relay full: exactly one announced relay makes up for it.
+	peer_relay_seen(second, 100)
+	got = offered()
+	extra := 0
+	for _, id := range announced {
+		if got[id] {
+			extra++
+		}
+	}
+	if !got[first] || extra != 1 || len(got) != 2 {
+		t.Errorf("with one configured relay full, offered %v: want the other configured relay and one announced", got)
+	}
+
+	// A configured relay running no relay this host has heard of does not
+	// count as one with room either.
+	peer_relays_lock.Lock()
+	delete(peer_relays, second)
+	peer_relays_lock.Unlock()
+	got = offered()
+	extra = 0
+	for _, id := range announced {
+		if got[id] {
+			extra++
+		}
+	}
+	if !got[first] || extra != 1 || len(got) != 2 {
+		t.Errorf("with one configured relay announcing none, offered %v: want the other configured relay and one announced", got)
+	}
+
+	// The other configured relay unreachable as well: two announced relays.
+	peers_lock.Lock()
+	peers[first] = Peer{ID: first, addresses: []PeerAddress{{Address: "/ip4/198.51.100.11/tcp/1443/p2p/" + first, Failure: 3}}}
+	peers_lock.Unlock()
+	got = offered()
+	extra = 0
+	for _, id := range announced {
+		if got[id] {
+			extra++
+		}
+	}
+	if extra != relay_wanted || len(got) != relay_wanted {
+		t.Errorf("with neither configured relay usable, offered %v: want %d announced", got, relay_wanted)
 	}
 }

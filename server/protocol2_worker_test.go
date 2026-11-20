@@ -11,12 +11,15 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
+	sl "go.starlark.net/starlark"
 )
 
 // reset_workers clears the global app_workers registry between tests so
@@ -43,6 +46,31 @@ func reset_workers(t *testing.T) {
 		if w.done != nil {
 			<-w.done
 		}
+	}
+}
+
+// workers_drain_test blocks until every worker's inbox is empty, so a test's
+// tmp_dir and mutated globals are not torn down mid-frame. Bounded by timeout
+// so a stuck worker cannot wedge the suite.
+func workers_drain_test(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Check both inbox depth AND any worker mid-handle. The
+		// in_flight counter catches the gap between "worker pulled
+		// the frame from inbox" and "worker called reply.ack/fail".
+		app_workers_lock.RLock()
+		quiet := true
+		for _, w := range app_workers {
+			if len(w.inbox) > 0 || w.in_flight.Load() != 0 {
+				quiet = false
+				break
+			}
+		}
+		app_workers_lock.RUnlock()
+		if quiet {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -142,6 +170,305 @@ func TestWorkerDispatchCreatesLazily(t *testing.T) {
 	workers, _ = worker_count()
 	if workers != 2 {
 		t.Errorf("dispatch to second key gives %d workers, want 2", workers)
+	}
+}
+
+// --- registry bounds (#124, #144, #145) --------------------------------
+
+// worker_fill installs n idle fixture workers with no goroutine behind them.
+func worker_fill(n int) {
+	app_workers_lock.Lock()
+	defer app_workers_lock.Unlock()
+	for i := 0; i < n; i++ {
+		key := user_app_key{user: "fill", app: "fill-" + i64toa(int64(i))}
+		app_workers[key] = &app_worker{user: key.user, app: key.app, inbox: make(chan *worker_frame, 1), stop: make(chan struct{})}
+	}
+}
+
+// A full registry refuses a new pair rather than growing: the backstop on
+// workers, whatever their keys.
+func TestWorkerRegistryRefusesPastItsCeiling(t *testing.T) {
+	worker_registry_reset(t)
+	worker_fill(worker_maximum)
+
+	wf := &worker_frame{frame: &Frame{Type: frame_type_message, ID: "x"}, reply: quiet_reply{}}
+	if worker_dispatch("new", "app", wf) {
+		t.Error("worker_dispatch created a worker past worker_maximum")
+	}
+	if worker_inbox_offer("new", "app", wf) {
+		t.Error("worker_inbox_offer created a worker past worker_maximum")
+	}
+	if workers, _ := worker_count(); workers != worker_maximum {
+		t.Errorf("%d workers, want the ceiling of %d", workers, worker_maximum)
+	}
+
+	// The receiver answers the refusal as a full buffer, which its sender
+	// retries later.
+	test_service(t, "full", "arrive", func(*Event) {})
+	r := &Receiver{peer: "12D3KooWFull", replies: make(chan *Frame, 4), claimed: map[string]bool{}}
+	r.dispatch_message(&Frame{Type: frame_type_message, ID: "full-1", Service: "full", Event: "arrive"})
+	select {
+	case f := <-r.replies:
+		if f.Type != frame_type_fail || f.Reason != fail_buffer_full {
+			t.Errorf("a frame refused a worker was answered %s %q, want fail %q", f.Type, f.Reason, fail_buffer_full)
+		}
+	case <-time.After(time.Second):
+		t.Error("a frame refused a worker was not answered")
+	}
+}
+
+// An abandoned Starlark call says when it has really ended, for the worker that
+// must not run the next handler beside it.
+func TestStarlarkAbandonmentSaysWhenTheCallEnds(t *testing.T) {
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
+		starlark_default_timeout = 90 * time.Second
+	}
+	original := starlark_cancel_grace
+	starlark_cancel_grace = 20 * time.Millisecond
+	t.Cleanup(func() { starlark_cancel_grace = original })
+	release := make(chan struct{})
+	stuck := sl.NewBuiltin("stuck", func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error) {
+		<-release
+		return sl.None, nil
+	})
+	s := &Starlark{thread: &sl.Thread{Name: "test"}, globals: sl.StringDict{"stuck": stuck}, timeout: 50 * time.Millisecond}
+	_, err := s.call("stuck", nil)
+	var abandoned *starlark_abandonment
+	if !errors.As(err, &abandoned) || !errors.Is(err, starlark_abandoned) {
+		t.Fatalf("THE POINT: an abandoned call answered %v", err)
+	}
+	select {
+	case <-abandoned.finished:
+		t.Fatal("THE POINT: the call said it had ended while still stuck")
+	default:
+	}
+	close(release)
+	select {
+	case <-abandoned.finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("THE POINT: the call never said it had ended")
+	}
+}
+
+// The receiver keys a frame's worker on the app it resolves to, not on the
+// service the peer names: two services one app declares share one worker, so
+// their frames serialise, and a service no app takes creates none.
+func TestWorkerKeyedOnTheResolvedApp(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+	gate := make(chan struct{})
+	defer close(gate)
+	test_service(t, "keyapp", "arrive", func(*Event) { <-gate })
+	internal_services_add(t, "keyalias", "keyapp")
+	recipient, _ := new_entity_keys(t)
+
+	r := &Receiver{peer: "12D3KooWKeyed", replies: make(chan *Frame, 64), claimed: map[string]bool{}}
+	for i, service := range []string{"keyapp", "keyalias"} {
+		r.dispatch_message(&Frame{Type: frame_type_message, ID: "keyed-" + i64toa(int64(i)), To: recipient, Service: service, Event: "arrive"})
+	}
+	user := user_owning_entity(recipient)
+	app_workers_lock.RLock()
+	_, keyed := app_workers[user_app_key{user: user.UID, app: "keyapp"}]
+	count := len(app_workers)
+	app_workers_lock.RUnlock()
+	if !keyed || count != 1 {
+		t.Errorf("THE POINT: two services of one app made %d workers (keyed on the app: %v), want one keyed on the app", count, keyed)
+	}
+
+	// Services no app takes: refused, and no worker for any of them.
+	for i := 0; i < 50; i++ {
+		r.dispatch_message(&Frame{Type: frame_type_message, Service: "minted-" + i64toa(int64(i))})
+	}
+	if workers, _ := worker_count(); workers != 1 {
+		t.Errorf("THE POINT: peer-chosen services made %d workers", workers)
+	}
+	refused := 0
+	for len(r.replies) > 0 {
+		if f := <-r.replies; f.Type == frame_type_fail && f.Reason == fail_unsupported {
+			refused++
+		}
+	}
+	if refused != 50 {
+		t.Errorf("%d of 50 frames for no app refused unsupported", refused)
+	}
+}
+
+// internal_services_add binds one more service name to an internal app.
+func internal_services_add(t *testing.T, service, id string) {
+	t.Helper()
+	apps_lock.Lock()
+	a := apps[id]
+	apps_lock.Unlock()
+	a.service(service)
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		delete(internal_services, service)
+		apps_lock.Unlock()
+		resolution_invalidate()
+	})
+	resolution_invalidate()
+}
+
+// A self-loop frame takes the worker a remote frame for the same user and app
+// does, so the two serialise: both the queue's fast path and the direct one.
+func TestWorkerSelfLoopSharesTheRemoteKey(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+	gate := make(chan struct{})
+	defer close(gate)
+	test_service(t, "loopapp", "arrive", func(*Event) { <-gate })
+	internal_services_add(t, "loopalias", "loopapp")
+	recipient, _ := new_entity_keys(t)
+	user := user_owning_entity(recipient)
+
+	// The local paths name the app by another of its services.
+	install_queue_dispatch_row(t, "loop-1", net_id, "", nil)
+	queue_send_self_loop_fast(&QueueEntry{ID: "loop-1", Target: net_id, ToEntity: recipient, Service: "loopalias", Event: "arrive"})
+	message_self_loop_dispatch(&Message{ID: "loop-2", To: recipient, Service: "loopalias", Event: "arrive", target: net_id}, nil)
+	r := &Receiver{peer: "12D3KooWLoop", replies: make(chan *Frame, 4), claimed: map[string]bool{}}
+	r.dispatch_message(&Frame{Type: frame_type_message, ID: "loop-3", To: recipient, Service: "loopapp", Event: "arrive"})
+
+	app_workers_lock.RLock()
+	w := app_workers[user_app_key{user: user.UID, app: "loopapp"}]
+	count := len(app_workers)
+	app_workers_lock.RUnlock()
+	if w == nil || count != 1 {
+		t.Fatalf("THE POINT: %d workers, keyed on the app: %v; local and remote frames for one app must share one", count, w != nil)
+	}
+	// One frame with the handler, the other two behind it in the one inbox.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(w.inbox) != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(w.inbox) != 2 {
+		t.Errorf("THE POINT: %d frames wait behind the running one, want the other two paths' frames", len(w.inbox))
+	}
+}
+
+// A dispatcher that has looked a worker up has stamped it used under the
+// registry lock, so the reaper's check under the write lock sees it and does
+// not retire the worker the frame is about to reach.
+func TestWorkerLookupStampsBeforeTheReaperLooks(t *testing.T) {
+	worker_registry_reset(t)
+	key := user_app_key{user: "u", app: "a"}
+	worker_create(key)
+	app_workers_lock.RLock()
+	w := app_workers[key]
+	app_workers_lock.RUnlock()
+	w.last_used.Store(0)
+	t.Cleanup(func() {
+		select {
+		case <-w.stop:
+		default:
+			close(w.stop)
+		}
+	})
+
+	if worker_find(key) != w {
+		t.Fatal("control: the worker was not found")
+	}
+	worker_reap(now() - int64(peer_worker_idle_seconds()))
+	app_workers_lock.RLock()
+	_, kept := app_workers[key]
+	app_workers_lock.RUnlock()
+	if !kept {
+		t.Error("THE POINT: the reaper retired a worker a dispatcher had just looked up")
+	}
+}
+
+// A retired worker whose inbox still has room is never chosen: the send and
+// `done` were both ready, and Go picks either, so a frame could land in an
+// inbox nothing reads.
+func TestWorkerDispatchSkipsARetiredWorker(t *testing.T) {
+	// The frames reach the workers made in place of the retired ones, whose
+	// routing reads the databases.
+	setup_replication_test(t)
+	worker_registry_reset(t)
+	t.Cleanup(func() { reset_workers(t) })
+	for round := 0; round < 32; round++ {
+		key := user_app_key{user: "u", app: "retired-" + i64toa(int64(round))}
+		dead := &app_worker{user: key.user, app: key.app, inbox: make(chan *worker_frame, 4), stop: make(chan struct{}), done: make(chan struct{})}
+		close(dead.done)
+		app_workers_lock.Lock()
+		app_workers[key] = dead
+		app_workers_lock.Unlock()
+		// The reaper's delete lands just after the dispatcher's lookup.
+		go func() {
+			time.Sleep(time.Millisecond)
+			app_workers_lock.Lock()
+			delete(app_workers, key)
+			app_workers_lock.Unlock()
+		}()
+		worker_dispatch(key.user, key.app, &worker_frame{frame: &Frame{Type: frame_type_message, ID: "x"}, reply: quiet_reply{}})
+		if len(dead.inbox) != 0 {
+			t.Fatalf("THE POINT: round %d: the frame went to a retired worker's inbox", round)
+		}
+	}
+}
+
+// A worker whose handler is still running is not retired, however long ago it
+// picked the frame up: a new worker for the same pair would run its next
+// handler beside it.
+func TestWorkerReaperSparesARunningHandler(t *testing.T) {
+	worker_registry_reset(t)
+	key := user_app_key{user: "u", app: "busy"}
+	worker_create(key)
+	app_workers_lock.RLock()
+	w := app_workers[key]
+	app_workers_lock.RUnlock()
+	t.Cleanup(func() {
+		w.in_flight.Store(0)
+		worker_reap(now() + 1)
+	})
+	w.last_used.Store(0)
+	w.in_flight.Store(1)
+
+	worker_reap(now())
+	app_workers_lock.RLock()
+	_, kept := app_workers[key]
+	app_workers_lock.RUnlock()
+	if !kept {
+		t.Error("THE POINT: the reaper retired a worker in the middle of a handler")
+	}
+}
+
+// A handler Starlark gave up on is still running; the worker holds the next
+// frame until it has really ended.
+func TestWorkerWaitsOutAnAbandonedHandler(t *testing.T) {
+	finished := make(chan struct{})
+	abandoned := &starlark_abandonment{err: fmt.Errorf("starlark: timeout: %w", starlark_abandoned), finished: finished}
+	returned := make(chan struct{})
+	go func() {
+		worker_await(fmt.Errorf("wrapped: %w", abandoned))
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		t.Fatal("THE POINT: the worker moved on while the abandoned handler still ran")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(finished)
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the worker did not move on once the handler ended")
+	}
+
+	// Any other failure does not hold it.
+	done := make(chan struct{})
+	go func() {
+		worker_await(errors.New("unknown service"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an ordinary failure held the worker")
 	}
 }
 
@@ -692,28 +1019,63 @@ func TestQueueReplyToleratesPanicInUnderlyingDB(t *testing.T) {
 
 func TestWorkerFailureReasonMapping(t *testing.T) {
 	cases := []struct {
-		errmsg string
-		want   string
+		err  error
+		want string
 	}{
-		{"unknown user \"x\"", fail_unknown_user},
-		{"unknown service \"svc\"", fail_unsupported},
-		{"unknown event \"e\"", fail_unsupported},
-		{"no handler for event \"e\"", fail_unsupported},
-		{"handler panic: oops", fail_handler_panic},
-		// Deterministic authorization rejections drop (must not retry forever
-		// — the stuck _attachment/* self-loop bug).
-		{"sender does not handle service \"wikis\"", fail_unsupported},
-		{"something else entirely", fail_transient},
-		{"", ""},
+		{event_refuse(fail_unknown_user, "unknown user %q", "x"), fail_unknown_user},
+		{event_refuse(fail_unsupported, "unknown service %q", "svc"), fail_unsupported},
+		// A refusal keeps its reason through wrapping.
+		{fmt.Errorf("routing: %w", event_refuse(fail_unsupported, "sender services not allowed")), fail_unsupported},
+		{error_string("Starlark app function \"f\" not found"), fail_unsupported},
+		{error_string("handler panic: oops"), fail_handler_panic},
+		// The wording of a refusal decides nothing: only its type does.
+		{error_string("unknown user \"x\""), fail_transient},
+		{error_string("something else entirely"), fail_transient},
+		{nil, ""},
 	}
 	for _, c := range cases {
-		var err error
-		if c.errmsg != "" {
-			err = error_string(c.errmsg)
+		if got := worker_failure_reason(c.err); got != c.want {
+			t.Errorf("worker_failure_reason(%v): got %q, want %q", c.err, got, c.want)
 		}
-		got := worker_failure_reason(err)
-		if got != c.want {
-			t.Errorf("worker_failure_reason(%q): got %q, want %q", c.errmsg, got, c.want)
+	}
+}
+
+// TestRouteRefusalsNoRetryChangesAreDropped is #2109: Event.route's refusals
+// of a sender's app or services, and of an event for a database app with no
+// user, cannot change on a retry, but the worker answered them fail_transient,
+// so the sender retried each for seven days instead of dropping it and telling
+// the app.
+func TestRouteRefusalsNoRetryChangesAreDropped(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	recipient, _ := new_entity_keys(t)
+	sender := test_entity_id('r')
+
+	a := app("refusalapp")
+	a.service("refusalapp")
+	apps_lock.Lock()
+	// Only another app may send the one; the other wants a sender handling
+	// its service, which this sender does not say it does.
+	a.internal.Events["restricted"] = AppEvent{internal_function: func(*Event) {}, Apps: []any{"someotherapp"}}
+	a.internal.Events["services"] = AppEvent{internal_function: func(*Event) {}, Services: []string{"."}}
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		delete(apps, "refusalapp")
+		delete(internal_services, "refusalapp")
+		apps_lock.Unlock()
+		resolution_invalidate()
+	})
+	resolution_invalidate()
+
+	for _, event := range []string{"restricted", "services"} {
+		e := &Event{id: event_id(), from: sender, to: recipient, service: "refusalapp", event: event, sender_app: "refusalapp"}
+		err := e.route()
+		if err == nil {
+			t.Fatalf("control: %q was not refused", event)
+		}
+		if reason := worker_failure_reason(err); fail_retryable(reason) {
+			t.Errorf("THE POINT: route's refusal of %q (%v) answered %q, which the sender retries for seven days", event, err, reason)
 		}
 	}
 }

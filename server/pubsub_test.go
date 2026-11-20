@@ -8,10 +8,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	p2p "github.com/libp2p/go-libp2p"
+	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
 // TestMessageSeenMarkAtomic: with concurrent receivers sharing the dedup map,
@@ -27,7 +34,7 @@ func TestMessageSeenMarkAtomic(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if !message_seen_mark(id) {
+			if !message_seen_mark(id, "peer") {
 				processed.Add(1)
 			}
 		}()
@@ -248,5 +255,97 @@ func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	pubsub_receive(directory_announcement(t, test_entry(t, entity, ek, peer, hk, "Expired", 300, 50, base+2), ek, i64toa(now()-1)), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("expired v300 frame was applied: name=%q version=%d, want Alice Smith/200", name, ver)
+	}
+}
+
+// pubsub_test_topic joins a real GossipSub topic on a fresh host and makes it
+// net_pubsub for the rest of the test.
+func pubsub_test_topic(t *testing.T) *p2p_pubsub.Topic {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h, err := p2p.New(p2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatalf("test host: %v", err)
+	}
+	t.Cleanup(func() { h.Close() })
+	gs, err := p2p_pubsub.NewGossipSub(ctx, h, p2p_pubsub.WithMaxMessageSize(pubsub_maximum))
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic, err := gs.Join(pubsub_topic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := net_pubsub
+	net_pubsub = topic
+	t.Cleanup(func() { net_pubsub = saved })
+	return topic
+}
+
+// TestPubsubPublishReportsWhatDidNotGo is #157. The size check used the 16 MB
+// frame limit while GossipSub carries 1 MiB, and Publish's error was dropped:
+// an announcement in between, or any failed publish, counted as sent and had
+// its queue row deleted.
+func TestPubsubPublishReportsWhatDidNotGo(t *testing.T) {
+	protocol2_init()
+	topic := pubsub_test_topic(t)
+
+	before := pubsub_published.Load()
+	oversized := cbor_encode(map[string]any{"blob": strings.Repeat("x", pubsub_maximum)})
+	if err := pubsub_publish("", "directory", "publish", uid(), oversized); err != nil {
+		t.Errorf("an announcement over the size GossipSub carries answered %v; refused for good, it has nothing to retry", err)
+	}
+	if pubsub_published.Load() != before {
+		t.Error("THE POINT: an announcement over the size GossipSub carries was counted as published")
+	}
+
+	if err := pubsub_publish("", "directory", "publish", uid(), cbor_encode(map[string]any{"name": "small"})); err != nil {
+		t.Fatalf("control: a small announcement failed: %v", err)
+	}
+	if pubsub_published.Load() != before+1 {
+		t.Error("control: a published announcement was not counted")
+	}
+
+	topic.Close()
+	if err := pubsub_publish("", "directory", "publish", uid(), cbor_encode(map[string]any{"name": "small"})); err == nil {
+		t.Error("THE POINT: a publish that failed reported success, so its queue row is deleted as sent")
+	}
+	if pubsub_published.Load() != before+1 {
+		t.Error("a failed publish was counted")
+	}
+}
+
+// TestNetGossipSubSizeIsPubsubMaximum pins the router's limit to the constant
+// pubsub_publish checks against: the check is only right while they agree.
+func TestNetGossipSubSizeIsPubsubMaximum(t *testing.T) {
+	source, err := os.ReadFile("net.go")
+	if err != nil {
+		t.Fatalf("reading net.go: %v", err)
+	}
+	if !strings.Contains(string(source), "p2p_pubsub.WithMaxMessageSize(pubsub_maximum)") {
+		t.Error("net.go no longer sets the GossipSub message size from pubsub_maximum")
+	}
+}
+
+// TestPubsubReadEndsWithItsSubscription is #2106: a read error was logged and
+// the loop went straight round, so an ended subscription spun a core and mailed
+// the administrator on every turn.
+func TestPubsubReadEndsWithItsSubscription(t *testing.T) {
+	topic := pubsub_test_topic(t)
+	subscription, err := topic.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		pubsub_read(subscription)
+	}()
+	subscription.Cancel()
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("THE POINT: the read loop carried on after its subscription ended")
 	}
 }

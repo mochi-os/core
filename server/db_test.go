@@ -1620,3 +1620,18 @@ func TestDbWalWatchdogReclaimsTransientStrikesStarved(t *testing.T) {
 		t.Fatalf("after reader released, WAL must reclaim and strike clear; got %d", strikes())
 	}
 }
+
+// TestExistsReportsAFailedRead is #131's cause: exists answered (false, nil)
+// when the row could not be read, since Next reports false for an error as for
+// no row, and callers took a failed read for an absent one - queue_screen
+// deleted queued messages as from deleted entities.
+func TestExistsReportsAFailedRead(t *testing.T) {
+	db := create_test_db(t)
+	found, err := db.exists("select abs(-9223372036854775807 - 1)")
+	if err == nil {
+		t.Errorf("THE POINT: a read that failed answered found=%v with no error", found)
+	}
+	if found, err := db.exists("select 1 where 0"); found || err != nil {
+		t.Errorf("control: no row answered %v, %v", found, err)
+	}
+}

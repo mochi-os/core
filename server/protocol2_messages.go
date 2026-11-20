@@ -34,7 +34,65 @@ const (
 	// one ack frame; smaller depth = smaller batches but less risk of
 	// stalling workers when the writer is busy.
 	receiver_replies_buffer = 256
+
+	// receiver_acks_maximum — ids in one ack frame. Batches are split here so
+	// an ack stays well inside frame_control_maximum, which the far side's
+	// frame_read holds every frame but a message to.
+	receiver_acks_maximum = 256
+
+	// receiver_streams_maximum — inbound messages streams kept per peer. A
+	// sender runs one; the second covers it reconnecting before its old stream
+	// is noticed dead. A stream past it resets the peer's oldest. libp2p is
+	// held one above (net_start), so the stream that resets the oldest arrives.
+	receiver_streams_maximum = 2
+
+	// receiver_drain_timeout — how long a Receiver told bye waits for the
+	// replies of the messages it has handed to workers, and for the writer to
+	// send what is queued, before it closes.
+	receiver_drain_timeout = 5 * time.Second
 )
+
+// receivers holds each peer's open inbound messages streams, oldest first.
+var (
+	receivers      = map[string][]*Receiver{}
+	receivers_lock sync.Mutex
+)
+
+// receivers_add records r as one of its peer's streams, resetting the peer's
+// oldest when that takes it past receiver_streams_maximum.
+func receivers_add(r *Receiver) {
+	receivers_lock.Lock()
+	open := append(receivers[r.peer], r)
+	var oldest *Receiver
+	if len(open) > receiver_streams_maximum {
+		oldest = open[0]
+		open = open[1:]
+	}
+	receivers[r.peer] = open
+	receivers_lock.Unlock()
+	if oldest != nil {
+		info("Messages: peer=%q has over %d streams open; resetting its oldest, session=%s", r.peer, receiver_streams_maximum, oldest.session)
+		oldest.stream.Reset()
+	}
+}
+
+// receivers_remove forgets r once its stream has ended.
+func receivers_remove(r *Receiver) {
+	receivers_lock.Lock()
+	defer receivers_lock.Unlock()
+	open := receivers[r.peer]
+	for i, other := range open {
+		if other == r {
+			open = append(open[:i:i], open[i+1:]...)
+			break
+		}
+	}
+	if len(open) == 0 {
+		delete(receivers, r.peer)
+		return
+	}
+	receivers[r.peer] = open
+}
 
 // receiver_codecs returns the codecs this build supports as a receiver
 // for the hello advertisement. zstd is always implicit (every receiver
@@ -65,23 +123,29 @@ type Receiver struct {
 	peer      string
 	stream    wire_stream
 	session   string
-	challenge []byte   // ours, in hello; the sender signs it to claim its entities
-	offered   []byte   // the sender's, from caps; we sign it to prove ours
-	codecs    []string // sender's advertised codecs from caps
-	features  []string // sender's advertised features from caps
+	challenge []byte // ours, in hello; the sender signs it to claim its entities
+	offered   []byte // the sender's, from caps; we sign it to prove ours
 	caps_seen atomic.Bool
 	replies   chan *Frame
 	claimed   map[string]bool
 	lock      sync.Mutex // guards claimed
 	closed    atomic.Bool
-	done      chan struct{} // closed at end-of-stream; write_replies exits on it
+	done      chan struct{} // closed at end-of-stream; write_replies drains what is queued and exits on it
+	written   chan struct{} // closed by write_replies as it exits; nil when nothing waits on it
+
+	// outstanding counts the replies owed for messages handed to workers, or
+	// waiting on another copy's outcome, and not yet answered: what a sender
+	// that says bye is waiting for.
+	outstanding atomic.Int64
 
 	// Budgets for the frames that cost this host work before the sender has
 	// sent anything. Touched only from the reader goroutine, so unguarded.
 	claims      int
 	proves      int
-	undecodable int  // message frames answered for not decoding (refuse)
-	ready       bool // a message frame has arrived; the read deadline rolls per frame
+	proved      map[string]bool // entities this stream proved: true until a message to it backs the proof
+	undecodable int             // message frames answered for not decoding (refuse)
+	ready       bool            // a message frame has arrived; the read deadline rolls per frame
+	delivered   bool            // a message has been handed to a worker
 }
 
 // wire_deadline is the part of a real libp2p stream that bounds a read. The
@@ -134,8 +198,14 @@ func receive_messages_guarded(s p2p_network.Stream) {
 		challenge: challenge,
 		replies:   make(chan *Frame, receiver_replies_buffer),
 		done:      make(chan struct{}),
+		written:   make(chan struct{}),
 		claimed:   map[string]bool{},
 	}
+
+	// One sender needs one stream; a peer holding more is holding slots of a
+	// protocol whose inbound limit every other server shares.
+	receivers_add(r)
+	defer receivers_remove(r)
 
 	if err := hello_write(s, 2, session, challenge, receiver_codecs(), receiver_features()); err != nil {
 		info("Messages: hello write failed for peer %q session=%s: %v", peer, session, err)
@@ -144,8 +214,8 @@ func receive_messages_guarded(s p2p_network.Stream) {
 	}
 	debug("Messages: stream open peer=%q session=%s", peer, session)
 
-	// Spawn the reply writer; it lives until the replies channel
-	// closes (the reader signals end-of-stream by closing replies).
+	// Spawn the reply writer; it lives until `done` closes, then writes what is
+	// queued and exits.
 	go r.write_replies()
 
 	// Bound the phase before the first message the way /mochi/2/stream bounds the
@@ -153,9 +223,11 @@ func receive_messages_guarded(s p2p_network.Stream) {
 	// this host a verify per claim and a signature per prove.
 	r.deadline(time.Now().Add(messages_ready_timeout))
 
-	// Reader runs inline; on return we close the stream and let the
-	// reply writer drain whatever remains.
-	r.read_loop()
+	// Reader runs inline. A sender says bye to collect the replies to what it
+	// has sent: those of messages still with their workers are waited for.
+	if r.read_loop() {
+		r.drain(receiver_drain_timeout)
+	}
 
 	r.closed.Store(true)
 	// `done`, not `replies`. Workers check closed then select a send on
@@ -163,20 +235,50 @@ func receive_messages_guarded(s p2p_network.Stream) {
 	// handler recover reported as fail_handler_panic - a warn with a stack,
 	// which mails the admin, blaming an app that did nothing wrong.
 	close(r.done)
+	// The writer sends what is queued before the stream closes under it.
+	select {
+	case <-r.written:
+	case <-time.After(receiver_drain_timeout):
+	}
 	s.Close()
 	debug("Messages: stream closed peer=%q session=%s", peer, session)
 
-	peer_discovered_address(peer, s.Conn().RemoteMultiaddr().String()+"/p2p/"+peer)
+	// A registry entry follows evidence of a Mochi server: a claim that
+	// verified or a message a handler took. Any libp2p node can open a stream
+	// and close it again.
+	r.lock.Lock()
+	claimed := len(r.claimed) > 0
+	r.lock.Unlock()
+	if claimed || r.delivered {
+		peer_observed(peer, s.Conn())
+	}
+}
+
+// drain waits, up to timeout, for every reply owed on the stream to have been
+// answered (outstanding), the writer still running.
+func (r *Receiver) drain(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for r.outstanding.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// awaiting is the reply target for a message this stream owes a reply,
+// counted in outstanding until it is answered.
+func (r *Receiver) awaiting(id string) stream_reply {
+	r.outstanding.Add(1)
+	return stream_reply{receiver: r, message: id}
 }
 
 // read_loop reads frames from the stream until end-of-stream or a
-// fatal framing error. Caps MUST be the first frame from the sender;
-// non-caps before caps closes the stream.
-func (r *Receiver) read_loop() {
+// fatal framing error, and reports whether it ended on the sender's bye.
+// Caps MUST be the first frame from the sender; non-caps before caps closes
+// the stream.
+func (r *Receiver) read_loop() bool {
 	for {
 		f, err := frame_read(r.stream)
 		if errors.Is(err, io.EOF) {
-			return
+			return false
 		}
 		var undecodable *frame_undecodable
 		if errors.As(err, &undecodable) && r.refuse(undecodable) {
@@ -188,7 +290,7 @@ func (r *Receiver) read_loop() {
 		if err != nil {
 			info("Messages: framing error peer=%q session=%s: %v", r.peer, r.session, err)
 			r.stream.Reset()
-			return
+			return false
 		}
 		// Rolling idle bound once the stream is established. Clearing the
 		// deadline for good meant one message bought a stream - and its two
@@ -200,10 +302,8 @@ func (r *Receiver) read_loop() {
 			if f.Type != frame_type_caps {
 				info("Messages: protocol violation peer=%q session=%s — first frame was %q, want caps", r.peer, r.session, f.Type)
 				r.stream.Reset()
-				return
+				return false
 			}
-			r.codecs = f.Codecs
-			r.features = f.Features
 			// The opener's challenge, which this host signs to prove it
 			// holds an entity the sender addresses. Mandatory, same as on
 			// /mochi/2/stream — a sender must not be able to skip being
@@ -211,14 +311,15 @@ func (r *Receiver) read_loop() {
 			if err := frame_reject_challenge(f.Challenge); err != nil {
 				info("Messages: caps challenge rejected peer=%q session=%s: %v", r.peer, r.session, err)
 				r.stream.Reset()
-				return
+				return false
 			}
 			r.offered = f.Challenge
 			r.caps_seen.Store(true)
+			peer_greet(r.peer)
 			continue
 		}
 		if !r.handle(f) {
-			return
+			return f.Type == frame_type_bye
 		}
 	}
 }
@@ -230,26 +331,25 @@ func (r *Receiver) read_loop() {
 // answered, only after caps, and at most messages_undecodable_maximum a
 // stream; anything else resets the stream as any framing error does.
 //
-// Only a body cbor_decode_mode does not hold well formed is refused: one over a
-// cap on array elements, map pairs or nesting, or not CBOR at all. That is
-// what a sender's frame_check stops, so no receiver will ever take it, and the
-// sender may as well drop it now. A body that is well formed but will not
-// decode into a Frame - a field of a type this build does not expect - is
-// version skew, not the message: the stream resets as before, the sender
-// retries, and the message arrives once this side understands it.
+// Only a body this host will not decode is refused: one over a cap on array
+// elements, map pairs, nesting or data items, or not CBOR at all. That is what
+// a sender's frame_check stops, so no receiver will ever take it, and the
+// sender may as well drop it now. A body that passes them but will not decode
+// into a Frame - a field of a type this build does not expect - is version
+// skew, not the message: the stream resets as before, the sender retries, and
+// the message arrives once this side understands it.
 //
-// A refused message is still a message for the per-stream budgets, as handle
-// counts one: the sender backs a prove with every message it writes, and a
-// claim the message used is one the peer did work for.
+// A refused message backs a prove as handle's messages do (Receiver.back), the
+// rule the sender counts by. It is handed to no handler, so it returns no claim.
 func (r *Receiver) refuse(failure *frame_undecodable) bool {
 	if !r.caps_seen.Load() {
 		return false
 	}
-	if cbor_decode_mode.Wellformed(failure.body) == nil {
+	if cbor_check(failure.body) == nil {
 		return false
 	}
 	head, ok := frame_identify(failure.body)
-	if !ok || head.Type != frame_type_message || head.ID == "" || !envelope_valid("", "", "", head.ID) {
+	if !ok || head.Type != frame_type_message || head.ID == "" || !envelope_valid("", "", "", head.ID, "", nil) || !envelope_target_valid(head.To) {
 		return false
 	}
 	r.undecodable++
@@ -257,17 +357,7 @@ func (r *Receiver) refuse(failure *frame_undecodable) bool {
 		info("Messages: too many undecodable messages peer=%q session=%s — over %d", r.peer, r.session, messages_undecodable_maximum)
 		return false
 	}
-	if r.proves > 0 {
-		r.proves--
-	}
-	if head.From != "" {
-		r.lock.Lock()
-		claimed := r.claimed[head.From]
-		r.lock.Unlock()
-		if claimed {
-			r.credit()
-		}
-	}
+	r.back(head.To)
 	// The read deadline then rolls to the idle window, in read_loop.
 	r.ready = true
 	info("Messages: refusing undecodable message %q peer=%q session=%s: %v", head.ID, r.peer, r.session, failure)
@@ -275,12 +365,27 @@ func (r *Receiver) refuse(failure *frame_undecodable) bool {
 	return true
 }
 
+// back returns one prove to the budget when a message is the first to an
+// entity this stream proved since that proof: what the proof was asked for. Any
+// message at all used to, so a peer alternating a prove with an empty message
+// had this host sign with its users' keys at wire speed. The sender counts by
+// the same rule (Sender.write_one), so the two budgets stay in step.
+func (r *Receiver) back(to string) {
+	if to == "" || !r.proved[to] {
+		return
+	}
+	r.proved[to] = false
+	if r.proves > 0 {
+		r.proves--
+	}
+}
+
 // handle dispatches one inbound frame. Returns false to terminate the
 // read loop (used by `bye` and protocol violations).
 func (r *Receiver) handle(f *Frame) bool {
 	// Checked before anything keys a map on Frame.Service or Frame.ID. A peer
 	// sending a malformed envelope gets the stream closed, not a frame failure.
-	if !envelope_valid(f.From, f.Service, f.Event, f.ID) || !envelope_target_valid(f.To) {
+	if !envelope_valid(f.From, f.Service, f.Event, f.ID, f.FromApp, f.Services) || !envelope_target_valid(f.To) {
 		info("Messages: protocol violation peer=%q session=%s — malformed envelope (service=%d bytes, id=%d bytes)",
 			r.peer, r.session, len(f.Service), len(f.ID))
 		r.stream.Reset()
@@ -329,12 +434,9 @@ func (r *Receiver) handle(f *Frame) bool {
 		return true
 
 	case frame_type_message:
-		// Every message backs one prove, a duplicate or one naming no sender
-		// included: the sending side counts each message it writes and cannot
-		// know which this side has seen.
-		if r.proves > 0 {
-			r.proves--
-		}
+		// Backs a prove whatever becomes of the message: the sending side
+		// counts each it writes and cannot know which this side delivers.
+		r.back(f.To)
 		if !r.ready {
 			r.ready = true
 			r.deadline(time.Now().Add(receiver_idle_timeout()))
@@ -372,28 +474,22 @@ func (r *Receiver) handle(f *Frame) bool {
 }
 
 // credit returns one claim budget once a message shows the peer is doing the
-// work that budget exists to gate. Floored at zero - it is an allowance for
-// claims the peer has not backed, not a running total. The prove budget comes
-// back for every message, where the frame is read.
+// work that budget exists to gate: a message from the claimed entity that a
+// handler takes, or a copy of one it took. Floored at zero - it is an allowance
+// for claims the peer has not backed, not a running total. A message that goes
+// nowhere returns nothing, or a peer alternating a claim for a minted entity
+// with junk from it grows `claimed` without limit.
 func (r *Receiver) credit() {
 	if r.claims > 0 {
 		r.claims--
 	}
 }
 
-// dispatch_message decodes one message frame, checks per-(stream,
-// entity) claim, decompresses content/data, and pushes onto the
-// per-(user, app) worker.
+// dispatch_message checks one message frame's claim, decides whether it can be
+// delivered (event_admit) and whether it is a copy of one already seen, and
+// pushes it onto the worker of the (user, app) it resolved to. Nothing is
+// marked, created or decompressed for a frame that cannot be delivered.
 func (r *Receiver) dispatch_message(f *Frame) {
-	// Fast path: a known duplicate acks without touching the claim or codec
-	// checks below. Read-only - the authoritative check-and-mark happens
-	// atomically at the dispatch commit point.
-	if f.ID != "" && message_seen(f.ID) {
-		debug("Messages: duplicate message %q, ack only peer=%q", f.ID, r.peer)
-		r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})
-		return
-	}
-
 	r.lock.Lock()
 	claimed := r.claimed[f.From]
 	r.lock.Unlock()
@@ -401,11 +497,42 @@ func (r *Receiver) dispatch_message(f *Frame) {
 		r.reply(&Frame{Type: frame_type_fail, Replies: []string{f.ID}, Reason: fail_unclaimed})
 		return
 	}
-	if claimed {
-		// The claim did the thing a claim is for, so its budget comes back.
-		// Without this a peer speaking for more entities than the cap loses
-		// delivery part-way through a session.
-		r.credit()
+	// Only a frame whose sender is proven takes or reads a dedup record: an id
+	// from no one may be anyone's, and marking it lets a peer with no
+	// credentials pre-empt or flush the records honest senders rely on.
+	tracked := claimed && f.ID != ""
+
+	// A copy of a message already settled is answered as the first was, even
+	// were it no longer deliverable: it was delivered.
+	if tracked {
+		switch state, reason := message_state(f.ID); state {
+		case message_applied:
+			r.credit()
+			r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+			return
+		case message_refused:
+			r.reply(&Frame{Type: frame_type_fail, Replies: []string{f.ID}, Reason: reason})
+			return
+		}
+	}
+
+	to, user, ok := target_resolve(f.To)
+	if !ok {
+		r.reply(&Frame{Type: frame_type_fail, Replies: []string{f.ID}, Reason: fail_unknown_user})
+		return
+	}
+	f.To = to
+	a, reason := event_admit(user, to, f.Service, f.Event, f.From)
+	if reason != "" {
+		r.reply(&Frame{Type: frame_type_fail, Replies: []string{f.ID}, Reason: reason})
+		return
+	}
+	if user != nil && claimed {
+		// Learn the claim-verified (sender entity, peer) pair into the
+		// recipient's directory — the routing memory that makes private
+		// entities deliverable (directory_user.go). The claim check
+		// above is the gate: f.From is proven, not just asserted.
+		directory_user_learn(user, f.From, r.peer)
 	}
 
 	// Decompress data/content per Codec. Decoded content is already
@@ -427,45 +554,59 @@ func (r *Receiver) dispatch_message(f *Frame) {
 		}
 	}
 
-	// The user we serve owns f.To. The worker key is the service name, not the app
-	// e.route() picks, so frames for the same logical app serialise.
-	to := f.To
-	if to != "" && valid(to, "fingerprint") {
-		if ent := entity_by_any(to); ent != nil {
-			to = ent.ID
-		}
-	}
-	user := ""
-	if to != "" {
-		if u := user_owning_entity(to); u != nil {
-			user = u.UID
-			// Learn the claim-verified (sender entity, peer) pair into the
-			// recipient's directory — the routing memory that makes private
-			// entities deliverable (directory_user.go). The claim check
-			// above is the gate: f.From is proven, not just asserted.
-			directory_user_learn(u, f.From, r.peer)
+	reply := r.awaiting(f.ID)
+	// Check and mark in one step immediately before handing off: worker_dispatch
+	// blocks on a full inbox, and a retry arriving in that gap applies twice. A
+	// copy arriving while the first still runs waits for its outcome: acked now,
+	// a later retryable failure of the first would lose the message.
+	if tracked {
+		switch state, reason := message_begin(f.ID, r.peer, reply); state {
+		case message_running:
+			if reason != "" {
+				reply.fail(reason)
+				return
+			}
+			debug("Messages: message %q is running, the copy waits peer=%q", f.ID, r.peer)
+			r.credit()
+			return
+		case message_applied:
+			r.credit()
+			reply.ack()
+			return
+		case message_refused:
+			reply.fail(reason)
+			return
 		}
 	}
 
-	// Check and mark in one step immediately before handing off: worker_dispatch
-	// blocks on a full inbox, and a retry arriving in that gap applies twice. Must
-	// stay after the claim and codec checks, whose failures ask for a retry.
-	if f.ID != "" && message_seen_mark(f.ID) {
-		debug("Messages: duplicate message %q, ack only peer=%q", f.ID, r.peer)
-		r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+	key := ""
+	if user != nil {
+		key = user.UID
+	}
+	wf := &worker_frame{
+		frame:  f,
+		peer:   r.peer, // sender's libp2p peer ID
+		user:   user,
+		reply:  reply,
+		marked: tracked,
+	}
+	if !worker_dispatch(key, a.id, wf) {
+		worker_fail(wf, fail_buffer_full)
 		return
 	}
-
-	worker_dispatch(user, f.Service, &worker_frame{
-		frame: f,
-		peer:  r.peer, // sender's libp2p peer ID
-		reply: stream_reply{receiver: r, message: f.ID},
-	})
+	r.delivered = true
+	if claimed {
+		// The claim did the thing a claim is for, so its budget comes back.
+		// Without this a peer speaking for more entities than the cap loses
+		// delivery part-way through a session.
+		r.credit()
+	}
 }
 
 // prove answers a `prove` demand for `entity`. fail_unknown_user means it is
 // not hosted here; fail_unproven means it is but the key is missing, which must
-// not be downgraded into serving the entity unauthenticated.
+// not be downgraded into serving the entity unauthenticated. A proof given is
+// recorded, for the message to the entity that backs it (Receiver.back).
 func (r *Receiver) prove(entity string) {
 	if entity == "" || !valid(entity, "entity") {
 		r.reply(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unknown_user})
@@ -481,6 +622,10 @@ func (r *Receiver) prove(entity string) {
 		r.reply(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unproven})
 		return
 	}
+	if r.proved == nil {
+		r.proved = map[string]bool{}
+	}
+	r.proved[entity] = true
 	r.reply(&Frame{Type: frame_type_claim, From: entity, Signature: signature})
 }
 
@@ -499,20 +644,13 @@ func (r *Receiver) reply(f *Frame) {
 
 // write_replies is the per-stream reply writer: block on the first frame, then
 // drain whatever is ready, coalescing acks into one frame. No timer - batches
-// grow naturally under load.
+// grow naturally under load. Once `done` closes it writes what is still queued,
+// so the replies a bye waited for are not left in the channel, and exits.
 func (r *Receiver) write_replies() {
-	pending_acks := make([]string, 0, 64)
-
-	flush_acks := func() {
-		if len(pending_acks) == 0 {
-			return
-		}
-		f := &Frame{Type: frame_type_ack, Replies: pending_acks}
-		if err := frame_write(r.stream, f); err != nil {
-			debug("Messages: ack write failed peer=%q: %v", r.peer, err)
-		}
-		pending_acks = pending_acks[:0]
+	if r.written != nil {
+		defer close(r.written)
 	}
+	pending_acks := make([]string, 0, 64)
 
 	for {
 		var first *Frame
@@ -523,51 +661,68 @@ func (r *Receiver) write_replies() {
 			// reader now closes `done` instead, but tests still close this one
 			// and a closed channel yields a nil frame forever.
 			if !open {
-				flush_acks()
+				r.flush(&pending_acks)
 				return
 			}
 		case <-r.done:
-			flush_acks()
+			r.drain_replies(&pending_acks)
+			r.flush(&pending_acks)
 			return
 		}
 		r.coalesce_one(first, &pending_acks)
-		// Drain whatever else is immediately ready.
-	drain:
-		for {
-			select {
-			case extra, more := <-r.replies:
-				if !more {
-					flush_acks()
-					return
-				}
-				r.coalesce_one(extra, &pending_acks)
-			default:
-				break drain
-			}
+		if !r.drain_replies(&pending_acks) {
+			r.flush(&pending_acks)
+			return
 		}
-		flush_acks()
+		r.flush(&pending_acks)
 	}
 }
 
-// coalesce_one merges ack frames into pending_acks; any other frame flushes the
-// acks first, then ships standalone, so a sender always sees an ack before
-// anything queued after it. A frame type missing from the switch is dropped.
+// drain_replies coalesces whatever is queued now, and reports false once the
+// replies channel has closed.
+func (r *Receiver) drain_replies(pending_acks *[]string) bool {
+	for {
+		select {
+		case extra, more := <-r.replies:
+			if !more {
+				return false
+			}
+			r.coalesce_one(extra, pending_acks)
+		default:
+			return true
+		}
+	}
+}
+
+// flush writes the acks gathered so far as one frame.
+func (r *Receiver) flush(pending_acks *[]string) {
+	if len(*pending_acks) == 0 {
+		return
+	}
+	ack := &Frame{Type: frame_type_ack, Replies: *pending_acks}
+	if err := frame_write(r.stream, ack); err != nil {
+		debug("Messages: ack write failed peer=%q: %v", r.peer, err)
+	}
+	*pending_acks = (*pending_acks)[:0]
+}
+
+// coalesce_one merges ack frames into pending_acks, written once they reach
+// receiver_acks_maximum; any other frame flushes the acks first, then ships
+// standalone, so a sender always sees an ack before anything queued after it.
+// A frame type missing from the switch is dropped.
 func (r *Receiver) coalesce_one(f *Frame, pending_acks *[]string) {
 	if f.Type == frame_type_ack {
 		for _, id := range f.Replies {
 			*pending_acks = append(*pending_acks, id)
+			if len(*pending_acks) >= receiver_acks_maximum {
+				r.flush(pending_acks)
+			}
 		}
 		return
 	}
 	// Non-ack: flush whatever's queued so the sender sees the acks
 	// before the subsequent frame.
-	if len(*pending_acks) > 0 {
-		ack := &Frame{Type: frame_type_ack, Replies: *pending_acks}
-		if err := frame_write(r.stream, ack); err != nil {
-			debug("Messages: ack write failed peer=%q: %v", r.peer, err)
-		}
-		*pending_acks = (*pending_acks)[:0]
-	}
+	r.flush(pending_acks)
 	switch f.Type {
 	case frame_type_fail, frame_type_pong, frame_type_claim:
 		if err := frame_write(r.stream, f); err != nil {

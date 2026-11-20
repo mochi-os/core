@@ -11,7 +11,7 @@
 // same worker via queue_reply, so local writes and remote writes
 // serialise against each other for the same handler.
 //
-// Idle workers reap after worker_idle_default (5 minimum) of no activity.
+// Idle workers reap after worker_idle_default (five minutes) of no activity.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -46,6 +46,12 @@ const (
 
 	// worker_reaper_tick — how often the reaper checks for idle workers.
 	worker_reaper_tick = 60 * time.Second
+
+	// worker_maximum — the most (user, app) workers alive at once. Workers are
+	// keyed on an app the frame resolved to, so the real population is the
+	// pairs active in the idle window; this is the backstop past which a
+	// dispatch is refused with fail_buffer_full and retried.
+	worker_maximum = 10000
 )
 
 // reply_target abstracts where a worker's handler-result reply goes:
@@ -61,15 +67,22 @@ type reply_target interface {
 
 // worker_frame pairs a Frame with its reply target and the originating peer.
 // `peer` travels explicitly because the worker registry is per-host, so origin
-// cannot be inferred from the worker; self-loop frames pass net_id.
+// cannot be inferred from the worker; self-loop frames pass net_id. `user` is
+// the owner of the frame's target as the dispatcher resolved it (target_resolve,
+// with the frame's To set to the entity id), nil for no target, so Event.route
+// does not look it up again. `marked` says the frame holds a dedup record
+// (message_begin) that its outcome settles.
 type worker_frame struct {
-	frame *Frame
-	peer  string
-	reply reply_target
+	frame  *Frame
+	peer   string
+	user   *User
+	reply  reply_target
+	marked bool
 }
 
-// user_app_key keys the per-host worker registry. Both fields are
-// strings (UID and app id) so the zero value isn't ambiguous.
+// user_app_key keys the per-host worker registry: the user's UID and the id of
+// the app the frame resolved to (event_admit), never the service a peer names,
+// so the keys are bounded by local users and installed apps.
 type user_app_key struct {
 	user string
 	app  string
@@ -86,7 +99,7 @@ type app_worker struct {
 	stop      chan struct{} // closed by the reaper to retire the worker
 	done      chan struct{} // closed when run() returns, so a caller can wait it out
 	last_used atomic.Int64
-	in_flight atomic.Int32 // 1 while a handler is running; 0 otherwise. Used by workers_drain_test only.
+	in_flight atomic.Int32 // 1 while a handler is running, which the reaper does not retire; 0 otherwise
 }
 
 var (
@@ -94,22 +107,49 @@ var (
 	app_workers      = map[user_app_key]*app_worker{}
 )
 
+// worker_find looks up the worker for key, stamping it used while the read lock
+// is held: the reaper re-checks last_used under the write lock, so a worker a
+// dispatcher has found is never retired before the frame reaches it.
+func worker_find(key user_app_key) *app_worker {
+	app_workers_lock.RLock()
+	defer app_workers_lock.RUnlock()
+	w := app_workers[key]
+	if w != nil {
+		w.last_used.Store(now())
+	}
+	return w
+}
+
+// worker_retired reports whether w's goroutine has gone, checked before a send
+// so a retired worker's buffered inbox is never chosen over looking up again.
+func worker_retired(w *app_worker) bool {
+	select {
+	case <-w.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // worker_dispatch finds-or-creates the worker for (user, app) and pushes wf
 // onto its inbox. Blocks when the inbox is full: that is what propagates
 // back-pressure into libp2p flow control and serialises self-loop writes
-// against remote frames.
-func worker_dispatch(user, app string, wf *worker_frame) {
+// against remote frames. False when the registry is at worker_maximum and no
+// worker exists for the pair: nothing was queued.
+func worker_dispatch(user, app string, wf *worker_frame) bool {
 	key := user_app_key{user: user, app: app}
 
 	for {
-		app_workers_lock.RLock()
-		w, ok := app_workers[key]
-		app_workers_lock.RUnlock()
-		if !ok {
-			worker_create(key)
+		w := worker_find(key)
+		if w == nil {
+			if worker_create(key) == nil {
+				return false
+			}
 			continue
 		}
-		w.last_used.Store(now())
+		if worker_retired(w) {
+			continue
+		}
 		// The send is deliberately OUTSIDE the registry lock. Holding the read
 		// lock across a blocking send wedged the whole host: Go's RWMutex
 		// blocks new readers as soon as a writer waits, so one full inbox plus
@@ -119,46 +159,49 @@ func worker_dispatch(user, app string, wf *worker_frame) {
 		// loop looks up again.
 		select {
 		case w.inbox <- wf:
-			return
+			return true
 		case <-w.done:
 		}
 	}
 }
 
 // worker_inbox_offer is a try-once non-blocking enqueue into the (user, app)
-// worker's inbox, creating the worker if absent; false means full. Non-blocking
-// by design: the caller is in a send path, and spilling to queue.db keeps the
-// backlog visible as queue depth.
+// worker's inbox, creating the worker if absent; false means full, or the
+// registry at worker_maximum. Non-blocking by design: the caller is in a send
+// path, and spilling to queue.db keeps the backlog visible as queue depth.
 func worker_inbox_offer(user, app string, wf *worker_frame) bool {
 	key := user_app_key{user: user, app: app}
 	for {
-		app_workers_lock.RLock()
-		w, ok := app_workers[key]
-		app_workers_lock.RUnlock()
-		if ok && w != nil {
-			w.last_used.Store(now())
-			// Offered outside the registry lock, same reason as
-			// worker_dispatch: any wait on this lock blocks every other
-			// dispatcher once a writer is queued behind it.
-			select {
-			case w.inbox <- wf:
-				return true
-			case <-w.done:
-				// Retired in the gap; look up again.
-				continue
-			default:
+		w := worker_find(key)
+		if w == nil {
+			if worker_create(key) == nil {
 				return false
 			}
+			continue
 		}
-		worker_create(key)
+		if worker_retired(w) {
+			continue
+		}
+		// Offered outside the registry lock, same reason as
+		// worker_dispatch: any wait on this lock blocks every other
+		// dispatcher once a writer is queued behind it.
+		select {
+		case w.inbox <- wf:
+			return true
+		case <-w.done:
+			// Retired in the gap; look up again.
+			continue
+		default:
+			return false
+		}
 	}
 }
 
 // worker_create installs a new app_worker into the registry under
 // app_workers_lock, returning the existing one if another goroutine won the
-// race. Callers re-look-up under the read lock afterwards rather than sending on
-// what this returns: the reaper's re-verification cannot see a dispatcher that
-// has not published last_used yet, so the pointer alone is not a guarantee.
+// race, and nil when the registry is at worker_maximum. Callers look up again
+// (worker_find) rather than sending on what this returns, so a worker is only
+// ever sent to once its last_used has been stamped under the lock.
 func worker_create(key user_app_key) *app_worker {
 	app_workers_lock.Lock()
 	defer app_workers_lock.Unlock()
@@ -166,6 +209,10 @@ func worker_create(key user_app_key) *app_worker {
 	if w, ok := app_workers[key]; ok {
 		// Lost the race; another goroutine created it.
 		return w
+	}
+	if len(app_workers) >= worker_maximum {
+		debug("Worker registry full at %d; refusing (%s,%s)", worker_maximum, key.user, key.app)
+		return nil
 	}
 	w := &app_worker{
 		user:  key.user,
@@ -213,7 +260,9 @@ func (w *app_worker) run() {
 					if !open {
 						return
 					}
+					w.in_flight.Store(1)
 					w.handle(wf)
+					w.in_flight.Store(0)
 				default:
 					return
 				}
@@ -223,7 +272,7 @@ func (w *app_worker) run() {
 }
 
 // frame_segment_stream wraps the CBOR segments a sender packed into Frame.Data
-// so e.segment() can take them one at a time. Keyed on length, not nil: Data is
+// so the handler's e.read() can take them one at a time. Keyed on length, not nil: Data is
 // `omitempty`, so a sender's empty slice arrives back as nil.
 func frame_segment_stream(data []byte) *Stream {
 	if len(data) == 0 {
@@ -232,9 +281,9 @@ func frame_segment_stream(data []byte) *Stream {
 	return stream_rw(io.NopCloser(bytes.NewReader(data)), nil)
 }
 
-// handle runs a single frame end-to-end: decompresses the body,
-// decodes the Event from frame fields, routes
-// it via e.route(), and signals completion via wf.reply.
+// handle runs a single frame end-to-end: builds the Event from the frame's
+// fields, routes it via e.route(), and signals completion via wf.reply. The
+// receiver has already decompressed a remote frame's data (dispatch_message).
 func (w *app_worker) handle(wf *worker_frame) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -245,10 +294,6 @@ func (w *app_worker) handle(wf *worker_frame) {
 	}()
 
 	f := wf.frame
-
-	// Decompress content/data per Codec. For self-loop frames the
-	// queue stored already-decoded content (Codec=0) so this is a
-	// no-op; remote frames may carry zstd payloads.
 	content := f.Content
 	if content == nil {
 		content = map[string]any{}
@@ -266,43 +311,64 @@ func (w *app_worker) handle(wf *worker_frame) {
 		peer:            wf.peer, // originating peer, NOT net_id
 		content:         content,
 		stream:          frame_segment_stream(f.Data),
+		user:            wf.user,
 	}
 
 	if err := e.route(); err != nil {
 		worker_fail(wf, worker_failure_reason(err))
+		worker_await(err)
 		return
+	}
+	worker_ack(wf)
+}
+
+// worker_await holds the worker while a handler Starlark gave up on is still
+// running, as for any handler, so the next frame for this (user, app) never
+// overlaps it; in_flight stays set meanwhile, so the reaper leaves the worker.
+func worker_await(err error) {
+	var abandoned *starlark_abandonment
+	if errors.As(err, &abandoned) {
+		<-abandoned.finished
+	}
+}
+
+// worker_ack answers a frame whose handler succeeded, and every copy of it that
+// waited on its dedup record.
+func worker_ack(wf *worker_frame) {
+	if wf.marked {
+		for _, waiting := range message_end(wf.frame.ID, "") {
+			waiting.ack()
+		}
 	}
 	wf.reply.ack()
 }
 
-// worker_fail answers a frame with a failure reason, first clearing the dedup
-// mark when the reason is one the sender retries: the mark is set before
-// dispatch, so without this the retry is coalesced away and the message lost.
+// worker_fail answers a frame with a failure reason, and every copy of it that
+// waited on its dedup record. message_end leaves the record due a retry when
+// the reason is one the sender retries, so the retry runs rather than being
+// coalesced away and the message lost.
 func worker_fail(wf *worker_frame, reason string) {
-	if wf.frame != nil && wf.frame.ID != "" && fail_retryable(reason) {
-		message_seen_clear(wf.frame.ID)
+	if reason == "" {
+		reason = fail_transient
+	}
+	if wf.marked {
+		for _, waiting := range message_end(wf.frame.ID, reason) {
+			waiting.fail(reason)
+		}
 	}
 	wf.reply.fail(reason)
 }
 
-// fail_retryable reports whether a failure reason leaves the sender still
-// expecting to deliver this message. The drop set mirrors the one in
-// Sender.resolve_fail and queue_reply.fail; an empty or unrecognised
-// reason is transient, matching how both of those treat it.
-func fail_retryable(reason string) bool {
-	switch reason {
-	case fail_unsupported, fail_unknown_user, fail_expired,
-		fail_dedup, fail_signature_invalid:
-		return false
-	}
-	return true
-}
-
 // worker_failure_reason maps an Event.route() error to a wire failure reason:
-// unknown user / no handler / no service drop, everything else is transient.
+// a refusal no retry changes (event_refusal) carries its own, everything else
+// is transient but for the cases below.
 func worker_failure_reason(err error) string {
 	if err == nil {
 		return ""
+	}
+	var refusal *event_refusal
+	if errors.As(err, &refusal) {
+		return refusal.reason
 	}
 	// Before the prefix matching: this one is asserted by the receiver, not
 	// guessed from wording, and dropping it loses a broadcast event.
@@ -319,24 +385,10 @@ func worker_failure_reason(err error) string {
 	}
 	message := err.Error()
 	switch {
-	case strings.HasPrefix(message, "unknown user"):
-		return fail_unknown_user
-	case strings.HasPrefix(message, "unknown service"),
-		strings.HasPrefix(message, "unknown event"),
-		strings.HasPrefix(message, "no handler"),
-		// The app is registered but none of its versions loaded. Fixed until
-		// the operator repairs or removes it, so retrying is 50 deliveries of
-		// the same failure.
-		strings.HasPrefix(message, "no active version"),
-		// Deterministic authorization rejections: the sender's declared
-		// services are fixed in the message, so retrying can never change
-		// the verdict. Drop instead of retrying forever (this is what wedged
-		// the stuck _attachment/* self-loop rows at ~62 retries).
-		strings.HasPrefix(message, "sender does not handle service"),
-		// The app declares a handler name its Starlark globals do not
-		// define. Fixed until the app is changed, so retrying is 50
-		// deliveries of the same failure.
-		strings.HasPrefix(message, "Starlark app function"):
+	// The app declares a handler name its Starlark globals do not define
+	// (starlark.go). Fixed until the app is changed, so retrying is 50
+	// deliveries of the same failure.
+	case strings.HasPrefix(message, "Starlark app function"):
 		return fail_unsupported
 	case strings.HasPrefix(message, "handler panic"),
 		// Starlark.call's own recover, for a panic raised inside a Go
@@ -347,45 +399,53 @@ func worker_failure_reason(err error) string {
 	return fail_transient
 }
 
-// worker_reaper runs once per worker_reaper_tick and removes any
-// worker whose last_used is older than worker_idle AND whose inbox is
-// empty. The closed stop channel signals the worker goroutine to
-// exit.
+// worker_reaper runs once per worker_reaper_tick and retires idle workers
+// (worker_reap).
 func worker_reaper() {
 	for range time.Tick(worker_reaper_tick) {
-		cutoff := now() - int64(peer_worker_idle_seconds())
-		var doomed []user_app_key
+		worker_reap(now() - int64(peer_worker_idle_seconds()))
+	}
+}
 
-		app_workers_lock.RLock()
-		for key, w := range app_workers {
-			if w.last_used.Load() < cutoff && len(w.inbox) == 0 {
-				doomed = append(doomed, key)
-			}
+// worker_idle reports whether w may be retired: unused since cutoff, its inbox
+// empty, and no handler running. last_used is stamped when a frame is picked
+// up, not while its handler runs, which may be far longer than the idle window;
+// retiring such a worker let the next frame's new worker run beside it.
+func worker_idle(w *app_worker, cutoff int64) bool {
+	return w.last_used.Load() < cutoff && len(w.inbox) == 0 && w.in_flight.Load() == 0
+}
+
+// worker_reap removes every worker idle since cutoff. The closed stop channel
+// signals the worker goroutine to exit.
+func worker_reap(cutoff int64) {
+	var doomed []user_app_key
+
+	app_workers_lock.RLock()
+	for key, w := range app_workers {
+		if worker_idle(w, cutoff) {
+			doomed = append(doomed, key)
 		}
-		app_workers_lock.RUnlock()
+	}
+	app_workers_lock.RUnlock()
 
-		if len(doomed) == 0 {
+	if len(doomed) == 0 {
+		return
+	}
+
+	app_workers_lock.Lock()
+	defer app_workers_lock.Unlock()
+	for _, key := range doomed {
+		w := app_workers[key]
+		// Re-verify under the write lock; another goroutine may have
+		// dispatched into this worker in the gap, and worker_find stamps
+		// last_used under the read lock, so that dispatch is seen here.
+		if w == nil || !worker_idle(w, cutoff) {
 			continue
 		}
-
-		app_workers_lock.Lock()
-		cutoff = now() - int64(peer_worker_idle_seconds())
-		for _, key := range doomed {
-			w := app_workers[key]
-			if w == nil {
-				continue
-			}
-			// Re-verify under the write lock; another goroutine may
-			// have dispatched into this worker in the gap.
-			if w.last_used.Load() >= cutoff || len(w.inbox) > 0 {
-				continue
-			}
-			// `stop`, not the inbox: dispatchers send outside this lock, and
-			// a send on a closed channel panics.
-			close(w.stop)
-			delete(app_workers, key)
-		}
-		app_workers_lock.Unlock()
+		// `stop`, not the inbox: dispatchers send outside this lock, and
+		// a send on a closed channel panics.
+		close(w.stop)
+		delete(app_workers, key)
 	}
 }
 
@@ -402,67 +462,44 @@ func worker_count() (workers, pending int) {
 	return workers, pending
 }
 
-// workers_drain_test blocks until every worker's inbox is empty, so a test's
-// tmp_dir and mutated globals are not torn down mid-frame. Tests only, and
-// bounded by timeout so a stuck worker cannot wedge the suite.
-func workers_drain_test(timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		// Check both inbox depth AND any worker mid-handle. The
-		// in_flight counter catches the gap between "worker pulled
-		// the frame from inbox" and "worker called reply.ack/fail".
-		app_workers_lock.RLock()
-		quiet := true
-		for _, w := range app_workers {
-			if len(w.inbox) > 0 || w.in_flight.Load() != 0 {
-				quiet = false
-				break
-			}
-		}
-		app_workers_lock.RUnlock()
-		if quiet {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 // stream_reply implements reply_target for frames received over a
 // /mochi/2/messages stream. The worker posts to the Receiver's
-// replies channel, where receiver_reply batches acks into one frame
-// per drain.
+// replies channel, where write_replies batches acks into one frame
+// per drain. Each one is answered once, and counted off the Receiver's
+// outstanding replies (Receiver.awaiting) whether or not the stream is still
+// there to carry it.
 type stream_reply struct {
 	receiver *Receiver
 	message  string // the message id being replied to
 }
 
 func (s stream_reply) ack() {
-	if s.receiver == nil || s.receiver.closed.Load() {
-		// Stream gone; sender's sweeper will time the inflight out
-		// and retry. Receiver's message_mark_seen catches the dedup.
-		return
-	}
-	select {
-	case s.receiver.replies <- &Frame{Type: frame_type_ack, Replies: []string{s.message}}:
-	default:
-		// replies channel full — receiver_reply hasn't drained yet.
-		// Drop the ack; same recovery path as a dropped stream.
-		debug("Worker: dropping ack for %q (replies channel full)", s.message)
-	}
+	s.answer(&Frame{Type: frame_type_ack, Replies: []string{s.message}})
 }
 
 func (s stream_reply) fail(reason string) {
-	if s.receiver == nil || s.receiver.closed.Load() {
-		return
-	}
 	if reason == "" {
 		reason = fail_transient
 	}
-	f := &Frame{Type: frame_type_fail, Replies: []string{s.message}, Reason: reason}
+	s.answer(&Frame{Type: frame_type_fail, Replies: []string{s.message}, Reason: reason})
+}
+
+func (s stream_reply) answer(f *Frame) {
+	if s.receiver == nil {
+		return
+	}
+	defer s.receiver.outstanding.Add(-1)
+	if s.receiver.closed.Load() {
+		// Stream gone; the sender's sweeper times the inflight out and
+		// retries, and the message's dedup record answers the retry.
+		return
+	}
 	select {
 	case s.receiver.replies <- f:
 	default:
-		debug("Worker: dropping fail for %q (replies channel full)", s.message)
+		// replies channel full — write_replies hasn't drained yet. Dropped;
+		// same recovery path as a dropped stream.
+		debug("Worker: dropping %s for %q (replies channel full)", f.Type, s.message)
 	}
 }
 
@@ -491,16 +528,11 @@ func (q queue_reply) fail(reason string) {
 	if reason == "" {
 		reason = fail_transient
 	}
-	// Map the v2 reason vocabulary to the queue's existing drop / fail
-	// distinction. Reasons that say "retrying won't help" → drop;
-	// everything else → fail (retry with backoff).
-	switch reason {
-	case fail_unsupported, fail_unknown_user, fail_expired,
-		fail_dedup, fail_signature_invalid:
+	if !fail_retryable(reason) {
 		queue_drop(q.id, reason)
-	default:
-		queue_fail(q.id, fmt.Sprintf("self-loop fast path: %s", reason))
+		return
 	}
+	queue_fail(q.id, fmt.Sprintf("self-loop fast path: %s", reason))
 }
 
 // local_reply implements reply_target for self-loop frames that never passed
@@ -534,35 +566,25 @@ func (l local_reply) fail(reason string) {
 	if reason == "" {
 		reason = fail_transient
 	}
-	switch reason {
-	case fail_dedup:
-		// Common and benign — same message dispatched twice (e.g. app
-		// retry on its own initiative). Debug only.
-		debug("Self-loop direct dispatch: %s/%s id=%q dedup", l.service, l.event, l.message)
-	case fail_signature_invalid:
-		warn("Self-loop direct dispatch: %s/%s id=%q signature_invalid — local bug",
-			l.service, l.event, l.message)
-	default:
-		// `to` and `service` are what queue_add_direct routes on; a reply built
-		// without them (a bare probe) has nothing to re-enqueue.
-		if fail_retryable(reason) && l.to != "" && l.service != "" {
-			// Transient to a LOCAL recipient must not be dropped where the
-			// same reason to a remote one is retried. queue.db is the same
-			// fallback a full inbox already takes.
-			if err := queue_add_direct(l.message, net_id, l.from, l.to, l.service, l.event,
-				l.app, l.services, l.content, l.data, "", l.expires); err != nil {
-				warn("Self-loop direct dispatch: %s/%s id=%q failed: %s - unable to requeue: %v",
-					l.service, l.event, l.message, reason, err)
-				return
-			}
-			queue_wake()
-			info("Self-loop direct dispatch: %s/%s id=%q failed: %s - requeued",
-				l.service, l.event, l.message, reason)
+	// `to` and `service` are what queue_add_direct routes on; a reply built
+	// without them (a bare probe) has nothing to re-enqueue.
+	if fail_retryable(reason) && l.to != "" && l.service != "" {
+		// Transient to a LOCAL recipient must not be dropped where the same
+		// reason to a remote one is retried. queue.db is the same fallback a
+		// full inbox already takes.
+		if err := queue_add_direct(l.message, net_id, l.from, l.to, l.service, l.event,
+			l.app, l.services, l.content, l.data, "", l.expires); err != nil {
+			warn("Self-loop direct dispatch: %s/%s id=%q failed: %s - unable to requeue: %v",
+				l.service, l.event, l.message, reason, err)
 			return
 		}
-		info("Self-loop direct dispatch: %s/%s id=%q failed: %s",
+		queue_wake()
+		info("Self-loop direct dispatch: %s/%s id=%q failed: %s - requeued",
 			l.service, l.event, l.message, reason)
+		return
 	}
+	info("Self-loop direct dispatch: %s/%s id=%q failed: %s",
+		l.service, l.event, l.message, reason)
 }
 
 // message_self_loop_dispatch enqueues m onto the local (user, app) worker
@@ -590,22 +612,17 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 		body = map[string]any{}
 	}
 
-	to := m.To
-	if to != "" && valid(to, "fingerprint") {
-		if ent := entity_by_any(to); ent != nil {
-			to = ent.ID
-		}
-	}
-	user := ""
-	if to != "" {
-		if u := user_owning_entity(to); u != nil {
-			user = u.UID
-		}
-	}
-	if user == "" {
+	to, user, _ := target_resolve(m.To)
+	if user == nil {
 		// Recipient did not resolve to a local user. queue.db owns
 		// resolution and failure handling for that case; creating a
 		// worker keyed on an empty user would strand the frame here.
+		return false
+	}
+	// Keyed on the app the frame runs in, as remote frames are. One that will not
+	// be delivered goes by queue.db too, which drops it and tells the sending app.
+	a, reason := event_admit(user, to, m.Service, m.Event, m.From)
+	if reason != "" {
 		return false
 	}
 
@@ -619,11 +636,11 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 			Event:    m.Event,
 			FromApp:  m.FromApp,
 			Services: m.Services,
-			Priority: frame_priority_for(queue_priority(m.Service, m.Event)),
 			Content:  body,
 			Data:     m.data,
 		},
 		peer: net_id,
+		user: user,
 		reply: local_reply{
 			message: m.ID, service: m.Service, event: m.Event, to: to,
 			from: m.From, app: m.FromApp, services: m.Services,
@@ -633,5 +650,5 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 
 	// Non-blocking, creating the worker on first use. A full inbox falls back to
 	// queue.db, where the back-pressure shows up as queue depth.
-	return worker_inbox_offer(user, m.Service, wf)
+	return worker_inbox_offer(user.UID, a.id, wf)
 }

@@ -37,7 +37,7 @@ func TestAStaleRecordReplayDoesNotSuppressRelays(t *testing.T) {
 
 	subject, key := test_host(t)
 	current := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.90/tcp/1443"}, 5)
-	if _, ok := peer_record_apply(subject, current); !ok {
+	if !peer_record_apply(subject, current) {
 		t.Fatal("seed record rejected")
 	}
 	record_forget(subject)
@@ -59,7 +59,7 @@ func TestAnEqualSequenceStillSuppresses(t *testing.T) {
 
 	subject, key := test_host(t)
 	record := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.91/tcp/1443"}, 5)
-	if _, ok := peer_record_apply(subject, record); !ok {
+	if !peer_record_apply(subject, record) {
 		t.Fatal("seed record rejected")
 	}
 	record_forget(subject)
@@ -77,7 +77,7 @@ func TestANewerRecordSuppresses(t *testing.T) {
 	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
-	if _, ok := peer_record_apply(subject, test_signed_record(t, key, subject, []string{"/ip4/192.0.2.92/tcp/1443"}, 5)); !ok {
+	if !peer_record_apply(subject, test_signed_record(t, key, subject, []string{"/ip4/192.0.2.92/tcp/1443"}, 5)) {
 		t.Fatal("seed record rejected")
 	}
 	record_forget(subject)
@@ -117,7 +117,7 @@ func TestPeerRecordCurrentSeparatesTheThreeCases(t *testing.T) {
 	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
-	if _, ok := peer_record_apply(subject, test_signed_record(t, key, subject, []string{"/ip4/192.0.2.95/tcp/1443"}, 5)); !ok {
+	if !peer_record_apply(subject, test_signed_record(t, key, subject, []string{"/ip4/192.0.2.95/tcp/1443"}, 5)) {
 		t.Fatal("seed record rejected")
 	}
 

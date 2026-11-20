@@ -147,20 +147,14 @@ func error_dispatch(user *User, app *App, code, reason, service, entity string, 
 }
 
 // error_code_for_nack maps a receiver NACK reason (the fail_* vocabulary)
-// to the error code + reason to dispatch. ok is false for reasons that
-// dispatch nothing (e.g. fail_dedup — a benign duplicate).
+// to the error code + reason to dispatch, from fail_dispositions. ok is false
+// for a reason that dispatches nothing.
 func error_code_for_nack(nack string) (code, reason string, ok bool) {
-	switch nack {
-	case fail_unknown_user:
-		return error_code_message_unknown, "unknown", true
-	case fail_unsupported:
-		return error_code_message_rejected, "unsupported", true
-	case fail_expired:
-		return error_code_message_rejected, "expired", true
-	case fail_signature_invalid:
-		return error_code_message_rejected, "signature", true
+	disposition := fail_dispositions[nack]
+	if !disposition.drop || disposition.code == "" {
+		return "", "", false
 	}
-	return "", "", false
+	return disposition.code, disposition.detail, true
 }
 
 // error_catalogue_validate warns about `errors`-block keys that aren't in

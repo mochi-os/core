@@ -50,6 +50,14 @@ const (
 	frame_diagnostic_size = 256              // hex log on CBOR decode failure
 	challenge_size_v2     = 32               // hello.Challenge length
 	id_length_maximum     = 64               // maximum Frame.ID / message id length; enforced by envelope_valid
+	services_maximum      = 32               // most services a sender may say it handles; enforced by envelope_valid
+
+	// frame_control_maximum caps every frame but a message: routing, handshake
+	// and replies carry no content, and a peer must not have this host decode
+	// megabytes of anything before it has sent a message at all. An ack is the
+	// largest, and write_replies splits its batches well inside this.
+	frame_control_maximum = 64 * 1024
+	frame_body_initial    = 64 * 1024 // a body's buffer to start with; grown as its bytes arrive
 
 	// Pre-open bounds on /mochi/2/stream: a peer that keeps claiming without
 	// opening spends our verifies and a goroutine. Real openers send one claim.
@@ -78,17 +86,11 @@ const (
 	// Compression threshold — payloads smaller than this skip zstd.
 	codec_threshold = 512
 
-	// Priority tiers carried on Frame.Priority. Higher is more urgent.
-	frame_priority_control     = 40
-	frame_priority_interactive = 20
-	frame_priority_bulk        = 10
-
 	// Domain separators for the per-stream claim signature.
 	claim_domain = "mochi/2/claim/2"
 	// responder_domain separates the answering side's possession proof
 	// from the calling side's claim. See responder_signable.
 	responder_domain = "mochi/2/responder/1"
-	claim_version_2  = 2
 )
 
 // Type vocabulary for Frame.Type. Receivers MUST close the stream on an
@@ -110,22 +112,49 @@ const (
 // Failure reason vocabulary carried on Frame.Reason for fail frames.
 // See claude/plans/protocol2.md for resolver semantics.
 const (
-	fail_unsupported       = "unsupported"
-	fail_unknown_user      = "unknown_user"
-	fail_signature_invalid = "signature_invalid"
-	fail_expired           = "expired"
-	fail_rate_limited      = "rate_limited"
-	fail_buffer_full       = "buffer_full"
-	fail_handler_panic     = "handler_panic"
-	fail_dedup             = "dedup"
-	fail_transient         = "transient"
-	fail_unclaimed         = "unclaimed"
+	fail_unsupported   = "unsupported"
+	fail_unknown_user  = "unknown_user"
+	fail_buffer_full   = "buffer_full"
+	fail_handler_panic = "handler_panic"
+	fail_transient     = "transient"
+	fail_unclaimed     = "unclaimed"
 	// fail_unproven: the target entity is hosted here but this host could
 	// not sign for it, so it refuses to serve rather than answer
 	// unauthenticated. Distinct from fail_unknown_user, which means the
 	// entity is not here at all.
 	fail_unproven = "unproven"
 )
+
+// fail_disposition is what becomes of a message its receiver answers with a
+// failure reason. A dropped message is given up at once, since no retry can
+// change the answer, and the sending app hears of it as the error event code,
+// with detail as its reason, when code is set. Any other is sent again.
+type fail_disposition struct {
+	drop   bool
+	code   string
+	detail string
+}
+
+// fail_dispositions is the one table of what each failure reason means for a
+// message: Sender.resolve_fail, the Sender's proofs, queue_reply.fail,
+// local_reply.fail, the dedup record (message_end) and the error event a drop
+// raises (error_code_for_nack) all read it. A reason missing from it - empty,
+// or one a newer peer sends - is sent again.
+var fail_dispositions = map[string]fail_disposition{
+	fail_unsupported:   {drop: true, code: error_code_message_rejected, detail: "unsupported"},
+	fail_unknown_user:  {drop: true, code: error_code_message_unknown, detail: "unknown"},
+	fail_buffer_full:   {},
+	fail_handler_panic: {},
+	fail_transient:     {},
+	fail_unclaimed:     {},
+	fail_unproven:      {},
+}
+
+// fail_retryable reports whether a failure reason leaves the sender still
+// expecting to deliver the message.
+func fail_retryable(reason string) bool {
+	return !fail_dispositions[reason].drop
+}
 
 // Frame is the on-wire envelope shared by /mochi/2/messages and
 // /mochi/2/stream. The routing field names (`from`, `to`, etc.) keep
@@ -141,15 +170,13 @@ type Frame struct {
 	Event     string   `cbor:"event,omitempty"`
 	FromApp   string   `cbor:"from-app,omitempty"`
 	Services  []string `cbor:"from-services,omitempty"`
-	Signature []byte   `cbor:"signature,omitempty"` // claim frames + signed pubsub announcements
+	Signature []byte   `cbor:"signature,omitempty"` // claim frames, and the proof an ack to a stream open carries
 	Reason    string   `cbor:"reason,omitempty"`
-	Expires   string   `cbor:"expires,omitempty"` // pubsub message frames: absolute Unix seconds (decimal string) after which receivers reject the announcement
 
 	// New per-message fields.
-	Codec    byte           `cbor:"codec,omitempty"`
-	Priority byte           `cbor:"priority,omitempty"`
-	Content  map[string]any `cbor:"content,omitempty"` // message frames only — /mochi/2/stream ships content as the first post-ack CBOR segment instead
-	Data     []byte         `cbor:"data,omitempty"`    // message frames only — packed post-content CBOR segments (handler reads via e.segment)
+	Codec   byte           `cbor:"codec,omitempty"`
+	Content map[string]any `cbor:"content,omitempty"` // message frames only — /mochi/2/stream ships content as the first post-ack CBOR segment instead
+	Data    []byte         `cbor:"data,omitempty"`    // message frames only — packed post-content CBOR segments (the handler reads them with e.read)
 
 	// Handshake-only fields.
 	Challenge []byte   `cbor:"challenge,omitempty"`
@@ -223,12 +250,6 @@ func protocol2_init() {
 	})
 }
 
-// frame_read decodes one Frame from r. Returns io.EOF on clean stream close
-// before the first byte of a new frame. A *frame_undecodable is a whole body
-// that would not decode: the length prefix said where it ended and it has been
-// read, so the stream's framing is intact and the caller may answer it and read
-// on. Any other error means the caller MUST close the stream - frame boundaries
-// are ambiguous after a bad length or a partial read.
 // deadline_exceeded reports whether err is a read deadline firing rather than a
 // real protocol or transport failure. The two muxers disagree on the sentinel -
 // QUIC surfaces os.ErrDeadlineExceeded, yamux its own net.Error - so test both.
@@ -241,6 +262,12 @@ func deadline_exceeded(err error) bool {
 	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
+// frame_read decodes one Frame from r. Returns io.EOF on clean stream close
+// before the first byte of a new frame. A *frame_undecodable is a whole body
+// that would not decode: the length prefix said where it ended and it has been
+// read, so the stream's framing is intact and the caller may answer it and read
+// on. Any other error means the caller MUST close the stream - frame boundaries
+// are ambiguous after a bad length or a partial read.
 func frame_read(r io.Reader) (*Frame, error) {
 	var lenbuf [frame_length_size]byte
 	if _, err := io.ReadFull(r, lenbuf[:]); err != nil {
@@ -253,24 +280,52 @@ func frame_read(r io.Reader) (*Frame, error) {
 	if length > frame_maximum {
 		return nil, fmt.Errorf("frame: oversized length %d > %d", length, frame_maximum)
 	}
-	body := make([]byte, length)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, fmt.Errorf("frame: truncated body (wanted %d): %w", length, err)
+	// Grown as the body arrives, not allocated at the length the prefix claims:
+	// four bytes would otherwise pin 16 MB for as long as the peer takes to send
+	// the rest, or never sends it.
+	var buffer bytes.Buffer
+	buffer.Grow(min(int(length), frame_body_initial))
+	if n, err := io.CopyN(&buffer, r, int64(length)); err != nil {
+		// The errors io.ReadFull gives: EOF only when nothing of the body came.
+		if n > 0 && errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, fmt.Errorf("frame: truncated body (wanted %d, got %d): %w", length, n, err)
 	}
-	var f Frame
-	if err := cbor_decode_mode.Unmarshal(body, &f); err != nil {
+	body := buffer.Bytes()
+	undecodable := func(err error) error {
 		head := body
 		if len(head) > frame_diagnostic_size {
 			head = head[:frame_diagnostic_size]
 		}
-		return nil, &frame_undecodable{body: body, err: fmt.Errorf("frame: cbor decode failed (%d bytes, first %d hex=%x): %w",
+		return &frame_undecodable{body: body, err: fmt.Errorf("frame: cbor decode failed (%d bytes, first %d hex=%x): %w",
 			length, len(head), head, err)}
+	}
+	// Counted before anything is built: the per-container caps bound each
+	// array and map, not how many there are.
+	if err := cbor_items(body); err != nil {
+		return nil, undecodable(err)
+	}
+	// Only a message carries content. Any other frame is identified from its
+	// head, without building the rest, before a body past the control size is
+	// decoded.
+	if length > frame_control_maximum {
+		if head, ok := frame_identify(body); ok && head.Type != frame_type_message {
+			return nil, fmt.Errorf("frame: %q of %d bytes > %d", head.Type, length, frame_control_maximum)
+		}
+	}
+	var f Frame
+	if err := cbor_decode_mode.Unmarshal(body, &f); err != nil {
+		return nil, undecodable(err)
 	}
 	if f.Type == "" {
 		return nil, fmt.Errorf("frame: missing Type")
 	}
 	if !frame_type_known(f.Type) {
 		return nil, fmt.Errorf("frame: unknown Type %q", f.Type)
+	}
+	if f.Type != frame_type_message && (length > frame_control_maximum || f.Content != nil || f.Data != nil) {
+		return nil, fmt.Errorf("frame: %q carries content or is over %d bytes", f.Type, frame_control_maximum)
 	}
 	return &f, nil
 }
@@ -295,15 +350,16 @@ var frame_lenient = must(cbor.DecOptions{
 	UTF8:             cbor.UTF8DecodeInvalid,
 }.DecMode())
 
-// frame_head is what frame_identify reads of an undecodable frame.
+// frame_head is what frame_identify reads of a frame without decoding the rest.
 type frame_head struct {
 	Type string `cbor:"type"`
 	ID   string `cbor:"id"`
 	From string `cbor:"from"`
+	To   string `cbor:"to"`
 }
 
-// frame_identify reads the type, id and sender of an undecodable frame's body,
-// or reports that the body is not a frame at all.
+// frame_identify reads the type, id, sender and target of a frame's body without
+// building the rest, or reports that the body is not a frame at all.
 func frame_identify(body []byte) (frame_head, bool) {
 	var head frame_head
 	if err := frame_lenient.Unmarshal(body, &head); err != nil {
@@ -319,8 +375,9 @@ func frame_identify(body []byte) (frame_head, bool) {
 var frame_refused = errors.New("frame refused")
 
 // frame_check holds an outgoing message frame to what a receiver decodes:
-// cbor_decode_mode's caps on array elements, map pairs and nesting. They are
-// the same constants on every peer and are not negotiated. Checked on the frame
+// cbor_decode_mode's caps on array elements, map pairs and nesting, and the
+// budget on data items. They are the same constants on every peer and are not
+// negotiated. Checked on the frame
 // as encoded, since the envelope is one level of nesting above the content,
 // but without Data: a byte string counts against none of the caps, and it is
 // the part that can run to megabytes. The size cap depends on compression,
@@ -332,7 +389,7 @@ func frame_check(f *Frame) error {
 	if err != nil {
 		return fmt.Errorf("%w: cbor encode failed: %v", frame_refused, err)
 	}
-	if err := cbor_decode_mode.Wellformed(body); err != nil {
+	if err := cbor_check(body); err != nil {
 		return fmt.Errorf("%w: %v", frame_refused, err)
 	}
 	return nil
@@ -424,30 +481,40 @@ func claim_signable(challenge []byte, entity string, receiver string, protocol s
 	return out, nil
 }
 
-// claim_sign signs a (challenge, entity) claim for `receiver`. Returns nil when
-// the entity is not local or its key cannot be loaded; the caller skips the
-// claim.
-func claim_sign(entity string, challenge []byte, receiver string, protocol string) []byte {
+// error_claim_unsignable is a claim for an entity this host cannot sign for:
+// not its own, gone, or its key unusable. No retry changes that.
+var error_claim_unsignable = errors.New("claim: entity cannot sign here")
+
+// error_claim_unreadable is a claim whose key users.db would not give up: a
+// failed read, which may succeed later.
+var error_claim_unreadable = errors.New("claim: entity key unreadable")
+
+// claim_sign signs a (challenge, entity) claim for `receiver`. An error wrapping
+// error_claim_unsignable or error_claim_unreadable is about the entity; any
+// other is about the stream's parameters.
+func claim_sign(entity string, challenge []byte, receiver string, protocol string) ([]byte, error) {
 	if entity == "" || len(challenge) != challenge_size_v2 || receiver == "" || protocol == "" {
-		return nil
+		return nil, fmt.Errorf("claim: invalid parameters for entity %q", entity)
 	}
 	signable, err := claim_signable(challenge, entity, receiver, protocol)
 	if err != nil {
-		warn("claim_sign canonical encode failed for %q: %v", entity, err)
-		return nil
+		return nil, err
 	}
 	db := db_open("db/users.db")
-	var e Entity
-	if !db.scan(&e, "select private from entities where id=?", entity) {
-		info("claim_sign entity %q not found", entity)
-		return nil
+	var found []Entity
+	if err := db.scans(&found, "select private from entities where id=?", entity); err != nil {
+		return nil, fmt.Errorf("%w: %q: %v", error_claim_unreadable, entity, err)
 	}
-	private := base58_decode(e.Private, "")
+	if len(found) == 0 {
+		info("claim_sign entity %q not found", entity)
+		return nil, fmt.Errorf("%w: %q not found", error_claim_unsignable, entity)
+	}
+	private := base58_decode(found[0].Private, "")
 	if len(private) != ed25519.PrivateKeySize {
 		warn("claim_sign entity %q invalid private key length %d", entity, len(private))
-		return nil
+		return nil, fmt.Errorf("%w: %q has a private key of %d bytes", error_claim_unsignable, entity, len(private))
 	}
-	return ed25519.Sign(private, signable)
+	return ed25519.Sign(private, signable), nil
 }
 
 // claim_verify checks an inbound claim; the entity id IS the base58 ed25519
@@ -579,15 +646,6 @@ func frame_reject_challenge(challenge []byte) error {
 	return nil
 }
 
-// frame_priority_for maps a queue priority constant to the per-frame Priority
-// byte. Informational on the receiver today; no ordering depends on it.
-func frame_priority_for(queue_priority int) byte {
-	if queue_priority == priority_replay {
-		return frame_priority_control
-	}
-	return frame_priority_interactive
-}
-
 // codec_intersect returns the codecs both sides support. zstd is always in the
 // result: both sides MUST decode it, so an empty intersection still yields
 // zstd.
@@ -688,10 +746,6 @@ func peer_worker_inbox() int {
 // Default 0 (unlimited): the inflight cap (peer_window) is the back-pressure.
 func peer_rate() int { return ini_int("peer", "rate", 0) }
 
-// envelope_valid runs the addressing checks shared by every inbound path.
-// Frame.Service and Frame.ID become peer-chosen keys in maps that outlive the
-// stream, so both must be bounded. Empty is allowed; only malformed is
-// rejected.
 // envelope_target_valid bounds the To field, which envelope_valid does not
 // see. Unchecked it reaches user_owning_entity and entity_by_any as an SQL
 // parameter once per frame.
@@ -699,7 +753,12 @@ func envelope_target_valid(to string) bool {
 	return to == "" || valid(to, "entity") || valid(to, "fingerprint")
 }
 
-func envelope_valid(from, service, event, id string) bool {
+// envelope_valid runs the addressing checks shared by every inbound path.
+// Frame.Service and Frame.ID become peer-chosen keys in maps that outlive the
+// stream, so both must be bounded; the sending app and the services it says it
+// handles reach Event.route, the logs, the handler's headers and stored rows.
+// Empty is allowed; only malformed is rejected.
+func envelope_valid(from, service, event, id, app string, services []string) bool {
 	if from != "" && !valid(from, "entity") {
 		return false
 	}
@@ -711,6 +770,17 @@ func envelope_valid(from, service, event, id string) bool {
 	}
 	if id != "" && len(id) > id_length_maximum {
 		return false
+	}
+	if app != "" && !valid(app, "constant") {
+		return false
+	}
+	if len(services) > services_maximum {
+		return false
+	}
+	for _, offered := range services {
+		if offered != "" && !valid(offered, "constant") {
+			return false
+		}
 	}
 	return true
 }

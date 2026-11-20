@@ -9,7 +9,6 @@ package main
 import (
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -138,6 +137,16 @@ var (
 		entries: make(map[string]*rate_limit_entry),
 		limit:   1,
 		window:  60,
+	}
+
+	// Relay admission probes: 4 per ten minutes per peer. A peer this host's
+	// relay has no hello on record for is asked for one before it may reserve
+	// or be connected through; a client that is not a Mochi server keeps
+	// failing the probe, and this bounds how often it is asked.
+	rate_limit_relay_probe = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   4,
+		window:  600,
 	}
 
 	// Peer record-relay rate limiter: 1 relayed answer per minute per
@@ -640,19 +649,6 @@ func (g *account_gate) done(uid string, ok bool) {
 	entry.failures = 0
 }
 
-// reset drops an account's throttle unconditionally (test cleanup only —
-// handlers settle through done so in-flight reservations are respected).
-func (g *account_gate) reset(uid string) {
-	g.lock.Lock()
-	defer g.lock.Unlock()
-	delete(g.entries, uid)
-	for key := range g.entries {
-		if strings.HasPrefix(key, uid+"\n") {
-			delete(g.entries, key)
-		}
-	}
-}
-
 func (g *account_gate) cleanup() {
 	g.lock.Lock()
 	defer g.lock.Unlock()
@@ -724,6 +720,7 @@ func ratelimit_manager() {
 		rate_limit_pubsub_control.cleanup()
 		rate_limit_peer_request.cleanup()
 		rate_limit_record_relay.cleanup()
+		rate_limit_relay_probe.cleanup()
 		rate_limit_entry_withdraw.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()

@@ -6,18 +6,20 @@
 //
 // Four goroutines per Sender:
 //
-//   sender_write  — pulls frames from outbox, writes caps before the
-//                   first message, claims unclaimed entities, frames
-//                   and ships the message frame.
-//   sender_read   — reads ack / fail / ping / pong frames, resolves
-//                   inflight, echoes pong on ping.
-//   sender_sweep  — global ticker; times out stale inflight entries
-//                   and unanswered pings.
-//   sender_ping   — per-peer ticker; emits ping when the stream has
-//                   been idle for peer_ping_interval.
+//   write_loop — takes frames from the outbox, claims the entities it
+//                speaks for, has the far side prove those it writes to,
+//                and writes the message frames.
+//   read_loop  — reads ack / fail / claim / ping / pong frames, resolves
+//                inflight, echoes pong on ping.
+//   ping_loop  — emits a ping when nothing has arrived on the stream
+//                for peer_ping_interval.
+//   pull_loop  — claims the peer's due rows from queue.db into the
+//                outbox.
 //
-// On any stream death the inflight map is drained to queue_fail and
-// the Sender is torn down; next peer_send re-creates it.
+// One process-wide goroutine (senders_sweep_manager) times out stale
+// inflight entries and unanswered pings for every Sender. On any stream
+// death the inflight map is drained to queue_fail and the Sender is torn
+// down; the next peer_send re-creates it.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -68,9 +70,15 @@ const (
 
 // sender_proves_maximum is how many prove frames a Sender keeps unbacked by a
 // message at once. The receiver resets the stream past
-// messages_proves_maximum of them, counting each message as backing one, so
-// half leaves room for the messages a proof is about to release.
+// messages_proves_maximum of them, counting the first message to each entity
+// it proved as backing that proof, so half leaves room for the messages a proof
+// is about to release.
 const sender_proves_maximum = messages_proves_maximum / 2
+
+// sender_unsolicited_maximum is how many proof answers for entities this
+// Sender never asked about it reads before closing the stream. Each costs a
+// signature check, and a peer that sends them is spending this host's CPU.
+const sender_unsolicited_maximum = 8
 
 // error_sender_proves is write_loop's answer when entities wait for a proof
 // and the stream can ask for no more: its budget is spent on proofs that
@@ -87,15 +95,47 @@ var peer_stream_open_timeout = 10 * time.Second
 var error_sender_unreachable = errors.New("sender: peer unreachable")
 
 // error_sender_full is returned by peer_send when the outbox channel is
-// saturated past sender_send_timeout. Same recovery as a stream-open
-// failure: queue_fail re-queues with exp backoff.
+// saturated past sender_send_timeout. The row is the Sender's pull_loop's to
+// take once the outbox drains.
 var error_sender_full = errors.New("sender: outbox full")
+
+// error_sender_draining is returned by peer_send once the server is shutting
+// down (senders_bye_all): the Sender takes no more frames. The row stays for
+// the next run.
+var error_sender_draining = errors.New("sender: draining for shutdown")
+
+// error_sender_closed is a frame offered to a Sender that has shut down: the
+// next peer_send opens another.
+var error_sender_closed = errors.New("sender: closed")
+
+// sender_refused reports whether a peer_send error means the Sender could not
+// take the frame, nothing of it attempted: busy, draining or closed. The row
+// goes back as it was, with no attempt counted.
+func sender_refused(err error) bool {
+	return errors.Is(err, error_sender_full) || errors.Is(err, error_sender_draining) || errors.Is(err, error_sender_closed)
+}
+
+// error_sender_settled is write_one's answer for a message whose write failed
+// after shutdown had already failed it back from inflight: it must not be
+// failed a second time.
+var error_sender_settled = errors.New("sender: message already failed back")
+
+// sender_write_rate is the slowest, in bytes a second, a Sender's write may go
+// before the peer is taken to have stopped reading: a write's deadline is the
+// inflight timeout and a second per this many bytes of its data.
+const sender_write_rate = 64 * 1024
+
+// wire_write_deadline is the part of a real libp2p stream that bounds a write.
+// The in-memory test shims need not implement it.
+type wire_write_deadline interface {
+	SetWriteDeadline(time.Time) error
+}
 
 // pending tracks one outbound message awaiting ack. Keyed by message
 // id on the Sender's inflight map.
 type pending struct {
 	queue string // queue.id this frame came from
-	sent  int64  // unix seconds when written
+	sent  int64  // unix seconds when its write ended; 0 while it is being written
 }
 
 // Sender owns one outbound /mochi/2/messages stream to a single peer.
@@ -107,7 +147,6 @@ type Sender struct {
 	challenge []byte   // theirs, from hello; we sign it to claim our entities
 	offered   []byte   // ours, in caps; they sign it to prove theirs
 	codecs    []string // sender's effective codec set after intersection
-	features  []string // sender's effective feature set after intersection
 	outbox    chan *outbound
 	inflight  map[string]*pending
 	pings     map[string]int64
@@ -118,10 +157,15 @@ type Sender struct {
 	// reach write_loop through proofs.
 	proven       map[string]bool
 	proving      map[string]bool
+	asked        map[string]bool // every entity a prove went out for, answered or not
+	backed       map[string]bool // proven entities a message has since been written to; write_loop only
 	proofs       chan proof
 	parked       atomic.Int64 // messages write_loop holds for a proof; pull_loop counts them
 	unbacked     int          // write_loop only: proves sent not yet backed by a message
+	unsolicited  int          // read_loop only: proof answers for entities never asked
 	closed       atomic.Bool
+	draining     atomic.Bool   // set by senders_bye_all: pull_loop claims nothing more and peer_send refuses frames
+	pulling      sync.Once     // starts pull_loop once the frame that opened the Sender is in the outbox
 	done         chan struct{} // closed by shutdown(); write_loop and peer_send exit on it
 	last_inbound atomic.Int64  // unix ns of last inbound frame; reset by ping_loop
 	wake         chan struct{} // queue_wake routes per-peer nudges here; pull_loop drains
@@ -132,10 +176,12 @@ type Sender struct {
 }
 
 // proof is the far side's answer to a prove frame: nil when it showed it holds
-// entity.
+// entity. reason is the failure reason of a refusal the far side sent, which
+// fail_dispositions decides the held messages' fate by.
 type proof struct {
 	entity string
 	err    error
+	reason string
 }
 
 // waiting is write_loop's state for messages whose target is not yet proven:
@@ -149,7 +195,7 @@ type waiting struct {
 }
 
 // outbound carries the original queue id alongside the wire frame so
-// sender_write can register it in inflight before the write.
+// write_loop can register it in inflight before the write.
 type outbound struct {
 	frame *Frame
 	queue string // queue.id; empty for synthetic frames like bye
@@ -175,37 +221,35 @@ func senders_has(peer string) bool {
 }
 
 // peer_send enqueues `frame` on the Sender for `peer`, creating it if needed.
-// `queue` is the queue.id that originated the send; sender_read uses it to
+// `queue` is the queue.id that originated the send; read_loop uses it to
 // queue_ack / queue_fail / queue_drop when the receiver replies.
 func peer_send(peer string, queue string, frame *Frame) error {
-	s, err := sender_for(peer)
-	if err != nil {
-		return err
-	}
-	select {
-	case s.outbox <- &outbound{frame: frame, queue: queue}:
-		return nil
-	case <-time.After(sender_send_timeout):
-		return error_sender_full
-	}
+	_, err := sender_for(peer, &outbound{frame: frame, queue: queue})
+	return err
 }
 
-// sender_for finds-or-creates the Sender for peer. The open path is
-// gated by senders_lock; the per-Sender state machine runs without it.
-// Callers that find an open already under way wait for it and share its
-// answer: a second dial meets the first one's connect in progress, and
-// peer_connect counts that against the peer as a failure.
-func sender_for(peer string) (*Sender, error) {
+// sender_for finds-or-creates the Sender for peer and gives it first, when
+// there is one. The open path is gated by senders_lock; the per-Sender state
+// machine runs without it. Callers that find an open already under way wait
+// for it and share its answer: a second dial meets the first one's connect in
+// progress, and peer_connect counts that against the peer as a failure.
+//
+// A Sender this call opens takes first before its pull_loop starts, so rows of
+// the same peer queued after the one that opened it cannot go out ahead of it.
+func sender_for(peer string, first *outbound) (*Sender, error) {
 	senders_lock.Lock()
 	s := senders[peer]
 	if s != nil && !s.closed.Load() {
 		senders_lock.Unlock()
-		return s, nil
+		return s, s.offer(first)
 	}
 	if o := senders_opening[peer]; o != nil {
 		senders_lock.Unlock()
 		<-o.done
-		return o.sender, o.err
+		if o.err != nil || o.sender == nil {
+			return o.sender, o.err
+		}
+		return o.sender, o.sender.offer(first)
 	}
 	o := &opening{done: make(chan struct{})}
 	senders_opening[peer] = o
@@ -220,7 +264,71 @@ func sender_for(peer string) (*Sender, error) {
 	delete(senders_opening, peer)
 	senders_lock.Unlock()
 	close(o.done)
-	return o.sender, o.err
+	if o.err != nil || o.sender == nil {
+		return o.sender, o.err
+	}
+	err := o.sender.offer(first)
+	o.sender.pull()
+	return o.sender, err
+}
+
+// sender_start opens, or finds, the Sender for peer with nothing to send yet,
+// so its pull_loop takes the rows queued for the peer.
+func sender_start(peer string) (*Sender, error) {
+	return sender_for(peer, nil)
+}
+
+// pull starts the Sender's pull_loop, once.
+func (s *Sender) pull() {
+	s.pulling.Do(func() { go s.pull_loop() })
+}
+
+// offer hands ob to the Sender for peer_send, refused once the server is
+// shutting down. Nothing to offer is no error.
+func (s *Sender) offer(ob *outbound) error {
+	if ob == nil {
+		return nil
+	}
+	if s.draining.Load() {
+		return error_sender_draining
+	}
+	return s.enqueue(ob, sender_send_timeout)
+}
+
+// enqueue puts ob on the outbox, waiting at most timeout for room. Nothing
+// may be left on a closed Sender's outbox, where no one would ever resolve its
+// row: shutdown drains the outbox, and a frame that lands after that drain is
+// drained here.
+func (s *Sender) enqueue(ob *outbound, timeout time.Duration) error {
+	if s.closed.Load() {
+		return error_sender_closed
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case s.outbox <- ob:
+	case <-s.done:
+		return error_sender_closed
+	case <-timer.C:
+		return error_sender_full
+	}
+	if s.closed.Load() {
+		s.drain_outbox()
+	}
+	return nil
+}
+
+// drain_outbox hands back every frame waiting on the outbox of a Sender that
+// will not write them.
+func (s *Sender) drain_outbox() {
+	for {
+		select {
+		case ob := <-s.outbox:
+			s.unsend(ob)
+		default:
+			return
+		}
+	}
 }
 
 // senders_opening_has reports whether a Sender open for peer is under way.
@@ -264,6 +372,12 @@ func sender_open(peer string) (*Sender, error) {
 	hello, err := hello_read(stream, 2)
 	if err != nil {
 		stream.Reset()
+		// The stream opened, so the connection is up and the peer is not
+		// answering on it: progress evidence, which stalls a peer that keeps
+		// withholding its hello as one whose frames go unacked does, rather
+		// than paying a full stream_open_timeout per open for as long as the
+		// peer is owed anything.
+		peer_mark_no_progress(peer)
 		// A silent peer is unreachable, not a hard failure: report it as such so
 		// the queue retries rather than discarding the message.
 		if deadline_exceeded(err) {
@@ -271,8 +385,10 @@ func sender_open(peer string) (*Sender, error) {
 		}
 		return nil, fmt.Errorf("sender: hello read failed peer=%q: %w", peer, err)
 	}
+	peer_greet(peer)
 
-	// Compute effective codec / feature sets.
+	// Compute effective codec / feature sets: the codecs this Sender may
+	// compress with, the features the caps frame offers.
 	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
 	features := features_intersect(receiver_features(), hello.Features)
 	// The connection's challenge serves its /mochi/2/stream opens too, which
@@ -301,7 +417,6 @@ func sender_open(peer string) (*Sender, error) {
 		session:   hello.Session,
 		challenge: hello.Challenge,
 		codecs:    codecs,
-		features:  features,
 		offered:   challenge,
 		outbox:    make(chan *outbound, peer_outbox()),
 		inflight:  map[string]*pending{},
@@ -327,18 +442,20 @@ func sender_open(peer string) (*Sender, error) {
 	debug("Sender: stream open peer=%q session=%s codecs=%v features=%v",
 		peer, s.session, codecs, features)
 
+	// pull_loop starts once the frame that opened the Sender is on its outbox
+	// (sender_for).
 	go s.write_loop()
 	go s.read_loop()
 	go s.ping_loop()
-	go s.pull_loop()
 
 	return s, nil
 }
 
-// write_loop is the sender_write goroutine: pulls frames from outbox,
-// pipelines claim before message, writes the framed message. Blocks
-// the producer when len(inflight) >= sender_window_default — local
-// memory cap; wire-level back-pressure rides on libp2p flow control.
+// write_loop takes frames from the outbox, pipelines claim before message,
+// writes the framed message. Blocks the producer when len(inflight) reaches
+// peer_window() - a local memory cap; wire-level back-pressure rides on libp2p
+// flow control, and a write's deadline (write_deadline) ends a stream the far
+// side has stopped reading.
 //
 // A message to an entity the far side has not proven waits, with that
 // entity's later messages, while its prove frame is out: messages to proven
@@ -354,16 +471,16 @@ func (s *Sender) write_loop() {
 		select {
 		case ob := <-s.outbox:
 			if s.closed.Load() {
-				s.fail_outbound(ob, "sender closed")
+				s.unsend(ob)
 				continue
 			}
 			err = s.route(w, ob)
 		case p := <-s.proofs:
-			err = s.settle(w, p.entity, p.err)
+			err = s.settle(w, p)
 		case <-timer.C:
 			err = s.expire(w)
 		case <-s.done:
-			s.release(w, "sender closed")
+			s.release(w)
 			return
 		}
 		if err == nil && w.bye != nil && len(w.parked) == 0 {
@@ -373,7 +490,7 @@ func (s *Sender) write_loop() {
 		}
 		if err != nil {
 			debug("Sender: closing peer=%q: %v", s.peer, err)
-			s.release(w, fmt.Sprintf("stream write: %v", err))
+			s.release(w)
 			s.shutdown()
 			return
 		}
@@ -432,7 +549,7 @@ func (s *Sender) route(w *waiting, ob *outbound) error {
 		return nil
 	}
 	if proven {
-		return s.settle(w, f.To, nil)
+		return s.settle(w, proof{entity: f.To})
 	}
 	w.queued = append(w.queued, f.To)
 	return s.ask(w)
@@ -443,10 +560,33 @@ func (s *Sender) route(w *waiting, ob *outbound) error {
 func (s *Sender) send(ob *outbound) error {
 	if err := s.write_one(ob); err != nil {
 		debug("Sender: write failed peer=%q queue=%q: %v", s.peer, ob.queue, err)
-		s.fail_outbound(ob, fmt.Sprintf("stream write: %v", err))
+		switch {
+		case errors.Is(err, error_sender_settled):
+		case errors.Is(err, error_sender_closed):
+			// Closed while it waited for room in the window: never written.
+			s.unsend(ob)
+		default:
+			s.fail_outbound(ob, fmt.Sprintf("stream write: %v", err))
+		}
 		return err
 	}
 	return nil
+}
+
+// write_deadline bounds the next write: a far side that stops reading would
+// otherwise hold write_loop, and the ping queued behind it, for as long as the
+// connection stays up. size is the frame's data, which a slow link takes
+// longer to carry.
+func (s *Sender) write_deadline(size int) {
+	if stream, ok := s.stream.(wire_write_deadline); ok {
+		_ = stream.SetWriteDeadline(time.Now().Add(time.Duration(peer_inflight_timeout()+size/sender_write_rate) * time.Second))
+	}
+}
+
+// write writes one frame with its deadline.
+func (s *Sender) write(f *Frame) error {
+	s.write_deadline(len(f.Data))
+	return frame_write(s.stream, f)
 }
 
 // ask sends prove frames for the entities queued, as far as the budget goes.
@@ -458,8 +598,12 @@ func (s *Sender) ask(w *waiting) error {
 		w.queued = w.queued[1:]
 		s.lock.Lock()
 		s.proving[entity] = true
+		if s.asked == nil {
+			s.asked = map[string]bool{}
+		}
+		s.asked[entity] = true
 		s.lock.Unlock()
-		if err := frame_write(s.stream, &Frame{Type: frame_type_prove, To: entity}); err != nil {
+		if err := s.write(&Frame{Type: frame_type_prove, To: entity}); err != nil {
 			return err
 		}
 		s.unbacked++
@@ -473,14 +617,37 @@ func (s *Sender) ask(w *waiting) error {
 
 // settle releases an entity's messages once the far side has answered for
 // it: written in order when it proved the entity, failed back to the queue
-// when it did not. Then it asks for the entities waiting on the budget.
-func (s *Sender) settle(w *waiting, entity string, err error) error {
+// when it did not. A refusal no retry changes - the entity is not hosted there
+// (fail_unknown_user) - drops them as a receiver's answer to the messages
+// themselves would, the sending app told and the route forgotten (queue_drop),
+// off this goroutine, which writes the stream. Then it asks for the entities
+// waiting on the budget.
+func (s *Sender) settle(w *waiting, p proof) error {
+	entity, err := p.entity, p.err
 	if _, asked := w.deadlines[entity]; !asked && err != nil {
 		return nil
 	}
 	delete(w.deadlines, entity)
 	held := w.parked[entity]
 	delete(w.parked, entity)
+	if err != nil && p.reason != "" && !fail_retryable(p.reason) {
+		rows := []string{}
+		for _, ob := range held {
+			if ob.queue != "" {
+				rows = append(rows, ob.queue)
+			}
+		}
+		s.parked.Add(-int64(len(held)))
+		if len(rows) > 0 {
+			info("Sender: peer=%q refused to prove entity %q (%s); dropping %d messages", s.peer, entity, p.reason, len(rows))
+			go guard("sender proof refused", nil, func() {
+				for _, row := range rows {
+					queue_drop(row, p.reason)
+				}
+			})
+		}
+		return s.ask(w)
+	}
 	// Each message stops counting as held only once it is in flight or failed,
 	// so room() never counts it in neither and lets pull_loop claim past the
 	// window.
@@ -493,9 +660,10 @@ func (s *Sender) settle(w *waiting, entity string, err error) error {
 		write := s.send(ob)
 		s.parked.Add(-1)
 		if write != nil {
+			// Never written: handed back as they were.
 			for _, rest := range held[i+1:] {
 				s.parked.Add(-1)
-				s.fail_outbound(rest, fmt.Sprintf("stream write: %v", write))
+				s.unsend(rest)
 			}
 			return write
 		}
@@ -520,19 +688,19 @@ func (s *Sender) expire(w *waiting) error {
 		if !proven {
 			answer = fmt.Errorf("peer %q did not prove entity %q", s.peer, entity)
 		}
-		if err := s.settle(w, entity, answer); err != nil {
+		if err := s.settle(w, proof{entity: entity, err: answer}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// release fails every message held for a proof, as the outbox drain fails
-// what a closed Sender never sent.
-func (s *Sender) release(w *waiting, reason string) {
+// release hands back every message held for a proof, as the outbox drain
+// hands back what a closed Sender never wrote: none of them was written.
+func (s *Sender) release(w *waiting) {
 	for entity, held := range w.parked {
 		for _, ob := range held {
-			s.fail_outbound(ob, reason)
+			s.unsend(ob)
 		}
 		s.parked.Add(-int64(len(held)))
 		delete(w.parked, entity)
@@ -572,10 +740,29 @@ func (s *Sender) write_one(ob *outbound) error {
 	s.lock.Unlock()
 
 	if need_claim {
+		s.write_deadline(0)
 		if err := claim_write(s.stream, f.From, s.challenge, s.peer, protocol_messages); err != nil {
 			s.lock.Lock()
 			delete(s.claimed, f.From)
 			s.lock.Unlock()
+			// A claim that could not be signed wrote nothing, so the stream
+			// carries on and only the row is settled, off this goroutine as
+			// a refused frame is: dropped when the entity cannot sign here
+			// (gone, or its key unusable), failed for a retry when users.db
+			// would not give up its key.
+			switch {
+			case errors.Is(err, error_claim_unsignable):
+				if ob.queue != "" {
+					info("Sender: dropping message %q for peer=%q: %v", ob.queue, s.peer, err)
+					go guard("sender claim unsignable", nil, func() { queue_drop(ob.queue, fail_unsupported) })
+				}
+				return nil
+			case errors.Is(err, error_claim_unreadable):
+				if ob.queue != "" {
+					go guard("sender claim unreadable", nil, func() { queue_fail(ob.queue, fmt.Sprintf("claim: %v", err)) })
+				}
+				return nil
+			}
 			return err
 		}
 	}
@@ -587,36 +774,36 @@ func (s *Sender) write_one(ob *outbound) error {
 	// content has already left.
 	if f.Type == frame_type_message && f.ID != "" {
 		// Window cap: block until inflight drops below peer.window. Back-pressure
-		// path
-		// - the outbox stays full and peer_send blocks new producers.
+		// path - the outbox stays full and peer_send blocks new producers. The
+		// entry's sent stays zero while the frame is written, so the sweeper
+		// does not time out, and send again, a message still going out.
 		window := peer_window()
 		for {
 			s.lock.Lock()
 			if len(s.inflight) < window {
-				s.inflight[f.ID] = &pending{queue: ob.queue, sent: now()}
+				s.inflight[f.ID] = &pending{queue: ob.queue}
 				s.lock.Unlock()
 				break
 			}
 			s.lock.Unlock()
 			if s.closed.Load() {
-				return fmt.Errorf("sender closed")
+				return error_sender_closed
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
-	if f.Type == frame_type_ping && f.ID != "" {
-		s.lock.Lock()
-		s.pings[f.ID] = now()
-		s.lock.Unlock()
-	}
-
-	if err := frame_write(s.stream, f); err != nil {
-		// Roll back the inflight insert; the caller will queue_fail.
+	if err := s.write(f); err != nil {
+		// Roll back the inflight insert; the caller will queue_fail, unless
+		// shutdown has failed the message back already.
 		if f.Type == frame_type_message && f.ID != "" {
 			s.lock.Lock()
+			_, held := s.inflight[f.ID]
 			delete(s.inflight, f.ID)
 			s.lock.Unlock()
+			if !held && !errors.Is(err, frame_refused) {
+				return fmt.Errorf("%w: %v", error_sender_settled, err)
+			}
 		}
 		// A refused message was never written, so the stream carries on and
 		// only the message goes: failing the write would reset the stream and
@@ -630,23 +817,66 @@ func (s *Sender) write_one(ob *outbound) error {
 		}
 		return err
 	}
-	// Each message the far side receives backs one prove it answered. Counted
-	// only for a message naming its sender, the one kind every receiver
-	// credits, so this count never falls below the far side's.
-	if f.Type == frame_type_message && f.From != "" && s.unbacked > 0 {
-		s.unbacked--
+	// The message is out: its ack is due within the inflight timeout from now.
+	if f.Type == frame_type_message && f.ID != "" {
+		s.lock.Lock()
+		if p := s.inflight[f.ID]; p != nil {
+			p.sent = now()
+		}
+		s.lock.Unlock()
+	}
+	// The first message to an entity the far side proved on this stream backs
+	// that proof, the rule the receiver refunds a prove by (Receiver.back). A
+	// receiver of an earlier build refunds for every message, never fewer, so
+	// this count never falls below the far side's.
+	if f.Type == frame_type_message && f.To != "" {
+		s.lock.Lock()
+		first := s.proven[f.To] && !s.backed[f.To]
+		if first {
+			if s.backed == nil {
+				s.backed = map[string]bool{}
+			}
+			s.backed[f.To] = true
+		}
+		s.lock.Unlock()
+		if first && s.unbacked > 0 {
+			s.unbacked--
+		}
 	}
 	return nil
 }
 
-// resolve_proof records the far side's answer for `entity` and hands it to
-// write_loop when it was asked for. A nil error also records the proof for
-// the rest of the connection's life.
-func (s *Sender) resolve_proof(entity string, err error) {
+// solicited reports whether an answer about entity is one this Sender is
+// waiting for. An answer that comes after its deadline is ignored; one for an
+// entity never asked about is counted, and past sender_unsolicited_maximum
+// the stream is closed.
+func (s *Sender) solicited(entity string) bool {
+	s.lock.Lock()
+	waiting := s.proving[entity]
+	asked := s.asked[entity]
+	s.lock.Unlock()
+	if waiting {
+		return true
+	}
+	if !asked {
+		s.unsolicited++
+		if s.unsolicited > sender_unsolicited_maximum {
+			info("Sender: over %d unsolicited proofs peer=%q session=%s; closing", sender_unsolicited_maximum, s.peer, s.session)
+			s.shutdown()
+		}
+	}
+	return false
+}
+
+// resolve_proof records the far side's answer for `entity`, asked and not yet
+// answered (solicited), and hands it to write_loop. A nil error also records
+// the proof for the rest of the stream's life; reason is the failure reason a
+// refusal carried.
+func (s *Sender) resolve_proof(entity string, err error, reason string) {
 	s.lock.Lock()
 	asked := s.proving[entity]
 	delete(s.proving, entity)
-	if err == nil {
+	if err == nil && asked {
 		s.proven[entity] = true
 	}
 	s.lock.Unlock()
@@ -654,14 +884,15 @@ func (s *Sender) resolve_proof(entity string, err error) {
 		// Never blocks: at most sender_proves_maximum are asked at once, and an
 		// answer lost all the same is settled by its deadline from proven.
 		select {
-		case s.proofs <- proof{entity: entity, err: err}:
+		case s.proofs <- proof{entity: entity, err: err, reason: reason}:
 		default:
 		}
 	}
 }
 
-// fail_outbound is called when an outbound can't be written. Maps to
-// queue_fail (or no-op for synthetic frames with empty queue id).
+// fail_outbound is called when an outbound's write fails or its target was
+// not proven. Maps to queue_fail (or no-op for synthetic frames with empty
+// queue id).
 func (s *Sender) fail_outbound(ob *outbound, reason string) {
 	if ob.queue == "" {
 		return
@@ -669,7 +900,17 @@ func (s *Sender) fail_outbound(ob *outbound, reason string) {
 	queue_fail(ob.queue, reason)
 }
 
-// read_loop is the sender_read goroutine: reads ack / fail / ping /
+// unsend hands back an outbound the Sender never wrote - left on a closed
+// Sender's outbox, or held for a proof when it closed - due as it was, with no
+// attempt counted: the cause is the stream's, not the message's.
+func (s *Sender) unsend(ob *outbound) {
+	if ob.queue == "" {
+		return
+	}
+	queue_unsending(ob.queue)
+}
+
+// read_loop reads ack / fail / claim / ping /
 // pong frames and resolves the inflight entries they reference.
 func (s *Sender) read_loop() {
 	for {
@@ -694,7 +935,6 @@ func (s *Sender) handle_inbound(f *Frame) {
 	switch f.Type {
 	case frame_type_ack:
 		s.lock.Lock()
-		acked := false
 		acknowledged := []string{}
 		for _, id := range f.Replies {
 			p := s.inflight[id]
@@ -702,7 +942,6 @@ func (s *Sender) handle_inbound(f *Frame) {
 				continue
 			}
 			delete(s.inflight, id)
-			acked = true
 			if p.queue != "" {
 				acknowledged = append(acknowledged, p.queue)
 			}
@@ -715,30 +954,38 @@ func (s *Sender) handle_inbound(f *Frame) {
 			queue_ack_async(row)
 		}
 		// The peer is applying and acking — clear any send-stall so its
-		// deferred backlog resumes (peer_progress.go).
-		if acked {
-			peer_mark_progress(s.peer)
-		}
+		// deferred backlog resumes (peer_progress.go). Every ack counts, one
+		// for a message the sweeper already timed out included: that is a slow
+		// peer catching up, not a stuck one.
+		peer_mark_progress(s.peer)
 
 	case frame_type_claim:
-		// The far side answering a prove demand. Verified against the
-		// challenge WE offered in caps and our own peer id, so a proof
-		// gathered on some other connection cannot be relayed onto this
-		// one.
+		// The far side answering a prove demand. Only one this Sender is
+		// waiting on is verified: each costs a signature check, and the far
+		// side may write as many as it likes.
+		if !s.solicited(f.From) {
+			return
+		}
+		// Verified against the challenge WE offered in caps and our own peer
+		// id, so a proof gathered on some other connection cannot be relayed
+		// onto this one.
 		if err := responder_verify(f.From, s.offered, f.Signature, net_id, protocol_messages); err != nil {
 			info("Sender: proof verify failed peer=%q session=%s entity=%q: %v",
 				s.peer, s.session, f.From, err)
-			s.resolve_proof(f.From, fmt.Errorf("proof verify failed: %w", err))
+			s.resolve_proof(f.From, fmt.Errorf("proof verify failed: %w", err), "")
 			return
 		}
-		s.resolve_proof(f.From, nil)
+		s.resolve_proof(f.From, nil, "")
 
 	case frame_type_fail:
 		// A refused prove demand carries the entity rather than a message
 		// id: it is answering a question about the peer, not about a
 		// queued row.
 		if len(f.Replies) == 0 && f.From != "" {
-			s.resolve_proof(f.From, fmt.Errorf("peer refused to prove entity %q: %s", f.From, f.Reason))
+			if !s.solicited(f.From) {
+				return
+			}
+			s.resolve_proof(f.From, fmt.Errorf("peer refused to prove entity %q: %s", f.From, f.Reason), f.Reason)
 			return
 		}
 		if len(f.Replies) == 0 {
@@ -758,7 +1005,7 @@ func (s *Sender) handle_inbound(f *Frame) {
 
 	case frame_type_ping:
 		// Echo pong with the same ID.
-		_ = frame_write(s.stream, &Frame{Type: frame_type_pong, ID: f.ID})
+		_ = s.write(&Frame{Type: frame_type_pong, ID: f.ID})
 
 	case frame_type_pong:
 		s.lock.Lock()
@@ -771,47 +1018,30 @@ func (s *Sender) handle_inbound(f *Frame) {
 	}
 }
 
-// resolve_fail maps the receiver's failure reason to the sender-side
-// disposition (queue_ack/drop/fail/retry). The vocabulary table lives
-// in claude/plans/protocol2.md → Failure reasons.
+// resolve_fail settles a message by its receiver's failure reason, as
+// fail_dispositions says: dropped, or failed for a retry on the backoff ladder.
+// The vocabulary lives in claude/plans/protocol2.md → Failure reasons.
 func (s *Sender) resolve_fail(p *pending, reason string) {
-	switch reason {
-	case fail_unsupported, fail_unknown_user, fail_expired, fail_dedup:
-		if p.queue != "" {
-			queue_drop(p.queue, reason)
-		}
-	case fail_signature_invalid:
-		warn("Sender: signature_invalid fail from peer=%q queue=%q", s.peer, p.queue)
-		if p.queue != "" {
-			queue_drop(p.queue, reason)
-		}
-	case fail_rate_limited, fail_buffer_full, fail_handler_panic:
-		if p.queue != "" {
-			queue_fail(p.queue, fmt.Sprintf("retry-backoff: %s", reason))
-		}
-	case fail_unclaimed:
-		// Clear our cached claim so the next send re-issues it on the
-		// (new) stream, then re-queue for immediate retry.
+	if reason == fail_unclaimed {
+		// Clear our cached claims so the next send re-issues them. Cheap:
+		// typically 1–2 entities per sender, and re-claiming is safe.
 		s.lock.Lock()
-		for ent := range s.claimed {
-			// Cheap: typically 1–2 entities per sender. Clearing all
-			// is safe — re-claim on next send.
-			delete(s.claimed, ent)
+		for entity := range s.claimed {
+			delete(s.claimed, entity)
 		}
 		s.lock.Unlock()
-		if p.queue != "" {
-			queue_fail(p.queue, "retry-now: unclaimed")
-		}
-	case "", fail_transient:
-		if p.queue != "" {
-			queue_fail(p.queue, "retry-now: transient")
-		}
-	default:
-		// Unknown reason from a newer peer; treat as transient.
-		if p.queue != "" {
-			queue_fail(p.queue, fmt.Sprintf("retry-now: unknown reason %q", reason))
-		}
 	}
+	if p.queue == "" {
+		return
+	}
+	if !fail_retryable(reason) {
+		queue_drop(p.queue, reason)
+		return
+	}
+	if reason == "" {
+		reason = fail_transient
+	}
+	queue_fail(p.queue, fmt.Sprintf("retry: %s", reason))
 }
 
 // ping_loop emits a ping after peer.ping_interval of stream-side
@@ -837,11 +1067,23 @@ func (s *Sender) ping_loop() {
 		if last > 0 && time.Since(time.Unix(0, last)) < interval {
 			continue
 		}
-		id := uid()
-		err := peer_send(s.peer, "", &Frame{Type: frame_type_ping, ID: id})
-		if err != nil {
-			debug("Sender: ping enqueue failed peer=%q: %v", s.peer, err)
-		}
+		s.ping()
+	}
+}
+
+// ping queues a ping on this Sender, recorded as sent from the moment it is
+// queued: one the Sender cannot write, behind a write the far side will not
+// read, times out as one never answered does, and the stream goes.
+func (s *Sender) ping() {
+	if s.draining.Load() {
+		return
+	}
+	id := uid()
+	s.lock.Lock()
+	s.pings[id] = now()
+	s.lock.Unlock()
+	if err := s.enqueue(&outbound{frame: &Frame{Type: frame_type_ping, ID: id}}, sender_send_timeout); err != nil {
+		debug("Sender: ping enqueue failed peer=%q: %v", s.peer, err)
 	}
 }
 
@@ -854,34 +1096,44 @@ func (s *Sender) pull_loop() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for !s.closed.Load() {
-		capacity := s.room()
-		if capacity > 0 {
-			rows := queue_claim_for_peer(s.peer, capacity)
-			for _, q := range rows {
-				if s.closed.Load() {
-					queue_unsending(q.ID)
-					continue
-				}
-				if delivered_drop(&q) {
-					continue
-				}
-				f, err := frame_for_queue(&q)
-				if err != nil {
-					frame_drop(q.ID, s.peer, err)
-					continue
-				}
-				select {
-				case s.outbox <- &outbound{frame: f, queue: q.ID}:
-				case <-time.After(time.Second):
-					// Outbox stuck — roll back the claim so the next
-					// pull (or queue_process fallback) can retry.
-					queue_unsending(q.ID)
-				}
-			}
-		}
+		s.pull_once()
 		select {
 		case <-tick.C:
 		case <-s.wake:
+		}
+	}
+}
+
+// pull_once claims what room the Sender has for and puts it on the outbox.
+// Nothing is claimed once the server is shutting down (draining): the far side
+// stops reading at the bye that follows, and what was written after it would
+// be lost on the wire.
+func (s *Sender) pull_once() {
+	if s.draining.Load() {
+		return
+	}
+	capacity := s.room()
+	if capacity <= 0 {
+		return
+	}
+	rows := queue_claim_for_peer(s.peer, capacity)
+	for _, q := range rows {
+		if s.closed.Load() {
+			queue_unsending(q.ID)
+			continue
+		}
+		if delivered_drop(&q) {
+			continue
+		}
+		f, err := frame_for_queue(&q)
+		if err != nil {
+			frame_drop(q.ID, s.peer, err)
+			continue
+		}
+		if err := s.enqueue(&outbound{frame: f, queue: q.ID}, time.Second); err != nil {
+			// Outbox stuck or the Sender gone — roll back the claim so the
+			// next pull (or queue_process) can take it.
+			queue_unsending(q.ID)
 		}
 	}
 }
@@ -925,9 +1177,9 @@ func (s *Sender) rate_gate() {
 	}
 }
 
-// shutdown marks the Sender closed, drains inflight to queue_fail,
-// closes the libp2p stream, and removes the registry entry. Sibling
-// goroutines notice via the closed atomic and exit.
+// shutdown marks the Sender closed, closes the libp2p stream, fails its
+// in-flight messages back to the queue and then removes the registry entry.
+// Sibling goroutines notice via the closed atomic and exit.
 func (s *Sender) shutdown() {
 	if !s.closed.CompareAndSwap(false, true) {
 		return
@@ -944,39 +1196,39 @@ func (s *Sender) shutdown() {
 		close(s.done)
 	}
 
-	senders_lock.Lock()
-	if senders[s.peer] == s {
-		delete(senders, s.peer)
-	}
-	senders_lock.Unlock()
-
 	// stream is nil only in tests that install a synthetic Sender
 	// without going through sender_open. Production always has one.
 	if s.stream != nil {
 		s.stream.Reset()
 	}
 
-	// Drain outbox into queue_fail so producers that arrive between
-	// the CAS and the registry delete don't sit on a dead Sender.
-	go func() {
-		for {
-			select {
-			case ob := <-s.outbox:
-				s.fail_outbound(ob, "sender closed")
-			default:
-				return
-			}
-		}
-	}()
+	// What waits on the outbox was never written: handed back, off the caller,
+	// which may be the read loop. A frame offered after this is drained by its
+	// own enqueue.
+	go guard("sender outbox drain", nil, s.drain_outbox)
 
+	// In-flight messages go back to the queue before the Sender leaves the
+	// registry, so no row is left 'sending' with no Sender behind it. Taken
+	// under the lock and failed outside it: queue_fail writes queue.db, and
+	// the lock is the one acks and window checks wait on.
 	s.lock.Lock()
+	failed := make([]string, 0, len(s.inflight))
 	for id, p := range s.inflight {
 		if p.queue != "" {
-			queue_fail(p.queue, "stream closed")
+			failed = append(failed, p.queue)
 		}
 		delete(s.inflight, id)
 	}
 	s.lock.Unlock()
+	for _, row := range failed {
+		queue_fail(row, "stream closed")
+	}
+
+	senders_lock.Lock()
+	if senders[s.peer] == s {
+		delete(senders, s.peer)
+	}
+	senders_lock.Unlock()
 }
 
 // senders_sweep_all walks every Sender and times out stale inflight
@@ -999,7 +1251,10 @@ func senders_sweep_all() {
 
 		s.lock.Lock()
 		for id, p := range s.inflight {
-			if t-p.sent > inflight_timeout {
+			// Sent is zero while the frame is still being written, which
+			// its own deadline bounds: timed out here, the row would be
+			// sent again while the first frame was still going out.
+			if p.sent != 0 && t-p.sent > inflight_timeout {
 				stale_inflight = append(stale_inflight, id)
 			}
 		}
@@ -1049,10 +1304,12 @@ func senders_sweep_manager() {
 	}
 }
 
-// senders_bye_all walks every open Sender and writes a bye frame, then
-// waits for inflight to drain (or sender_bye_drain_timeout). Called
-// from the SIGTERM path; replaces the legacy peers_shutdown loop for
-// peers that have an open /mochi/2/messages stream.
+// senders_bye_all drains every open Sender for the SIGTERM path: each stops
+// taking rows (draining), the messages it holds are written and acknowledged
+// or the timeout passes, and only then is its bye written - the far side stops
+// reading at bye, so anything written after it would be lost. Replaces the
+// legacy peers_shutdown loop for peers that have an open /mochi/2/messages
+// stream.
 func senders_bye_all(timeout time.Duration) {
 	senders_lock.Lock()
 	all := make([]*Sender, 0, len(senders))
@@ -1062,29 +1319,47 @@ func senders_bye_all(timeout time.Duration) {
 	senders_lock.Unlock()
 
 	for _, s := range all {
-		_ = peer_send(s.peer, "", &Frame{Type: frame_type_bye})
+		s.draining.Store(true)
 	}
 
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		any_inflight := false
-		senders_lock.Lock()
-		for _, s := range senders {
-			s.lock.Lock()
-			if len(s.inflight) > 0 || s.parked.Load() > 0 {
-				any_inflight = true
-			}
-			s.lock.Unlock()
-			if any_inflight {
-				break
-			}
-		}
-		senders_lock.Unlock()
-		if !any_inflight {
-			return
-		}
+	for time.Now().Before(deadline) && senders_busy(all) {
 		time.Sleep(100 * time.Millisecond)
 	}
+
+	for _, s := range all {
+		_ = s.enqueue(&outbound{frame: &Frame{Type: frame_type_bye}}, sender_send_timeout)
+	}
+	// Each bye is written by its write_loop: give them a moment to go before
+	// the host closes.
+	for grace := time.Now().Add(sender_send_timeout); time.Now().Before(grace); time.Sleep(10 * time.Millisecond) {
+		written := true
+		for _, s := range all {
+			if !s.closed.Load() && len(s.outbox) > 0 {
+				written = false
+			}
+		}
+		if written {
+			return
+		}
+	}
+}
+
+// senders_busy reports whether any of the Senders still holds a message: on
+// its outbox, held for a proof, or in flight.
+func senders_busy(all []*Sender) bool {
+	for _, s := range all {
+		if s.closed.Load() {
+			continue
+		}
+		s.lock.Lock()
+		inflight := len(s.inflight)
+		s.lock.Unlock()
+		if inflight > 0 || s.parked.Load() > 0 || len(s.outbox) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // senders_peer_invalidate is called from the libp2p disconnect handler
@@ -1099,34 +1374,12 @@ func senders_peer_invalidate(peer string) {
 	}
 }
 
-// senders_entity_invalidate tears down any open Sender that has already claimed
-// `entity`, so a receiver's cached claim against the old pubkey stops serving
-// us after a key rotation. Mochi never rotates entity keys today.
-func senders_entity_invalidate(entity string) {
-	if entity == "" {
-		return
-	}
-	senders_lock.Lock()
-	doomed := make([]*Sender, 0, len(senders))
-	for _, s := range senders {
-		s.lock.Lock()
-		if s.claimed[entity] {
-			doomed = append(doomed, s)
-		}
-		s.lock.Unlock()
-	}
-	senders_lock.Unlock()
-	for _, s := range doomed {
-		debug("Sender: entity %q rotated; closing peer=%q session=%s",
-			entity, s.peer, s.session)
-		s.shutdown()
-	}
-}
-
 // peer_protocol_open opens a libp2p stream to peer for `prefer`, connecting
 // first if needed. Returns error_sender_unreachable when the peer is silent,
-// cannot be connected, or does not speak `prefer` - the last silences the peer
-// so it is not probed on every queue tick.
+// cannot be connected, or does not speak `prefer`. Only a failure to connect
+// counts towards silence: a stream that will not open on a live connection is
+// progress evidence (peer_progress.go), which has a trial window, and a peer
+// that does not speak `prefer` has nothing wrong with its connection.
 func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) {
 	if peer == "" || net_me == nil {
 		return nil, error_sender_unreachable
@@ -1154,10 +1407,16 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 	if err != nil {
 		if is_protocol_not_supported(err) {
 			debug("Protocol: peer %q does not support %q — treating as unreachable (peer never upgraded past /mochi/1?)", peer, prefer)
-			peer_mark_send_failed(peer)
 			return nil, error_sender_unreachable
 		}
-		peer_mark_send_failed(peer)
+		// The connection dropped under the open: a failure to reach the peer.
+		// Otherwise the peer is connected and the stream would not open on it -
+		// a negotiation that timed out, a far side at its stream limit.
+		if net_me.Network().Connectedness(pid) != p2p_network.Connected {
+			peer_mark_send_failed(peer)
+		} else {
+			peer_mark_no_progress(peer)
+		}
 		return nil, fmt.Errorf("protocol: NewStream peer=%q proto=%q: %w", peer, prefer, err)
 	}
 	peer_mark_send_success(peer)
@@ -1216,7 +1475,6 @@ func frame_for_queue(q *QueueEntry) (*Frame, error) {
 		Event:    q.Event,
 		FromApp:  q.FromApp,
 		Services: services,
-		Priority: frame_priority_for(q.Priority),
 		Content:  content,
 		Data:     q.Data,
 	})
@@ -1240,7 +1498,6 @@ func frame_for_message(m *Message, content []byte) (*Frame, error) {
 		Event:    m.Event,
 		FromApp:  m.FromApp,
 		Services: m.Services,
-		Priority: frame_priority_for(queue_priority(m.Service, m.Event)),
 		Content:  content_map,
 		Data:     m.data,
 	})
@@ -1256,13 +1513,10 @@ func frame_checked(f *Frame) (*Frame, error) {
 
 // frame_drop gives up a queued message whose frame cannot be sent, as the
 // fail_unsupported its receiver would answer: the row goes at once and the
-// sending app is told it was rejected. The app's handler runs on a goroutine
-// of its own, since the callers are the send paths and a handler can take as
-// long as it likes. Logged, not warned: the cause is the app's message, which
-// the rejection reports to it.
+// sending app is told it was rejected, its handler running off the send path
+// (queue_error_report). Logged, not warned: the cause is the app's message,
+// which the rejection reports to it.
 func frame_drop(id, peer string, err error) {
 	info("Sender: dropping message %q for peer=%q: %v", id, peer, err)
-	if report := queue_drop_row(id, fail_unsupported); report != nil {
-		go guard("message rejection", nil, report)
-	}
+	queue_drop(id, fail_unsupported)
 }

@@ -142,48 +142,93 @@ func (e *Event) get(field string, def string) string {
 	return def
 }
 
-// Route a received event to the correct app. Returns error on failure.
-func (e *Event) route() error {
-	// Resolve fingerprint to entity ID
-	if e.to != "" && valid(e.to, "fingerprint") {
-		ent := entity_by_any(e.to)
-		if ent != nil {
-			e.to = ent.ID
-		}
-	}
-
-	if e.to != "" {
-		e.user = user_owning_entity(e.to)
-		if e.user == nil {
-			debug("Event dropping to unknown user %q", e.to)
-			return fmt.Errorf("unknown user %q", e.to)
-		}
-	}
-
-	// Find which app handles this event
-	// First check if the target entity is an app that handles this event
-	a := app_by_id(e.to)
-	if a != nil {
-		// Check if this app actually handles the requested event
-		av := a.active(e.user)
-		if av != nil {
-			_, has_event := av.event(e.event)
-			if !has_event {
-				// App doesn't handle this event, fall back to service lookup
-				a = nil
+// event_target picks the app an event goes to: the app whose entity it is
+// addressed to, when that app handles the event, else the app the user or the
+// system binds its service to. Shared by Event.route and event_admit, so the app
+// a frame is admitted for and keyed on is the app it runs in.
+func event_target(user *User, to, service, event string) *App {
+	if a := app_by_id(to); a != nil {
+		if av := a.active(user); av != nil {
+			if _, ok := av.event(event); ok {
+				return a
 			}
-		} else {
-			// No active version for this app
-			a = nil
 		}
 	}
+	return app_for_service(user, service)
+}
+
+// event_broadcast reports whether event is one of the broadcast events core
+// handles for every app, which no app declares.
+func event_broadcast(event string) bool {
+	return event == "broadcast/resync" || event == "broadcast/acknowledge" || event == "broadcast/floor"
+}
+
+// event_admit decides whether an inbound event can be delivered before anything
+// of it is marked, queued or read: the app it goes to, or the failure reason
+// that refuses it. It answers as Event.route would for an unknown app, version
+// or event, and for a sender that is not authenticated to an event that does not
+// accept one - none of which a retry can change, so all are fail_unsupported.
+// user is the owner of the event's target, nil for none.
+func event_admit(user *User, to, service, event, from string) (*App, string) {
+	a := event_target(user, to, service, event)
 	if a == nil {
-		// Fall back to looking up by service (respecting user preferences)
-		a = app_for_service(e.user, e.service)
+		return nil, fail_unsupported
 	}
+	if dev_reload && a.latest != nil {
+		a.latest.reload()
+	}
+	av := a.active(user)
+	if av == nil {
+		return nil, fail_unsupported
+	}
+	if event_broadcast(event) {
+		if from == "" || user == nil {
+			return nil, fail_unsupported
+		}
+		return a, ""
+	}
+	ae, found := av.event(event)
+	if !found || (from == "" && !ae.Anonymous) {
+		return nil, fail_unsupported
+	}
+	return a, ""
+}
+
+// event_refusal is an Event.route failure no retry can change: the event is
+// for no one here, no app takes it, or its sender may not send it. reason is
+// the wire failure reason the sender hears (worker_failure_reason), which
+// fail_dispositions makes a drop.
+type event_refusal struct {
+	reason string
+	err    error
+}
+
+func (r *event_refusal) Error() string { return r.err.Error() }
+func (r *event_refusal) Unwrap() error { return r.err }
+
+// event_refuse builds an event_refusal answered with reason.
+func event_refuse(reason, format string, args ...any) error {
+	return &event_refusal{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// Route a received event to the correct app. Returns error on failure. A
+// caller that has resolved the target (target_resolve) sets e.to to the entity
+// id and e.user to its owner, and it is not looked up again.
+func (e *Event) route() error {
+	if e.to != "" && e.user == nil {
+		to, user, ok := target_resolve(e.to)
+		e.to = to
+		if !ok {
+			debug("Event dropping to unknown user %q", e.to)
+			return event_refuse(fail_unknown_user, "unknown user %q", e.to)
+		}
+		e.user = user
+	}
+
+	a := event_target(e.user, e.to, e.service, e.event)
 	if a == nil {
 		debug("Event dropping to unknown service %q", e.service)
-		return fmt.Errorf("unknown service %q", e.service)
+		return event_refuse(fail_unsupported, "unknown service %q", e.service)
 	}
 	e.app = a
 	if dev_reload && a.latest != nil {
@@ -197,20 +242,20 @@ func (e *Event) route() error {
 		// app_external registers an app before its version loads, so a failed load
 		// leaves an empty map that app_for_service_resolve can reach from the wire.
 		debug("Event dropping to app %q with no active version for service %q", a.id, e.service)
-		return fmt.Errorf("no active version for app %q", a.id)
+		return event_refuse(fail_unsupported, "no active version for app %q", a.id)
 	}
 
 	// System broadcast events. Handled internally, bypassing app-level
 	// event registration since every subscription app gets the same
 	// mechanism for free.
-	if e.event == "broadcast/resync" || e.event == "broadcast/acknowledge" || e.event == "broadcast/floor" {
+	if event_broadcast(e.event) {
 		if e.from == "" {
 			info("Event dropping unsigned broadcast event %q to app %q", e.event, a.id)
-			return fmt.Errorf("unsigned broadcast event")
+			return event_refuse(fail_unsupported, "unsigned broadcast event")
 		}
 		if e.user == nil {
 			info("Event dropping broadcast event for nil user")
-			return fmt.Errorf("broadcast event requires user")
+			return event_refuse(fail_unsupported, "broadcast event requires user")
 		}
 		// Broadcast tables live in the per-app system DB (app.db), not the app's
 		// writable data DB, so apps cannot tamper with metadata the server reads back
@@ -236,7 +281,7 @@ func (e *Event) route() error {
 
 	if !found {
 		debug("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
-		return fmt.Errorf("unknown event %q", e.event)
+		return event_refuse(fail_unsupported, "unknown event %q", e.event)
 	}
 
 	// Seed the app's default permissions, as web_action does for an HTTP action:
@@ -248,7 +293,7 @@ func (e *Event) route() error {
 	if av.Database.File != "" {
 		if e.user == nil {
 			info("Event dropping broadcast for service requiring user")
-			return fmt.Errorf("broadcast for service requiring user")
+			return event_refuse(fail_unsupported, "broadcast for service requiring user")
 		}
 
 		e.db = db_app(e.user, a)
@@ -263,7 +308,7 @@ func (e *Event) route() error {
 	if e.from == "" && !ae.Anonymous {
 		info("Event dropping unsigned message to app %q", a.id)
 		audit_message_rejected("", "unsigned")
-		return fmt.Errorf("unsigned message")
+		return event_refuse(fail_unsupported, "unsigned message")
 	}
 
 	// A ROUTING HINT, NOT AUTHORIZATION. This list and the services list below
@@ -286,7 +331,7 @@ func (e *Event) route() error {
 		}
 		if !allowed {
 			info("Event dropping message from app %q not in allowed list for event %q in app %q", e.sender_app, e.event, a.id)
-			return fmt.Errorf("app %q not allowed", e.sender_app)
+			return event_refuse(fail_unsupported, "app %q not allowed", e.sender_app)
 		}
 	}
 
@@ -309,7 +354,7 @@ func (e *Event) route() error {
 		}
 		if !allowed {
 			info("Event dropping message: sender services %v not in allowed list for event %q in app %q", e.sender_services, e.event, a.id)
-			return fmt.Errorf("sender services not allowed")
+			return event_refuse(fail_unsupported, "sender services not allowed")
 		}
 	}
 
@@ -396,7 +441,7 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_error 
 	case "": // Internal app
 		if ae.internal_function == nil {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
-			return fmt.Errorf("no handler for event %q", e.event)
+			return event_refuse(fail_unsupported, "no handler for event %q", e.event)
 		}
 
 		defer func() {
@@ -413,7 +458,7 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_error 
 	case "starlark":
 		if ae.Function == "" {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
-			return fmt.Errorf("no handler for event %q", e.event)
+			return event_refuse(fail_unsupported, "no handler for event %q", e.event)
 		}
 
 		s := av.starlark()
@@ -441,7 +486,7 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_error 
 
 	default:
 		info("Event unknown engine %q version %q", av.Architecture.Engine, av.Architecture.Version)
-		return fmt.Errorf("unknown engine %q", av.Architecture.Engine)
+		return event_refuse(fail_unsupported, "unknown engine %q", av.Architecture.Engine)
 	}
 }
 
@@ -459,25 +504,6 @@ func event_int64(v any) int64 {
 		return int64(x)
 	}
 	return 0
-}
-
-// Decode the next segment from a received event. Lazy-creates the
-// CBOR decoder if it isn't set up yet — needed for /mochi/2/stream
-// callers that reach segment() before any s.read() has constructed
-// the decoder.
-func (e *Event) segment(v any) bool {
-	if e.stream == nil || e.stream.reader == nil {
-		return false
-	}
-	if e.stream.decoder == nil {
-		e.stream.decoder = cbor_decode_mode.NewDecoder(e.stream.reader)
-	}
-	err := e.stream.decoder.Decode(v)
-	if err != nil {
-		info("Event unable to decode segment: %v", err)
-		return false
-	}
-	return true
 }
 
 // Starlark methods

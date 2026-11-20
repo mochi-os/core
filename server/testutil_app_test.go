@@ -36,6 +36,10 @@ func setup_replication_test(t *testing.T) {
 
 	previous_id := net_id
 	net_id = "self"
+	// Rows held by an earlier test's holders are no row of this one's.
+	queue_holding_lock.Lock()
+	queue_holding = map[string]bool{}
+	queue_holding_lock.Unlock()
 
 	// Registered after the data_dir restore so it runs before it: any
 	// /mochi/2 self-loop worker this test spawned has to be drained while the

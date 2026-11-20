@@ -9,7 +9,9 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestQueuePriority: every message is interactive. The replication service and
@@ -43,9 +45,26 @@ func queue_test_table() *DB {
 	db.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	db.exec("create index if not exists queue_target on queue (target)")
 	db.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
+	db.exec("create index if not exists queue_created on queue (created)")
 	db.exec(delivered_schema)
 	db.exec(delivered_index)
 	return db
+}
+
+// queue_ack_drain pulls every queued ack from queue_ack_ch and flushes them
+// synchronously, for tests that verify queue state after an ack: production has
+// queue_ack_batcher draining the channel, and tests do not start it.
+func queue_ack_drain() {
+	batch := make([]string, 0, queue_ack_batch)
+	for {
+		select {
+		case id := <-queue_ack_ch:
+			batch = append(batch, id)
+		default:
+			queue_ack_flush(batch)
+			return
+		}
+	}
 }
 
 // queue_test_insert adds a minimal due (next_retry in the past) row.
@@ -289,50 +308,43 @@ func TestQueueResurrectPeerPullsDeferredRowsForward(t *testing.T) {
 	}
 }
 
-// TestQueueSelfLoopFastDecodeFailureReturnsFalse confirms the fast
-// path returns false (retryable) when q.Content can't be CBOR-decoded,
-// and crucially does NOT panic. A corrupted/wrong-shape content blob
-// must surface as a normal queue_fail, never as a process crash.
-func TestQueueSelfLoopFastDecodeFailureReturnsFalse(t *testing.T) {
-	// queue_send_self_loop_fast dispatches to an app worker, which lives until
-	// the reaper closes its inbox. Without the teardown it outlives this test and
-	// races later ones on the globals a worker reads.
+// TestQueueSelfLoopUndecodableRowIsDropped is #2107: a self-loop row whose
+// content would not decode was left 'sending', handed back by the sweep every
+// two minutes and retried for seven days with no attempt counted, while the
+// remote path drops the same row at once. It is dropped as rejected, and the
+// sending app told, as frame_drop does.
+func TestQueueSelfLoopUndecodableRowIsDropped(t *testing.T) {
 	reset_workers(t)
 	defer reset_workers(t)
-
 	setup_replication_test(t)
-	q := &QueueEntry{
-		ID:         "decode-fail",
-		FromEntity: "from-x",
-		ToEntity:   "to-x",
-		Service:    "s",
-		Event:      "e",
-		Content:    []byte{0xff, 0xff, 0xff, 0xff}, // invalid CBOR
+	db := queue_test_table()
+	var calls []error_call
+	restore := error_test_capture(&calls)
+	db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, from_app, content, next_retry, created)
+		values ('decode-fail', ?, 'from-x', 'to-x', 's', 'e', 'feeds', ?, ?, ?)`, net_id, []byte{0xff, 0xff, 0xff, 0xff}, now()-1, now()-1)
+	q := queue_claim_for_self(10)
+	if len(q) != 1 {
+		t.Fatalf("control: claimed %d rows, want the one", len(q))
 	}
-	if ok := queue_send_self_loop_fast(q); ok {
-		t.Error("self-loop fast path: malformed content returned ok=true; want false (retryable)")
+	if busy := queue_send_self_loop_fast(&q[0]); busy {
+		t.Error("an undecodable row reported its worker busy")
+	}
+	restore()
+	if queue_test_held(db, "decode-fail") {
+		t.Error("THE POINT: an undecodable self-loop row is still queued, to be retried for seven days")
+	}
+	if len(calls) != 1 || calls[0].code != error_code_message_rejected {
+		t.Errorf("the sending app was told %+v, want one message/rejected", calls)
 	}
 }
 
-// TestQueueSelfLoopFastPanicRecovered: route() needs real user/app
-// infrastructure to reach a panic, so this only proves the defer recover
-// wrapper is present and correctly typed - a failed recover would crash the
-// test runner here.
-func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
-	// queue_send_self_loop_fast dispatches to an app worker, which lives until
-	// the reaper closes its inbox. Without the teardown it outlives this test and
-	// races later ones on the globals a worker reads.
-	reset_workers(t)
-	defer reset_workers(t)
-
-	setup_replication_test(t)
-	// Empty Event - route() returns "unknown user" error, not a panic,
-	// but exercises the full function structure including defer recover.
-	q := &QueueEntry{ID: "ok", Content: nil}
-	// If the defer were missing AND e.route() panicked, this would
-	// kill the test runner. Returns false (retryable) is the success.
-	if ok := queue_send_self_loop_fast(q); ok {
-		t.Error("self-loop fast path: empty event returned ok=true; want false (no matching user/app)")
+// A dispatch that panics counts an attempt (#2107): a row that faults every
+// time parks rather than being retried uncounted for a week. No route into the
+// fast path panics on demand, so the recover is pinned in the source.
+func TestQueueSelfLoopPanicCountsAnAttempt(t *testing.T) {
+	function := function_body(t, "queue.go", "func queue_send_self_loop_fast(")
+	if !strings.Contains(function, `queue_fail(q.ID, fmt.Sprintf("self-loop dispatch panic: %v", r))`) {
+		t.Error("THE POINT: queue_send_self_loop_fast's recover does not fail the row with an attempt counted")
 	}
 }
 
@@ -525,18 +537,14 @@ func queue_test_select(db *DB) []QueueEntry {
 }
 
 // TestQueueSelectLeavesSenderTargets pins that the rows of a target with an open
-// Sender are left to its pull_loop, their head returned only for the checks; a
-// file push, which pull_loop does not take, is picked to send.
+// Sender are left to its pull_loop, their head returned only for the checks.
 func TestQueueSelectLeavesSenderTargets(t *testing.T) {
 	setup_replication_test(t)
 	db := queue_test_table()
 	open := new_test_sender(t, "peer-open")
 	defer stash_sender(t, "peer-open", open)()
-	file := new_test_sender(t, "peer-file")
-	defer stash_sender(t, "peer-file", file)()
 
 	queue_test_insert_event(db, "open-message", "peer-open", "msg", priority_interactive)
-	queue_test_insert_event(db, "file-push", "peer-file", "file/push", priority_interactive)
 	queue_test_insert_event(db, "closed-message", "peer-closed", "msg", priority_interactive)
 
 	rows, heads := queue_select(db)
@@ -546,9 +554,6 @@ func TestQueueSelectLeavesSenderTargets(t *testing.T) {
 	}
 	if !queue_test_ids(heads)["open-message"] {
 		t.Error("left an open Sender's head out of the checks")
-	}
-	if !ids["file-push"] {
-		t.Error("left an open Sender's file push unpicked")
 	}
 	if !ids["closed-message"] {
 		t.Error("left a target with no Sender unpicked")
@@ -586,9 +591,7 @@ func TestQueueProcessScreensSenderTargets(t *testing.T) {
 		s := new_test_sender(t, peer)
 		defer stash_sender(t, peer, s)()
 	}
-	for i := 0; i < peer_stall_threshold; i++ {
-		peer_mark_no_progress(stalled)
-	}
+	peer_stall_test(stalled)
 	queue_test_insert_event(db, "stalled-1", stalled, "msg", priority_interactive)
 	queue_test_insert_event(db, "stalled-2", stalled, "msg", priority_interactive)
 	queue_test_insert_event(db, "expired-1", expiring, "msg", priority_interactive)
@@ -796,5 +799,423 @@ func TestQueueClaimComesBackInOrder(t *testing.T) {
 	}
 	if fmt.Sprint(ids) != "[claim-replay claim-live-1 claim-live-2]" {
 		t.Errorf("claimed %v, want the replay row first, then the live rows as queued", ids)
+	}
+}
+
+// TestQueueSenderOpenDoesNotHoldThePass is #150's second half: queue_process
+// waits for every send of its pass, and opening a Sender waits on the peer - a
+// connect, the stream's negotiation, its hello - so a peer that withheld its
+// hello held every target's sends for thirty seconds per row it was owed.
+func TestQueueSenderOpenDoesNotHoldThePass(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	db := queue_test_table()
+	const slow = "12D3KooWSlowToOpen"
+	release := make(chan struct{})
+	released := false
+	sender_opener = func(string) (*Sender, error) {
+		<-release
+		return nil, error_sender_unreachable
+	}
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+		sender_opener = nil
+	})
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, content, next_retry, created)
+		values ('slow-1', 'direct', ?, '', '', 'test', 'msg', ?, ?, ?)`, slow, cbor_encode(map[string]any{}), now()-1, now()-1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		queue_process()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("THE POINT: queue_process waited on a Sender's open")
+	}
+	if row, _ := db.row("select status from queue where id='slow-1'"); row == nil || row["status"] != "sending" {
+		t.Errorf("while its Sender opens the row is %v, want sending", row)
+	}
+
+	// The open failing resolves the row as a failed send, as it did inline.
+	close(release)
+	released = true
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if db.integer("select attempts from queue where id='slow-1'") == 1 {
+			return
+		}
+	}
+	t.Error("the failed open did not count as a failed send")
+}
+
+// TestSweepLeavesARowItsWorkerStillRuns is #130: the stuck-sending sweep took
+// back any row claimed over a minute ago, on the assumption that its sender had
+// died, but a self-loop row is 'sending' for as long as its handler runs, which
+// may be minutes. Taken back, it was claimed and dispatched again and the
+// handler ran twice. A row a live holder holds is left to it.
+func TestSweepLeavesARowItsWorkerStillRuns(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+	db := queue_test_table()
+	gate := make(chan struct{})
+	started := make(chan struct{}, 4)
+	test_service(t, "slowapp", "arrive", func(*Event) { started <- struct{}{}; <-gate })
+	defer close(gate)
+	recipient, _ := new_entity_keys(t)
+	db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created)
+		values ('slow-1', ?, '', ?, 'slowapp', 'arrive', ?, ?)`, net_id, recipient, now()-1, now()-1)
+
+	self_loop_pass()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("control: the row's handler never started")
+	}
+	// The handler outlives the sweep's window.
+	db.exec("update queue set claimed=? where id='slow-1'", now()-queue_claim_timeout-10)
+	queue_check_ack_timeout()
+	row, _ := db.row("select status from queue where id='slow-1'")
+	if row == nil || row["status"] != "sending" {
+		t.Fatalf("THE POINT: a row whose handler is still running was taken back: %v", row)
+	}
+	self_loop_pass()
+	select {
+	case <-started:
+		t.Error("THE POINT: the handler ran a second time for one message")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestSweepTakesBackARowNoOneHolds is the other half of #130: a row left
+// 'sending' whose holder is gone - here, released without being resolved - is
+// still handed back.
+func TestSweepTakesBackARowNoOneHolds(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_target(db, "held", "peer-sweep", priority_interactive)
+	queue_test_insert_target(db, "orphan", "peer-sweep", priority_interactive)
+	if rows := queue_claim_for_peer("peer-sweep", 10); len(rows) != 2 {
+		t.Fatalf("control: claimed %d rows, want 2", len(rows))
+	}
+	queue_release("orphan")
+	db.exec("update queue set claimed=?", now()-queue_claim_timeout-10)
+	queue_check_ack_timeout()
+	for id, want := range map[string]string{"held": "sending", "orphan": "pending"} {
+		if row, _ := db.row("select status from queue where id=?", id); row == nil || row["status"] != want {
+			t.Errorf("row %q is %v after the sweep, want %s", id, row, want)
+		}
+	}
+}
+
+// TestQueueRestoreHandsBackRowsLeftSending: at startup no row has a holder, so
+// every row a previous run left 'sending' goes back at once (#130), not after
+// the sweep's minute.
+func TestQueueRestoreHandsBackRowsLeftSending(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_target(db, "left", "peer-restore", priority_interactive)
+	db.exec("update queue set status='sending', claimed=? where id='left'", now())
+	queue_restore()
+	if row, _ := db.row("select status from queue where id='left'"); row == nil || row["status"] != "pending" {
+		t.Errorf("THE POINT: a row a previous run left sending is %v after restore", row)
+	}
+}
+
+// TestSelfLoopRowSentAgainRunsOnce: a self-loop message from a sender takes
+// the dedup record a remote one does (#130), so a row sent a second time - its
+// acknowledgement lost and the row handed back - is answered from the record
+// rather than run again.
+func TestSelfLoopRowSentAgainRunsOnce(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+	db := queue_test_table()
+	var runs atomic.Int32
+	test_service(t, "onceapp", "arrive", func(*Event) { runs.Add(1) })
+	recipient, _ := new_entity_keys(t)
+	from := test_entity_id('o')
+	db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created)
+		values ('once-1', ?, ?, ?, 'onceapp', 'arrive', ?, ?)`, net_id, from, recipient, now()-1, now()-1)
+	send := func() {
+		t.Helper()
+		if !queue_sending("once-1") {
+			t.Fatal("control: the row could not be claimed")
+		}
+		queue_send_self_loop_fast(&QueueEntry{ID: "once-1", Target: net_id, FromEntity: from, ToEntity: recipient, Service: "onceapp", Event: "arrive"})
+	}
+	ran := func(n int32, within time.Duration) bool {
+		for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if runs.Load() >= n {
+				return true
+			}
+		}
+		return runs.Load() >= n
+	}
+	send()
+	if !ran(1, 2*time.Second) {
+		t.Fatal("control: the handler never ran")
+	}
+	workers_drain_test(2 * time.Second)
+	// The acknowledgement never reached queue.db, and the row was handed back.
+	db.exec("update queue set status='pending' where id='once-1'")
+	send()
+	if ran(2, 500*time.Millisecond) {
+		t.Errorf("THE POINT: the handler ran %d times for one message", runs.Load())
+	}
+}
+
+// TestQueueScreenKeepsARowWhenUsersCannotBeRead is #131: a users.db read that
+// failed read as a deleted sending entity, and queue_process deleted the queue
+// head by head for as long as the fault lasted.
+func TestQueueScreenKeepsARowWhenUsersCannotBeRead(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_target(db, "screened", "peer-screen", priority_interactive)
+	db.exec("update queue set from_entity=? where id='screened'", test_entity_id('s'))
+	q := QueueEntry{ID: "screened", Type: "direct", Target: "peer-screen", FromEntity: test_entity_id('s')}
+	udb := db_open("db/users.db") // no entities table: every read fails
+	if queue_screen(db, udb, &q) {
+		t.Error("a sender users.db could not look up was screened out")
+	}
+	if !queue_test_held(db, "screened") {
+		t.Fatal("THE POINT: a users.db read error deleted a queued message")
+	}
+	// Control: a sender users.db says is gone is dropped.
+	setup_users_test_schema()
+	if !queue_screen(db, udb, &q) || queue_test_held(db, "screened") {
+		t.Error("control: a row from a deleted entity was kept")
+	}
+}
+
+// TestQueueClaimSkipsExpiredRows is #139: the claims that drain a peer with an
+// open Sender, and this server, had no expiry condition, so a typing indicator
+// or receipt went out hours late, ahead of real messages.
+func TestQueueClaimSkipsExpiredRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	for id, expires := range map[string]int64{"expired": now() - 10, "fresh": now() + 3600, "forever": 0} {
+		queue_test_insert_target(db, id, "peer-expiry", priority_interactive)
+		db.exec("update queue set expires=? where id=?", expires, id)
+	}
+	claimed := map[string]bool{}
+	for _, q := range queue_claim_for_peer("peer-expiry", 10) {
+		claimed[q.ID] = true
+	}
+	if claimed["expired"] {
+		t.Error("THE POINT: a row past its expiry was handed out")
+	}
+	if !claimed["fresh"] || !claimed["forever"] {
+		t.Errorf("claimed %v, want the rows not yet expired", claimed)
+	}
+}
+
+// Expired rows are deleted in bulk by the hourly cleanup, but not one a holder
+// is still sending (#139).
+func TestQueueCleanupDeletesExpiredRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	for _, id := range []string{"expired", "sending", "fresh"} {
+		queue_test_insert_target(db, id, "peer-expired", priority_interactive)
+	}
+	db.exec("update queue set expires=? where id in ('expired', 'sending')", now()-10)
+	db.exec("update queue set expires=? where id='fresh'", now()+3600)
+	db.exec("update queue set status='sending' where id='sending'")
+	queue_cleanup()
+	if queue_test_held(db, "expired") {
+		t.Error("THE POINT: an expired row outlived the cleanup")
+	}
+	if !queue_test_held(db, "sending") || !queue_test_held(db, "fresh") {
+		t.Error("the cleanup deleted a row in flight or one not yet expired")
+	}
+}
+
+// TestQueueFailStartsAtTheFirstStep is #142: queue_fail indexed the ladder
+// with the attempt it was counting, so the first failure waited two minutes
+// and the documented one-minute step was never used.
+func TestQueueFailStartsAtTheFirstStep(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert(db, "ladder", priority_interactive)
+	for attempt, step := range retry_delays[:2] {
+		queue_fail("ladder", "test")
+		row, _ := db.row("select attempts, next_retry from queue where id='ladder'")
+		wait := row["next_retry"].(int64) - now()
+		if row["attempts"].(int64) != int64(attempt+1) || wait < step-1 || wait > step+step/4 {
+			t.Errorf("THE POINT: failure %d waits %ds with %v attempts, want the ladder's step %d (%ds)", attempt+1, wait, row["attempts"], attempt, step)
+		}
+	}
+}
+
+// TestSelfLoopPassPutsOffAFullInbox is #151: the self-loop drain handed each
+// claimed row to its worker with a blocking dispatch, so one slow handler's
+// full inbox held every other user's and app's local delivery behind it.
+func TestSelfLoopPassPutsOffAFullInbox(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	reset_workers(t)
+	t.Setenv("MOCHI_PEER_WORKER_INBOX", "1")
+	gate := make(chan struct{})
+	t.Cleanup(func() {
+		close(gate)
+		reset_workers(t)
+	})
+	delivered := make(chan string, 4)
+	test_service(t, "busyapp", "arrive", func(*Event) { <-gate })
+	test_service(t, "idleapp", "arrive", func(e *Event) { delivered <- e.message })
+	recipient, _ := new_entity_keys(t)
+	user := user_owning_entity(recipient)
+	// The busy app's worker: one frame with its handler, one filling its inbox.
+	for i := 0; i < 2; i++ {
+		worker_dispatch(user.UID, "busyapp", &worker_frame{frame: &Frame{Type: frame_type_message, ID: "filler-" + itoa(i), To: recipient, Service: "busyapp", Event: "arrive"}, user: user, reply: local_reply{}})
+	}
+	db := queue_test_table()
+	insert := func(id, service string, due int64) {
+		db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created)
+			values (?, ?, '', ?, ?, 'arrive', ?, ?)`, id, net_id, recipient, service, due, due)
+	}
+	insert("idle-1", "idleapp", now()-100)
+	// More of the busy app's rows than one pass claims: those left in queue.db
+	// are put off with the rest, so the next pass does not claim them only to
+	// put them off again.
+	for i := 0; i < self_loop_batch+2; i++ {
+		insert("busy-"+itoa(i), "busyapp", now()-90+int64(i))
+	}
+
+	done := make(chan int, 1)
+	go func() { done <- self_loop_pass() }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("THE POINT: the self-loop pass waited on one worker's full inbox")
+	}
+	select {
+	case id := <-delivered:
+		if id != "idle-1" {
+			t.Errorf("delivered %q, want idle-1", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("THE POINT: another app's row waited behind the full inbox")
+	}
+	for i := 0; i < self_loop_batch+2; i++ {
+		id := "busy-" + itoa(i)
+		row, _ := db.row("select status, attempts, next_retry from queue where id=?", id)
+		if row == nil || row["status"] != "pending" || row["attempts"].(int64) != 0 || row["next_retry"].(int64) <= now() {
+			t.Errorf("row %s is %v, want it put off, pending, with no attempt counted", id, row)
+		}
+	}
+}
+
+// TestQueueCleanupPagesAgedRows is #152: the hourly cleanup read every aged
+// row, content and data included, into memory at once. It reads and deletes
+// them a page at a time, reporting each (sender, app, recipient) once.
+func TestQueueCleanupPagesAgedRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	saved := queue_cleanup_page
+	queue_cleanup_page = 2
+	t.Cleanup(func() { queue_cleanup_page = saved })
+	var calls []error_call
+	restore := error_test_capture(&calls)
+	aged := now() - queue_age_maximum - 100
+	for i, to := range []string{"a", "a", "b", "c", "d"} {
+		error_test_queue_insert(db, "aged-"+itoa(i), "owner", "feeds", to, "feeds", "post/new", aged+int64(i))
+	}
+	error_test_queue_insert(db, "fresh", "owner", "feeds", "e", "feeds", "post/new", now())
+	queue_cleanup()
+	restore()
+	if n := db.integer("select count(*) from queue where id like 'aged-%'"); n != 0 {
+		t.Errorf("THE POINT: %d aged rows outlived the cleanup", n)
+	}
+	if !queue_test_held(db, "fresh") {
+		t.Error("the cleanup deleted a row not yet aged")
+	}
+	if len(calls) != 4 {
+		t.Errorf("%d timeout reports, want one per sender, app and recipient: %+v", len(calls), calls)
+	}
+}
+
+// The cleanup's read walks the created index db_upgrade_28 lays, rather than
+// every row past its content (#152).
+func TestQueueCleanupReadsAlongTheCreatedIndex(t *testing.T) {
+	setup_replication_test(t)
+	db := db_open("db/queue.db")
+	db.exec("drop index if exists queue_created")
+	db_upgrade_28()
+	rows, err := db.rows("explain query plan "+queue_cleanup_query, now(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := fmt.Sprint(rows)
+	if !strings.Contains(plan, "queue_created") {
+		t.Errorf("THE POINT: the cleanup's read does not use queue_created: %s", plan)
+	}
+}
+
+// TestQueueCheckEntityRevivesItsRows is #167: when the directory learned where
+// an entity is, queue_check_entity only woke the manager, so its rows with no
+// target waited out their backoff, and parked ones were never looked at again.
+func TestQueueCheckEntityRevivesItsRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	insert := func(id, target, to, status string) {
+		db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, status, next_retry, created)
+			values (?, ?, '', ?, 's', 'e', ?, ?, ?)`, id, target, to, status, now()+3600, now())
+	}
+	insert("waiting", "", "located", "pending")
+	insert("parked", "", "located", "parked")
+	insert("other", "", "elsewhere", "pending")
+	insert("pinned", "peer-pinned", "located", "pending")
+	queue_check_entity("located")
+	for id, revived := range map[string]bool{"waiting": true, "parked": true, "other": false, "pinned": false} {
+		row, _ := db.row("select status, next_retry from queue where id=?", id)
+		due := row["status"] == "pending" && row["next_retry"].(int64) <= now()
+		if due != revived {
+			t.Errorf("row %q is %v; due now: %v, want %v", id, row, due, revived)
+		}
+	}
+}
+
+// TestQueueDropKeepsARowItCannotRead is #2108: queue_drop deleted the row
+// whether or not its read succeeded, so a read that failed lost the message
+// with no error event to the sending app.
+func TestQueueDropKeepsARowItCannotRead(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	var calls []error_call
+	restore := error_test_capture(&calls)
+	// A value no QueueEntry field takes: the row is there, and will not read.
+	db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, from_app, attempts, next_retry, created)
+		values ('unreadable', 'peer', 'owner', 'to', 's', 'e', 'feeds', 'many', 0, ?)`, now())
+	queue_drop("unreadable", fail_unsupported)
+	restore()
+	if !queue_test_held(db, "unreadable") {
+		t.Error("THE POINT: a row queue_drop could not read was deleted, and its sending app never told")
+	}
+}
+
+// TestQueueDrainEntityWaitsOutAFailedRead pins that a queue.db read that fails
+// is not taken as drained: teardown waits out its deadline, as for rows still
+// queued, instead of going ahead at once and cutting off the farewell.
+func TestQueueDrainEntityWaitsOutAFailedRead(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+
+	start := time.Now()
+	queue_drain_entity("entity-drained", 400*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("control: an empty queue took %v to count as drained", elapsed)
+	}
+
+	db.exec("drop table queue")
+	start = time.Now()
+	queue_drain_entity("entity-unread", 400*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 350*time.Millisecond {
+		t.Errorf("THE POINT: a failed queue.db read was taken as drained after %v", elapsed)
 	}
 }

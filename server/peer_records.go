@@ -67,6 +67,19 @@ const (
 	// peer_record_answered_window — treat a peer as already answered if
 	// another server relayed its record within this many seconds.
 	peer_record_answered_window = 5
+
+	// peer_record_maximum bounds a record's envelope, which is kept whole in
+	// memory and peers.db; it is applied to the base64 a record arrives as,
+	// before anything is decoded. Real ones are a few hundred bytes, the largest
+	// seen about 1 KB with 26 addresses; libp2p's identify holds a signed record
+	// to the same 8 KB.
+	peer_record_maximum = 8192
+
+	// peer_record_addresses_maximum bounds the addresses a record may carry.
+	// A server's record lists every address its host listens on, more than the
+	// peers_publish_addresses_maximum a receiver applies, so the bound is
+	// generous.
+	peer_record_addresses_maximum = 64
 )
 
 // peer_record_announce returns this server's own signed peer record as
@@ -99,9 +112,11 @@ func peer_record_announce() string {
 // peer_record_verify returns a signed record's self-asserted peer id, its
 // /p2p-suffixed addresses, sequence and envelope bytes. The signature must
 // validate and its key derive to the embedded PeerID, which is what makes a
-// third party's record safe to relay. ok=false on any failure.
+// third party's record safe to relay, and the record must be within
+// peer_record_maximum and peer_record_addresses_maximum. ok=false on any
+// failure.
 func peer_record_verify(encoded string) (id string, addresses []string, sequence uint64, data []byte, ok bool) {
-	if encoded == "" {
+	if encoded == "" || len(encoded) > base64.StdEncoding.EncodedLen(peer_record_maximum) {
 		return "", nil, 0, nil, false
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
@@ -113,7 +128,7 @@ func peer_record_verify(encoded string) (id string, addresses []string, sequence
 		return "", nil, 0, nil, false
 	}
 	rec, ok := raw.(*p2p_peer.PeerRecord)
-	if !ok || env.PublicKey == nil {
+	if !ok || env.PublicKey == nil || len(rec.Addrs) > peer_record_addresses_maximum {
 		return "", nil, 0, nil, false
 	}
 	derived, err := p2p_peer.IDFromPublicKey(env.PublicKey)
@@ -143,18 +158,31 @@ func peer_record_store(id string, sequence uint64, data []byte) bool {
 	return true
 }
 
-// peer_record_apply verifies a record announced by its own subject: the
-// record's PeerID must equal the GossipSub-verified origin. That binding is
-// what separates this from a relayed record, which any peer may carry.
-func peer_record_apply(origin string, encoded string) ([]string, bool) {
+// peer_record_newer reports whether a record's sequence is strictly newer than
+// the one held for its peer, or none is held.
+func peer_record_newer(id string, sequence uint64) bool {
+	peer_records_lock.Lock()
+	defer peer_records_lock.Unlock()
+	stored, found := peer_records[id]
+	return !found || sequence > stored.Sequence
+}
+
+// peer_record_apply applies a record announced by its own subject: the record's
+// PeerID must equal the GossipSub-verified origin, the binding that separates
+// this from a relayed record, which any peer may carry. A record newer than the
+// one held has its addresses applied, and is kept once they have made its
+// subject a peer the registry holds, so a record counts under the same ceiling
+// as its peer. Reports whether the record was valid and newer.
+func peer_record_apply(origin string, encoded string) bool {
 	id, addresses, sequence, data, ok := peer_record_verify(encoded)
-	if !ok || id != origin {
-		return nil, false
+	if !ok || id != origin || !peer_record_newer(id, sequence) {
+		return false
 	}
-	if !peer_record_store(id, sequence, data) {
-		return nil, false
+	peer_apply_addresses(id, addresses)
+	if peer_held(id) {
+		peer_record_store(id, sequence, data)
 	}
-	return addresses, true
+	return true
 }
 
 // peer_record_relay answers a peers/request for another peer by broadcasting
@@ -224,7 +252,7 @@ func peer_record_seen(id string) {
 // earlier one. Upsert so a refresh keeps the row's identity.
 func peer_record_save(id string, data []byte, sequence uint64) {
 	db := db_open("db/peers.db")
-	db.exec("insert into records ( id, record, sequence, updated ) values ( ?, ?, ?, ? ) on conflict ( id ) do update set record=excluded.record, sequence=excluded.sequence, updated=excluded.updated", id, data, int64(sequence), now())
+	db.exec_bg("peer record save", "insert into records ( id, record, sequence, updated ) values ( ?, ?, ?, ? ) on conflict ( id ) do update set record=excluded.record, sequence=excluded.sequence, updated=excluded.updated", id, data, int64(sequence), now())
 }
 
 // peer_records_load fills the in-memory record cache from peers.db at
@@ -248,7 +276,7 @@ func peer_records_load() {
 // its record fresh.
 func peer_records_sweep(expiry int64) {
 	db := db_open("db/peers.db")
-	db.exec("delete from records where updated<?", expiry)
+	db.exec_bg("peer records sweep", "delete from records where updated<?", expiry)
 
 	peer_records_lock.Lock()
 	for id, r := range peer_records {

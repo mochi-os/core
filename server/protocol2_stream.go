@@ -5,7 +5,6 @@
 //
 //   • mochi.stream(...) / mochi.stream.peer(...)  (Starlark)
 //   • directory_download_from_peer
-//   • file-push (queue_send_file_push)
 //
 // Architecturally simpler than /mochi/2/messages — no persistent
 // sender, no inflight tracking, no worker pool.
@@ -73,6 +72,11 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		return
 	}
 
+	// Bound the pre-open phase on count and time, caps included: until open
+	// arrives the peer has spent nothing and this host a goroutine, a stream slot
+	// and a verify per claim. The deadline is cleared before the handler runs -
+	// an app stream is long-lived by design.
+	_ = s.SetReadDeadline(time.Now().Add(stream_open_timeout))
 	caps, err := caps_read(s)
 	if err != nil {
 		info("Stream: caps read failed peer=%q session=%s: %v", peer, session, err)
@@ -88,14 +92,11 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		s.Reset()
 		return
 	}
+	peer_greet(peer)
 
 	claimed := map[string]bool{}
 	var open *Frame
 
-	// Bound the pre-open phase on count and time: until open arrives the peer has
-	// spent nothing and this host a verify per claim. The deadline is cleared
-	// before the handler runs - an app stream is long-lived by design.
-	_ = s.SetReadDeadline(time.Now().Add(stream_open_timeout))
 	for count := 0; ; count++ {
 		if count >= stream_claims_maximum {
 			info("Stream: too many claims before open peer=%q session=%s — over %d", peer, session, stream_claims_maximum)
@@ -135,22 +136,10 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	// this path did not, so Service, Event, ID, FromApp and Services reached
 	// Event.route, the logs and the resolution cache as arbitrary strings
 	// bounded only by the frame size.
-	if !envelope_valid(open.From, open.Service, open.Event, open.ID) || !envelope_target_valid(open.To) {
+	if !envelope_valid(open.From, open.Service, open.Event, open.ID, open.FromApp, open.Services) || !envelope_target_valid(open.To) {
 		info("Stream: invalid envelope peer=%q session=%s", peer, session)
 		s.Reset()
 		return
-	}
-	if open.FromApp != "" && !valid(open.FromApp, "constant") {
-		info("Stream: invalid sending app peer=%q session=%s", peer, session)
-		s.Reset()
-		return
-	}
-	for _, offered := range open.Services {
-		if offered != "" && !valid(offered, "constant") {
-			info("Stream: invalid offered service peer=%q session=%s", peer, session)
-			s.Reset()
-			return
-		}
 	}
 
 	if open.From != "" && !claimed[open.From] {
@@ -160,7 +149,7 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	}
 
 	// Resolve target entity (may be a fingerprint) and the owning user.
-	to, user, ok := stream_resolve(open.To)
+	to, user, ok := target_resolve(open.To)
 	if ok && user != nil {
 		// Same learning as the messages path: open.From passed the claim
 		// check above, so record its verified location for the recipient.
@@ -168,6 +157,14 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	}
 	if !ok {
 		_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unknown_user})
+		s.Close()
+		return
+	}
+	// Decided before the ack, and so before anything of the request is read: an
+	// open no app takes, or from no one to an event that wants a sender, is
+	// refused here rather than having its content buffered first.
+	if _, reason := event_admit(user, to, open.Service, open.Event, open.From); reason != "" {
+		_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: reason})
 		s.Close()
 		return
 	}
@@ -203,15 +200,18 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	// content segment, builds the Event, routes it, closes).
 	stream_dispatch(st, open, user, to, peer)
 
-	peer_discovered_address(peer, s.Conn().RemoteMultiaddr().String()+"/p2p/"+peer)
+	// Reached only by an open this host admitted, the evidence of a Mochi
+	// server the registry entry follows.
+	peer_observed(peer, s.Conn())
 	// debug("Stream: closed peer=%q session=%s", peer, session)
 }
 
-// stream_resolve maps an open target to its entity id and owning user. ok is
-// false when a non-empty target has no local owner; an empty target resolves to
-// ("", nil, true). Shared by the wire receiver and the self-loop so they cannot
-// drift.
-func stream_resolve(to string) (string, *User, bool) {
+// target_resolve maps an inbound target - a stream open's, a message frame's,
+// a self-loop row's - to its entity id, a fingerprint resolved, and owning
+// user. ok is false when a non-empty target has no local owner; an empty target
+// resolves to ("", nil, true). The one resolution every dispatcher and
+// Event.route use, so they cannot drift.
+func target_resolve(to string) (string, *User, bool) {
 	if to == "" {
 		return "", nil, true
 	}
@@ -227,14 +227,19 @@ func stream_resolve(to string) (string, *User, bool) {
 	return to, user, true
 }
 
+// stream_content_maximum caps the first segment of a /mochi/2/stream request,
+// read before any handler runs: the request's own content, not its body, which
+// the handler reads afterwards under the stream's whole budget.
+const stream_content_maximum = 1024 * 1024
+
 // stream_dispatch runs the post-handshake half of a /mochi/2/stream session:
 // read the first post-ack CBOR segment as e.content, route the Event with the
-// stream as e.stream, close. Shared by receive_stream and stream_self_loop.
-// st.read() lazy-creates one decoder, so later e.segment() calls resume from
-// it.
+// stream as e.stream, close. Shared by receive_stream and stream_self_loop,
+// each of which has admitted the open (event_admit) first. st.read() creates
+// one segment reader, so the handler's later reads resume from it.
 func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 	content := map[string]any{}
-	if err := st.read(&content); err != nil {
+	if err := st.read_segment(&content, 0, stream_content_maximum); err != nil {
 		info("Stream dispatch: content read failed from=%q service=%q event=%q: %v",
 			open.From, open.Service, open.Event, err)
 		st.close()
@@ -269,13 +274,14 @@ func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 
 // stream_answer_error best-effort writes a final error segment. The write must
 // never block the dispatch: on a self-loop pipe a sender that only writes is
-// not reading, so a bare st.write deadlocks. Goroutine with a short grace.
+// not reading, so a bare st.write deadlocks. Goroutine with a short grace,
+// guarded as every transport goroutine is.
 func stream_answer_error(st *Stream, answer map[string]any) {
 	done := make(chan struct{})
-	go func() {
+	go guard("stream_answer_error", nil, func() {
+		defer close(done)
 		st.write(answer)
-		close(done)
-	}()
+	})
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -299,22 +305,40 @@ func stream_self_loop(from, to, service, event, from_app string, services []stri
 		Service: service, Event: event, FromApp: from_app, Services: services,
 	}
 
-	go func() {
-		resolved, user, ok := stream_resolve(open.To)
+	// Guarded as receive_stream is: the dispatch routes broadcast events outside
+	// run_handler's recover, and a panic at the top of a goroutine ends the
+	// process. The far end is reset and closed so the near end is not left
+	// waiting on a pipe nobody will close.
+	go guard("stream_self_loop", func() { far.reset(); far.close() }, func() {
+		resolved, user, ok := target_resolve(open.To)
 		if !ok {
 			debug("Stream self-loop: unknown user for to=%q service=%q event=%q",
 				open.To, open.Service, open.Event)
-			// The wire receiver answers this with a fail_unknown_user
-			// frame at the open handshake; the loopback skips the
-			// handshake, so answer in-band instead of a bare close.
-			stream_answer_error(far, map[string]any{"error": fail_unknown_user, "code": 404, "transport": true})
-			far.close()
+			stream_self_refuse(far, fail_unknown_user)
+			return
+		}
+		// Admitted before the request is read, in the order the wire receiver
+		// takes.
+		if _, reason := event_admit(user, resolved, open.Service, open.Event, open.From); reason != "" {
+			debug("Stream self-loop: %s for to=%q service=%q event=%q", reason, open.To, open.Service, open.Event)
+			stream_self_refuse(far, reason)
 			return
 		}
 		stream_dispatch(far, open, user, resolved, net_id)
-	}()
+	})
 
 	return near
+}
+
+// stream_self_refuse answers a loopback open this host will not serve. The wire
+// receiver answers with a fail frame at the open handshake; the loopback skips
+// the handshake, so it answers in-band instead of a bare close. None of the
+// request is read: its read side closes first, so a near end writing one fails
+// at once rather than waiting on an answer it is not yet reading.
+func stream_self_refuse(far *Stream, reason string) {
+	far.close_read()
+	stream_answer_error(far, map[string]any{"error": reason, "code": 404, "transport": true})
+	far.close()
 }
 
 // error_stream_sent marks a failed open whose request had already gone with
@@ -458,6 +482,7 @@ func stream_open(ctx context.Context, peer, from, to, service, event, from_app s
 			}
 			return end("", fmt.Errorf("stream: hello read failed peer=%q: %w", peer, err))
 		}
+		peer_greet(peer)
 		// The claim went over the challenge recorded for this connection; a
 		// receiver that gives another has broken the promise its feature made.
 		if !bytes.Equal(hello.Challenge, record.challenge) || !contains_string(hello.Features, feature_connection) {
@@ -552,7 +577,25 @@ func stream_hello(rawstream p2p_network.Stream, peer string) (*Frame, error) {
 		}
 		return nil, fmt.Errorf("stream: hello read failed peer=%q: %w", peer, err)
 	}
+	peer_greet(peer)
 	return hello, nil
+}
+
+// stream_self_refusal answers a loopback write that failed with the refusal
+// the far end gave in-band, as the error a wire open's fail frame makes: a
+// refused open closes its read side before it answers (stream_self_refuse), so
+// the request's write fails first and its closed pipe says nothing of why.
+// Without an answer, the write's own error.
+func stream_self_refusal(s *Stream, written error) error {
+	var answer map[string]any
+	if s.read(&answer) != nil {
+		return written
+	}
+	reason, _ := answer["error"].(string)
+	if transport, _ := answer["transport"].(bool); !transport || reason == "" {
+		return written
+	}
+	return fmt.Errorf("stream: dispatch failed peer=%q reason=%q", net_id, reason)
 }
 
 // stream_open_or_self opens a /mochi/2/stream to peer, routing peer == net_id
@@ -569,6 +612,7 @@ func stream_open_or_self(ctx context.Context, peer, from, to, service, event, fr
 		s.meter(from_app)
 		if content != nil {
 			if err := s.write(content); err != nil {
+				err = stream_self_refusal(s, err)
 				s.close()
 				return nil, err
 			}

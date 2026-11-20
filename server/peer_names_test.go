@@ -53,10 +53,10 @@ func setup_peer_names_test(t *testing.T) {
 }
 
 // names_event builds the Event shape pubsub_receive hands to
-// peer_publish_event, with a name (and an optional, ignored domains field)
-// and no addresses.
+// peer_publish_event, with a name (and an optional, ignored domains field) and
+// the publisher's address: a name is kept only for a peer the registry holds.
 func names_event(origin, name, domains string) *Event {
-	content := map[string]any{}
+	content := map[string]any{"addresses": "/ip4/192.0.2.99/tcp/1443/p2p/" + origin}
 	if name != "" {
 		content["name"] = name
 	}
@@ -146,27 +146,6 @@ func TestPeerPublishEventIgnoresDomains(t *testing.T) {
 	}
 	if name := peer_name(origin); name != "wasabi" {
 		t.Errorf("peer_name = %q, want wasabi", name)
-	}
-}
-
-func TestPeerNameFields(t *testing.T) {
-	setup_peer_names_test(t)
-
-	origin, _ := test_host(t)
-	peer_names_apply(origin, []string{"wasabi"})
-
-	// The announced name shows as a plain label; the fingerprint is the
-	// authoritative identifier. No verified field exists any more.
-	m := map[string]any{}
-	peer_name_fields(m, origin)
-	if m["name"] != "wasabi" {
-		t.Errorf("name = %v, want wasabi", m["name"])
-	}
-	if fp, _ := m["fingerprint"].(string); len(fp) != 9 || fp != fingerprint(origin) {
-		t.Errorf("fingerprint = %v, want %s", m["fingerprint"], fingerprint(origin))
-	}
-	if _, ok := m["verified"]; ok {
-		t.Error("verified field should no longer be set")
 	}
 }
 

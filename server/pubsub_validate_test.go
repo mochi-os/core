@@ -256,3 +256,84 @@ func TestPubsubHostBudgetBoundsTheMesh(t *testing.T) {
 		t.Errorf("accepted %d of 3 messages from distinct neighbours, want 2: with only per-peer budgets the ceiling scales with neighbour count", accepted)
 	}
 }
+
+// TestPubsubPerPeerBudgetIsChargedFirst is #132. The host-wide budget was
+// charged for every well-formed announcement before the per-peer one was asked,
+// so one neighbour's refused flood spent the host's whole allowance and every
+// other neighbour's messages were ignored for the rest of the window.
+func TestPubsubPerPeerBudgetIsChargedFirst(t *testing.T) {
+	pubsub_budgets(t, 3, 1)
+	body := pubsub_test_announcement(t)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(body, p2p_peer.ID("flooder")))
+	}
+	for _, neighbour := range []string{"quiet-one", "quiet-two"} {
+		if pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(body, p2p_peer.ID(neighbour))) != p2p_pubsub.ValidationAccept {
+			t.Errorf("THE POINT: neighbour %s was refused: one flooder's per-peer refusals spent the host budget", neighbour)
+		}
+	}
+}
+
+// TestPubsubControlPlaneHasItsOwnHostBudget: application traffic spent the
+// host-wide allowance the control plane - peer discovery - also drew on.
+func TestPubsubControlPlaneHasItsOwnHostBudget(t *testing.T) {
+	pubsub_budgets(t, 1, 1000)
+	ctx := context.Background()
+	application := pubsub_test_announcement(t)
+	control := cbor_encode(&Announcement{ID: uid(), Service: "peers", Event: "publish", Expires: i64toa(now() + pubsub_expires_ttl)})
+
+	if pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(application, p2p_peer.ID("busy"))) != p2p_pubsub.ValidationAccept {
+		t.Fatal("control: the first application message was refused")
+	}
+	if pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(application, p2p_peer.ID("busier"))) == p2p_pubsub.ValidationAccept {
+		t.Fatal("control: the application plane's host budget did not run out")
+	}
+	if pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(control, p2p_peer.ID("announcer"))) != p2p_pubsub.ValidationAccept {
+		t.Error("THE POINT: application traffic used up the control plane's host budget")
+	}
+}
+
+// TestPubsubValidateRefusesWhatTheLoopWouldDrop is #156: freshness and the
+// entity signature were checked after the validator had accepted, so this host
+// relayed expired, far-future and forged announcements it then dropped.
+func TestPubsubValidateRefusesWhatTheLoopWouldDrop(t *testing.T) {
+	protocol2_init()
+	setup_replication_test(t)
+	setup_users_test_schema()
+	entity, _ := new_entity_keys(t)
+
+	expired := cbor_encode(&Announcement{ID: uid(), Service: "directory", Event: "publish", Expires: i64toa(now() - 1)})
+	ahead := cbor_encode(&Announcement{ID: uid(), Service: "directory", Event: "publish", Expires: i64toa(now() + pubsub_expires_maximum + 60)})
+	expires := i64toa(now() + pubsub_expires_ttl)
+	forged := cbor_encode(&Announcement{ID: uid(), From: entity, Service: "directory", Event: "publish",
+		Expires: expires, Signature: bytes.Repeat([]byte{1}, 64)})
+	id := uid()
+	signed := cbor_encode(&Announcement{ID: id, From: entity, Service: "directory", Event: "publish",
+		Expires: expires, Signature: pubsub_sign(id, entity, "directory", "publish", expires, map[string]string{})})
+
+	for name, body := range map[string][]byte{"expired": expired, "far ahead": ahead, "forged": forged} {
+		if got := pubsub_validate_isolated(t, pubsub_message(body, p2p_peer.ID("relayer"))); got != p2p_pubsub.ValidationIgnore {
+			t.Errorf("THE POINT: the %s announcement got %v, so this host relays what it drops", name, got)
+		}
+	}
+	if got := pubsub_validate_isolated(t, pubsub_message(signed, p2p_peer.ID("relayer"))); got != p2p_pubsub.ValidationAccept {
+		t.Errorf("control: a correctly signed announcement got %v", got)
+	}
+}
+
+// TestPubsubStaleAnnouncementsSpendNoBudget: freshness is a comparison and runs
+// before the budgets, so a replayed stale announcement costs a neighbour none of
+// its allowance.
+func TestPubsubStaleAnnouncementsSpendNoBudget(t *testing.T) {
+	pubsub_budgets(t, 1000, 1)
+	ctx := context.Background()
+	expired := cbor_encode(&Announcement{ID: uid(), Service: "directory", Event: "publish", Expires: i64toa(now() - 1)})
+	for i := 0; i < 3; i++ {
+		pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(expired, p2p_peer.ID("replayer")))
+	}
+	if pubsub_validate(ctx, p2p_peer.ID("origin"), pubsub_message(pubsub_test_announcement(t), p2p_peer.ID("replayer"))) != p2p_pubsub.ValidationAccept {
+		t.Error("stale announcements spent the neighbour's budget")
+	}
+}

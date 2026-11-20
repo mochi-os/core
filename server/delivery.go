@@ -486,7 +486,9 @@ func delivery_failed_attempt(db *DB, d *delivery, reason string) delivery_outcom
 		db.exec("delete from deliveries where id=?", d.ID)
 		return delivery_abandoned
 	}
-	db.exec("update deliveries set attempts=?, next=?, claimed=0 where id=?", attempts, queue_next_retry(attempts), d.ID)
+	// A step up the ladder for each attempt already made: the first failure
+	// waits its first step.
+	db.exec("update deliveries set attempts=?, next=?, claimed=0 where id=?", attempts, queue_next_retry(d.Attempts), d.ID)
 	return delivery_failure
 }
 

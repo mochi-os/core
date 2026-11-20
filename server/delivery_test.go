@@ -251,6 +251,22 @@ func TestDeliveryBackoffAndDeadHost(t *testing.T) {
 	}
 }
 
+// TestDeliveryFirstRetryWaitsTheFirstStep is #142's twin in delivery: the
+// first failure indexed the ladder with the attempt it was counting, so it
+// waited the second step.
+func TestDeliveryFirstRetryWaitsTheFirstStep(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	box.set(500)
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/a"}, []byte(`{}`))
+	delivery_process()
+	for _, row := range delivery_rows(t) {
+		if wait := row["next"].(int64) - now(); row["attempts"].(int64) != 1 || wait < retry_delays[0]-1 || wait > retry_delays[0]+retry_delays[0]/4 {
+			t.Errorf("THE POINT: the first failure waits %ds with %v attempts, want the ladder's first step of %ds", wait, row["attempts"], retry_delays[0])
+		}
+	}
+}
+
 // TestDeliveryClientErrorDrops: an inbox that refuses a body with a client
 // error will not take it later; the row is dropped and the host stays alive.
 func TestDeliveryClientErrorDrops(t *testing.T) {

@@ -114,6 +114,7 @@ func TestStreamReceiverChallengeIsTheConnections(t *testing.T) {
 func TestStreamRefusesAClaimOverAnotherConnectionsChallenge(t *testing.T) {
 	setup_peer_discovery_test(t)
 	setup_users_test_schema()
+	test_service(t, "test", "test", test_answer)
 	elsewhere := claims_hello_on(t, "12D3KooWCl-9").Challenge
 	for _, c := range []struct {
 		name     string
@@ -176,6 +177,8 @@ func connection_pair_start(t *testing.T) *connection_pair {
 	t.Helper()
 	setup_peer_discovery_test(t)
 	setup_users_test_schema()
+	// b's receiver admits an open only for an app that takes it.
+	test_service(t, "test", "test", test_answer)
 	host := func() p2p_host.Host {
 		h, err := p2p.New(p2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 		if err != nil {

@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -182,7 +183,6 @@ func install_sender_for(t *testing.T, peer string, stream wire_stream, hello *Fr
 		challenge: hello.Challenge,
 		offered:   offered,
 		codecs:    codecs,
-		features:  features,
 		outbox:    make(chan *outbound, peer_outbox()),
 		inflight:  map[string]*pending{},
 		pings:     map[string]int64{},
@@ -553,7 +553,7 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 // net_me is nil here, so the wire attempt would error; the self-loop must not.
 func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	setup_replication_test(t) // sets net_id = "self"
-	setup_users_test_schema() // so the far-end stream_resolve query has a table
+	setup_users_test_schema() // so the far-end target_resolve query has a table
 
 	s, err := stream_open_or_self(context.Background(), net_id, "", "to-entity", "market", "search", "market", nil, nil)
 	if err != nil {
@@ -574,9 +574,9 @@ func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 
 func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 	// queue_send_direct to a remote peer with no libp2p host (net_me is
-	// nil in tests) must unwind cleanly: peer_protocol_open returns
-	// error_sender_unreachable, queue_unsending rolls back the 'sending'
-	// mark, and the row is left for queue_process to retry.
+	// nil in tests) must unwind cleanly: the Sender's open, which runs on its
+	// own, finds peer_protocol_open answering error_sender_unreachable and
+	// resolves the row as a failed send, back to pending for a later retry.
 	setup_replication_test(t)
 	saved := net_id
 	net_id = "self-not-peer"
@@ -592,8 +592,14 @@ func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 	if ok {
 		t.Error("queue_send_direct returned true with no real peer")
 	}
-	if queue_is_inflight(id) {
-		t.Error("row left marked 'sending' after unreachable peer; queue_unsending should have rolled it back")
+	sending := func() bool {
+		found, _ := db_open("db/queue.db").exists("select 1 from queue where id=? and status='sending'", id)
+		return found
+	}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && sending(); time.Sleep(20 * time.Millisecond) {
+	}
+	if sending() {
+		t.Error("row left marked 'sending' after unreachable peer; the failed open should have resolved it")
 	}
 }
 
@@ -615,13 +621,36 @@ func TestStreamSelfLoopAnswersErrors(t *testing.T) {
 	}
 	s.close()
 
-	// Handler failure (here: no app handles the service): a generic
-	// in-band error with no internal detail.
+	// No app handles the service: refused before the request is read, as the
+	// wire receiver refuses the open, and answered in-band.
 	users := db_open("db/users.db")
 	users.exec("insert into users (uid, username) values ('u-stream', 'stream@x')")
 	entity := test_entity_id('s')
 	users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, 'u-stream', 'person', 'S')", entity, fingerprint(entity))
 	s = stream_self_loop("", entity, "no-such-service", "view", "", nil)
+	if err := s.read(&response); err != nil {
+		t.Fatalf("unsupported loopback must answer in-band, got read error: %v", err)
+	}
+	if response["error"] != fail_unsupported {
+		t.Fatalf("unsupported answer = %v", response)
+	}
+	s.close()
+
+	// A request written all the same is not read: the write fails at once
+	// rather than waiting out the answer behind it.
+	s = stream_self_loop("", entity, "no-such-service", "view", "", nil)
+	started := time.Now()
+	if err := s.write(map[string]any{"n": 1}); err == nil {
+		t.Error("a request to a refused loopback was taken")
+	}
+	if waited := time.Since(started); waited > time.Second {
+		t.Errorf("the write to a refused loopback took %v", waited)
+	}
+	s.close()
+
+	// Handler failure: a generic in-band error with no internal detail.
+	test_service(t, "selfloopfail", "view", func(e *Event) { panic("handler failure") })
+	s = stream_self_loop("", entity, "selfloopfail", "view", "", nil)
 	if err := s.write(map[string]any{}); err != nil {
 		t.Fatalf("payload write: %v", err)
 	}
@@ -632,6 +661,27 @@ func TestStreamSelfLoopAnswersErrors(t *testing.T) {
 		t.Fatalf("handler-error answer = %v", response)
 	}
 	s.close()
+}
+
+// TestStreamSelfLoopRefusalReachesTheOpener is #2110: a refused loopback open
+// closes its read side before answering, so an opener that sent content with
+// the open saw only its write fail with a closed pipe, which it cannot tell
+// from a dead stream. It gets the refusal, as a wire open's fail frame gives.
+func TestStreamSelfLoopRefusalReachesTheOpener(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	users := db_open("db/users.db")
+	users.exec("insert into users (uid, username) values ('u-refused', 'refused@x')")
+	entity := test_entity_id('r')
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, 'u-refused', 'person', 'R')", entity, fingerprint(entity))
+	s, err := stream_open_or_self(context.Background(), net_id, "", entity, "no-such-service", "view", "", nil, map[string]any{"n": 1})
+	if err == nil {
+		s.close()
+		t.Fatal("control: a refused loopback open was taken")
+	}
+	if !strings.Contains(err.Error(), fail_unsupported) {
+		t.Errorf("THE POINT: a refused loopback open answered %v, not the refusal", err)
+	}
 }
 
 // --- messages-path responder proof -------------------------------------
@@ -1007,7 +1057,8 @@ func TestMessagesUnansweredProofWaitsAlone(t *testing.T) {
 // TestMessagesSpentBudgetStartsAfresh pins that when every proof the budget
 // allows has failed and targets still wait, the Sender closes so a fresh
 // stream (with a fresh budget) can try them, failing what it held back to the
-// queue rather than holding it for ever.
+// queue rather than holding it for ever: the messages whose proof was refused
+// with an attempt counted, those never asked about as they were (#142).
 func TestMessagesSpentBudgetStartsAfresh(t *testing.T) {
 	const peer = "12D3KooWProofsSpentPeer"
 	count := sender_proves_maximum + 4
@@ -1018,7 +1069,11 @@ func TestMessagesSpentBudgetStartsAfresh(t *testing.T) {
 		proving_send(t, peer, fmt.Sprintf("spent-%d", i), from, to, true)
 	}
 	for i := range entities {
-		proving_status(t, fmt.Sprintf("spent-%d", i), "pending", 1, 5*time.Second)
+		attempts := 1
+		if i >= sender_proves_maximum {
+			attempts = 0
+		}
+		proving_status(t, fmt.Sprintf("spent-%d", i), "pending", attempts, 5*time.Second)
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for !s.closed.Load() {
@@ -1030,7 +1085,8 @@ func TestMessagesSpentBudgetStartsAfresh(t *testing.T) {
 }
 
 // TestSenderShutdownFailsHeldMessages pins that messages held for a proof go
-// back to the queue when the Sender closes, as the outbox drain does.
+// back to the queue when the Sender closes, as the outbox drain does: due as
+// they were, with no attempt counted, since none of them was written (#142).
 func TestSenderShutdownFailsHeldMessages(t *testing.T) {
 	const peer = "12D3KooWProofsShutdownPeer"
 	s, _, from, entities, done := proving_setup(t, peer, 1, 0, nil, func(int) bool { return true })
@@ -1045,7 +1101,7 @@ func TestSenderShutdownFailsHeldMessages(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	s.shutdown()
-	proving_status(t, "held-1", "pending", 1, time.Second)
+	proving_status(t, "held-1", "pending", 0, time.Second)
 	if n := s.parked.Load(); n != 0 {
 		t.Errorf("%d messages still counted as held after shutdown", n)
 	}
@@ -1127,8 +1183,9 @@ func TestSenderExpireKeepsReadLateProof(t *testing.T) {
 }
 
 // TestSenderFailsOnceWhenProveWriteFails pins that a message held for a proof
-// whose prove frame cannot be written is failed back to the queue once, not by
-// both write_loop and the release of held messages.
+// whose prove frame cannot be written goes back to the queue once, not by both
+// write_loop and the release of held messages - and as it was, with no attempt
+// counted, since it was never written (#142).
 func TestSenderFailsOnceWhenProveWriteFails(t *testing.T) {
 	setup_replication_test(t)
 	setup_users_test_schema()
@@ -1157,9 +1214,9 @@ func TestSenderFailsOnceWhenProveWriteFails(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)
-	row, _ := db_open("db/queue.db").row("select attempts from queue where id='once-1'")
-	if row == nil || row["attempts"].(int64) != 1 {
-		t.Errorf("row is %v, want one failure charged", row)
+	row, _ := db_open("db/queue.db").row("select status, attempts from queue where id='once-1'")
+	if row == nil || row["status"] != "pending" || row["attempts"].(int64) != 0 {
+		t.Errorf("row is %v, want it pending with no failure charged", row)
 	}
 }
 
@@ -1196,7 +1253,7 @@ func TestMessagesDuplicatesBackProves(t *testing.T) {
 	defer done()
 	for i, to := range entities {
 		id := fmt.Sprintf("duplicate-%d", i)
-		message_seen_mark(id)
+		message_seen_mark(id, "earlier")
 		proving_send(t, net_id, id, from, to, true)
 	}
 
@@ -1353,7 +1410,7 @@ func TestSenderForSharesOpenUnderWay(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			if _, err := sender_for("12D3KooWOpenUnderWay"); err == error_sender_unreachable {
+			if _, err := sender_for("12D3KooWOpenUnderWay", nil); err == error_sender_unreachable {
 				failures.Add(1)
 			}
 		}()

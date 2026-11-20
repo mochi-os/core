@@ -2690,9 +2690,9 @@ func web_start() {
 		// trust-everything default in place with nobody the wiser.
 		warn("Web unable to refuse proxy headers, X-Forwarded-For may be honoured: %v", err)
 	}
-	// First, before logging or any other handling: bridge a root-path
-	// libp2p WebSocket upgrade to the loopback libp2p listener. No-op
-	// unless the 443 fallback is enabled and the request is exactly that.
+	// First, before logging or any other handling: hand a root-path libp2p
+	// WebSocket upgrade to libp2p's bridge listener. No-op unless the 443
+	// fallback is enabled and the request is exactly that.
 	r.Use(fallback_middleware)
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		status := fmt.Sprintf("%d", param.StatusCode)

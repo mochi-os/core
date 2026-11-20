@@ -11,10 +11,25 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	p2p "github.com/libp2p/go-libp2p"
+	p2p_host "github.com/libp2p/go-libp2p/core/host"
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	multiaddr "github.com/multiformats/go-multiaddr"
 )
+
+// peer_addresses_count returns how many addresses the registry holds
+// for a peer — zero for a peer we know only by id (or not at all).
+func peer_addresses_count(id string) int {
+	peers_lock.Lock()
+	defer peers_lock.Unlock()
+	return len(peers[id].addresses)
+}
 
 // setup_peer_discovery_test gives a fresh data_dir (via the replication
 // harness), a peers.db with schema, and an empty in-memory peer
@@ -165,7 +180,9 @@ func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 // that had gone was probed every five minutes until restart, each probe
 // broadcasting an address request. A peer is let go after
 // peer_reconnect_attempts_maximum failures only when it is no bootstrap peer,
-// has no addresses held, hosts no directory entries and has nothing queued.
+// hosts no directory entries and has nothing queued. Holding its addresses is
+// no need: the address an inbound stream came from is held for any peer that
+// opened one.
 func TestPeerReconnectLetsGoWhatNothingNeeds(t *testing.T) {
 	setup_peer_discovery_test(t)
 	setup_directory_test_schema()
@@ -214,11 +231,13 @@ func TestPeerReconnectLetsGoWhatNothingNeeds(t *testing.T) {
 	if peer_is_silent(gone) {
 		t.Error("a peer let go keeps its send failures, so a delivery queued for it later would never enroll it again")
 	}
+	if scheduled[addressed] {
+		t.Error("a peer needed only because its addresses are held is still probed after its last allowed failure")
+	}
 	for id, why := range map[string]string{
 		early:     "a peer short of its allowed failures",
 		queued:    "a peer with a delivery queued",
 		hosting:   "a peer hosting directory entries",
-		addressed: "a peer whose addresses are held",
 		bootstrap: "a bootstrap peer",
 	} {
 		if !scheduled[id] {
@@ -440,25 +459,524 @@ func TestNetContainerInterface(t *testing.T) {
 	}
 }
 
-func TestPeerAddressesNormalise(t *testing.T) {
+// peer_discovery_fill holds the unproven population at its ceiling for the
+// rest of the test: never-connected peers, the shape a flood of minted ids
+// leaves behind.
+func peer_discovery_fill(t *testing.T) {
+	t.Helper()
+	peers_lock.Lock()
+	for i := 0; i < peer_unproven_maximum; i++ {
+		id := fmt.Sprintf("unproven-peer-%d", i)
+		peers[id] = Peer{ID: id, addresses: []PeerAddress{{Address: "/ip4/10.0.0.1/tcp/1/p2p/" + id}}}
+	}
+	peers_lock.Unlock()
+}
+
+// TestPeerPublishEventAdmitsTheOrigin is #128. An origin is only a keypair, and
+// one connected peer can publish for any number it mints: each one stored a
+// name, a relay flag, a record and addresses with no admission check, kept for
+// days. At the ceiling a new origin's publish leaves nothing behind.
+func TestPeerPublishEventAdmitsTheOrigin(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_peer_names_test(t)
+	peer_discovery_fill(t)
+
+	origin, key := test_host(t)
+	record := test_signed_record(t, key, origin, []string{"/ip4/192.0.2.10/tcp/1443"}, 1)
+	peer_publish_event(&Event{origin: origin, content: map[string]any{
+		"record": record, "addresses": "/ip4/192.0.2.11/tcp/1443/p2p/" + origin,
+		"name": "minted.example", "relay": "true",
+	}})
+
+	if peer_held(origin) {
+		t.Error("THE POINT: a minted origin was taken into the registry at the ceiling")
+	}
+	if peer_name(origin) != "" {
+		t.Error("a minted origin's name was kept at the ceiling")
+	}
+	for _, id := range peer_relays_fresh() {
+		if id == origin {
+			t.Error("a minted origin's relay flag was kept at the ceiling")
+		}
+	}
+	if peer_record_envelope(origin) != nil {
+		t.Error("a minted origin's record was kept at the ceiling")
+	}
+
+	// A peer already held is still updated.
+	held, _ := test_host(t)
+	peers_lock.Lock()
+	peers[held] = Peer{ID: held, addresses: []PeerAddress{{Address: "/ip4/10.0.0.2/tcp/1/p2p/" + held}}}
+	peers_lock.Unlock()
+	peer_publish_event(publish_event(held, "/ip4/192.0.2.12/tcp/1443/p2p/"+held))
+	if n := peer_addresses_count(held); n != 2 {
+		t.Errorf("a held peer's announcement applied %d addresses, want 2: updates for known peers must not be collateral", n)
+	}
+}
+
+// TestPeerPublishEventKeepsNothingForAnUnheldOrigin: a publish that carries no
+// usable address leaves its origin out of the registry, and so keeps none of
+// its name, relay flag or record either - those would otherwise grow with no
+// count against the ceiling.
+func TestPeerPublishEventKeepsNothingForAnUnheldOrigin(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_peer_names_test(t)
+
+	origin, _ := test_host(t)
+	peer_publish_event(&Event{origin: origin, content: map[string]any{
+		"addresses": "/ip4/192.0.2.13/tcp/1443", // no /p2p suffix: refused
+		"name":      "addressless.example", "relay": "true",
+	}})
+	if peer_held(origin) {
+		t.Fatal("control: an origin with no usable address was registered")
+	}
+	if peer_name(origin) != "" {
+		t.Error("a name was kept for an origin the registry does not hold")
+	}
+	for _, id := range peer_relays_fresh() {
+		if id == origin {
+			t.Error("a relay flag was kept for an origin the registry does not hold")
+		}
+	}
+}
+
+// TestPeerApplyAddressesBoundsTheLength is #128's second half: a multiaddr
+// parses at any length (a /dns name has no limit of its own), so one 1 MiB
+// announcement left about 1 MiB in memory under the peer.
+func TestPeerApplyAddressesBoundsTheLength(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	origin, _ := test_host(t)
+	long := "/dns/" + strings.Repeat("a", peer_address_maximum) + ".example/tcp/1443/p2p/" + origin
+	short := "/dns/mochi.example/tcp/1443/p2p/" + origin
+	peer_apply_addresses(origin, []string{long, short})
+	addresses := peer_stored_addresses(origin)
+	if len(addresses) != 1 || addresses[0] != short {
+		t.Errorf("stored %d addresses, want only the one within peer_address_maximum", len(addresses))
+	}
+}
+
+// TestPeerDiscoveredSavesEveryAddress is #153. The save throttle was one
+// timestamp per peer, and the save wrote only the address of the call that
+// passed it, so a peer discovered with several addresses at once had its first
+// written and the rest held in memory only - pruned from disk, and forgotten at
+// a restart.
+func TestPeerDiscoveredSavesEveryAddress(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	id, _ := test_host(t)
+	first := "/ip4/192.0.2.20/tcp/1443/p2p/" + id
+	second := "/ip4/192.0.2.20/udp/443/quic-v1/p2p/" + id
+	peer_discovered_address(id, first)
+	peer_discovered_address(id, second)
+
+	db := db_open("db/peers.db")
+	if n := db.integer("select count(*) from peers where id=?", id); n != 2 {
+		t.Fatalf("THE POINT: peers.db holds %d of the peer's 2 addresses", n)
+	}
+
+	// Seen again within the hour: not rewritten. Over the hour: rewritten.
+	db.exec("update peers set updated=1 where id=?", id)
+	peer_discovered_address(id, first)
+	if n := db.integer("select updated from peers where address=?", first); n != 1 {
+		t.Error("an address seen again within peer_save_interval was rewritten")
+	}
+	peers_lock.Lock()
+	p := peers[id]
+	for i := range p.addresses {
+		p.addresses[i].Saved -= peer_save_interval + 1
+	}
+	peers[id] = p
+	peers_lock.Unlock()
+	peer_discovered_address(id, second)
+	if n := db.integer("select updated from peers where address=?", second); n <= 1 {
+		t.Error("an address whose last write is over peer_save_interval old was not rewritten, so the prune deletes a row the registry uses")
+	}
+}
+
+// TestPeerDiscoveryAdmits is #154. The stream handlers, the pubsub neighbour
+// and the mDNS answer each registered a peer with no admission check; every
+// discovery now passes the one rule.
+func TestPeerDiscoveryAdmits(t *testing.T) {
+	setup_peer_discovery_test(t)
+	peer_discovery_fill(t)
+
+	stranger, _ := test_host(t)
+	peer_discovered_address(stranger, "/ip4/192.0.2.30/tcp/1443/p2p/"+stranger)
+	if peer_held(stranger) {
+		t.Error("THE POINT: a discovery registered a new peer at the ceiling")
+	}
+
+	answered, _ := test_host(t)
+	pid, err := p2p_peer.Decode(answered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	(&mdns_notifee{}).HandlePeerFound(p2p_peer.AddrInfo{ID: pid, Addrs: []multiaddr.Multiaddr{multiaddr.StringCast("/ip4/192.0.2.31/tcp/1443")}})
+	if peer_held(answered) {
+		t.Error("an mDNS answer registered a new peer at the ceiling")
+	}
+
+	// Freeing a slot admits the next.
+	peers_lock.Lock()
+	delete(peers, "unproven-peer-0")
+	peers_lock.Unlock()
+	peer_discovered_address(stranger, "/ip4/192.0.2.30/tcp/1443/p2p/"+stranger)
+	if !peer_held(stranger) {
+		t.Error("a discovery under the ceiling was refused")
+	}
+}
+
+// TestPeerDiscoveryWakesOnlyOnChange is #155: each discovery woke the queue - a
+// pass and a claim from every open Sender - and one runs for the relaying
+// neighbour of every pubsub message, almost always a peer known at an address
+// known.
+func TestPeerDiscoveryWakesOnlyOnChange(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	woke := func() bool {
+		time.Sleep(50 * time.Millisecond) // the wake runs on its own goroutine
+		select {
+		case <-queue_wake_ch:
+			return true
+		default:
+			return false
+		}
+	}
+	woke()
+
+	id, _ := test_host(t)
+	address := "/ip4/192.0.2.40/tcp/1443/p2p/" + id
+	peer_discovered_address(id, address)
+	if !woke() {
+		t.Error("a new peer did not wake the queue")
+	}
+	peer_discovered_address(id, address)
+	if woke() {
+		t.Error("THE POINT: rediscovering a known peer at a known address woke the queue")
+	}
+	peer_discovered_address(id, "/ip4/192.0.2.41/tcp/1443/p2p/"+id)
+	if !woke() {
+		t.Error("a new address did not wake the queue")
+	}
+}
+
+// TestPeerAddKnownRequiresTheSuffix is #159: an address a remote host's
+// /_/p2p/info supplied was kept with no /p2p suffix, or one naming another
+// peer, and failed at every dial with a warning mailed to the administrator.
+func TestPeerAddKnownRequiresTheSuffix(t *testing.T) {
+	setup_peer_discovery_test(t)
+
 	id, _ := test_host(t)
 	other, _ := test_host(t)
-
-	bare := "/ip4/198.51.100.3/tcp/1443"
-	suffixed := bare + "/p2p/" + id
-
-	out, bad := peer_addresses_normalise(id, []string{bare, suffixed, " ", ""})
-	if bad != "" {
-		t.Fatalf("unexpected rejection %q", bad)
+	good := "/ip4/192.0.2.50/tcp/1443/p2p/" + id
+	peer_add_known(id, []string{
+		"/ip4/192.0.2.50/tcp/1443",                                 // no suffix
+		"/ip4/192.0.2.51/tcp/1443/p2p/" + other,                    // another peer's
+		"/ip4/0.0.0.0/tcp/1443/p2p/" + id,                          // unspecified
+		"/dns/" + strings.Repeat("b", 600) + "/tcp/1443/p2p/" + id, // over the length bound
+		good,
+	})
+	addresses := peer_stored_addresses(id)
+	if len(addresses) != 1 || addresses[0] != good {
+		t.Errorf("kept %v, want only %q", addresses, good)
 	}
-	if len(out) != 2 || out[0] != suffixed || out[1] != suffixed {
-		t.Errorf("normalised = %v, want two copies of %q", out, suffixed)
+}
+
+// TestPeersAddFromDatabaseRestoresEveryPeer is #172: startup loaded 100 peers,
+// picked by an arbitrary row's time, and nothing consulted the table for the
+// rest, so a server knowing more could not dial them after a restart. Every
+// stored peer is restored; the most recently seen are dialled.
+func TestPeersAddFromDatabaseRestoresEveryPeer(t *testing.T) {
+	setup_peer_discovery_test(t)
+	db := db_open("db/peers.db")
+	ids := make([]string, 150)
+	for i := range ids {
+		ids[i], _ = test_host(t)
+		db.exec("insert into peers ( id, address, updated, success, failure ) values ( ?, ?, ?, 7, 2 )", ids[i], "/ip4/192.0.2.60/tcp/1443/p2p/"+ids[i], 1000+i)
+	}
+	// A stale second row must not decide a peer's rank: its newest does.
+	db.exec("insert into peers ( id, address, updated ) values ( ?, ?, 1 )", ids[0], "/ip4/192.0.2.61/tcp/1443/p2p/"+ids[0])
+	db.exec("update peers set updated=5000 where id=? and updated>1", ids[0])
+
+	peer_reconnect_lock.Lock()
+	peer_reconnects = map[string]PeerReconnect{}
+	peer_reconnect_lock.Unlock()
+	peers_add_from_db(2)
+
+	for _, id := range ids {
+		if !peer_held(id) {
+			t.Fatalf("THE POINT: stored peer %q was not restored", id)
+		}
+	}
+	peers_lock.Lock()
+	restored := peers[ids[1]].addresses[0]
+	peers_lock.Unlock()
+	if restored.Success != 7 || restored.Failure != 2 || restored.Saved != 1001 || restored.Updated != 1001 {
+		t.Errorf("restored address evidence = %+v, want the row's", restored)
 	}
 
-	if _, bad := peer_addresses_normalise(id, []string{bare + "/p2p/" + other}); bad == "" {
-		t.Error("address suffixed with a different peer must be rejected")
+	// The two most recently seen are dialled; with no host the dials fail and
+	// enroll them for probing, which is how the test sees which were dialled.
+	want := map[string]bool{ids[0]: true, ids[149]: true}
+	var dialled map[string]bool
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		dialled = map[string]bool{}
+		peer_reconnect_lock.Lock()
+		for id := range peer_reconnects {
+			dialled[id] = true
+		}
+		peer_reconnect_lock.Unlock()
+		if len(dialled) >= 2 {
+			break
+		}
 	}
-	if _, bad := peer_addresses_normalise(id, []string{"junk"}); bad == "" {
-		t.Error("unparseable address must be rejected")
+	if len(dialled) != 2 || !dialled[ids[0]] || !dialled[ids[149]] {
+		t.Errorf("dialled %v, want the two most recently seen %v", dialled, want)
+	}
+	peer_reconnect_lock.Lock()
+	peer_reconnects = map[string]PeerReconnect{}
+	peer_reconnect_lock.Unlock()
+}
+
+// TestPeerDisconnectedProbesOnlyWhatItNeeds is #138: every peer libp2p
+// reported gone was enrolled for reconnect probing - a dial and a mesh-wide
+// address request every few minutes, for days, for a throwaway identity that
+// only ever dialled in.
+func TestPeerDisconnectedProbesOnlyWhatItNeeds(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_directory_test_schema()
+	reset_peer_reachability(t)
+
+	inbound, _ := test_host(t)
+	dialled, _ := test_host(t)
+	queued, _ := test_host(t)
+	peers_lock.Lock()
+	peers[inbound] = Peer{ID: inbound, state: peer_state_connected}
+	peers[dialled] = Peer{ID: dialled, state: peer_state_connected, dialled: true}
+	peers[queued] = Peer{ID: queued, state: peer_state_connected}
+	peers_lock.Unlock()
+	db_open("db/queue.db").exec("insert into queue ( id, target, from_entity, to_entity, service, event, next_retry, created ) values ( 'row', ?, 'from', 'to', 'feeds', 'update', 0, 0 )", queued)
+
+	peer_reconnect_lock.Lock()
+	peer_reconnects = map[string]PeerReconnect{}
+	peer_reconnect_lock.Unlock()
+	for _, id := range []string{inbound, dialled, queued} {
+		peer_disconnected(id)
+	}
+	peer_reconnect_lock.Lock()
+	_, probe_inbound := peer_reconnects[inbound]
+	_, probe_dialled := peer_reconnects[dialled]
+	_, probe_queued := peer_reconnects[queued]
+	peer_reconnects = map[string]PeerReconnect{}
+	peer_reconnect_lock.Unlock()
+
+	if probe_inbound {
+		t.Error("THE POINT: a peer that only dialled in, and that nothing needs, was enrolled for probing")
+	}
+	if !probe_dialled {
+		t.Error("a peer this host dialled was not probed when it dropped")
+	}
+	if !probe_queued {
+		t.Error("a peer with deliveries queued was not probed when it dropped")
+	}
+}
+
+// TestPeerReconnectProbeAsksOnlyForWantedPeers: a failed probe broadcast a
+// peers/request for whatever was probed. One is sent only for a peer this host
+// has a reason to reach.
+func TestPeerReconnectProbeAsksOnlyForWantedPeers(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_directory_test_schema()
+	reset_peer_reachability(t)
+
+	unwanted, _ := test_host(t)
+	wanted, _ := test_host(t)
+	peers_lock.Lock()
+	peers[wanted] = Peer{ID: wanted, dialled: true}
+	peers_lock.Unlock()
+	peer_reconnect_lock.Lock()
+	peer_reconnects[unwanted] = PeerReconnect{NextRetry: now()}
+	peer_reconnects[wanted] = PeerReconnect{NextRetry: now()}
+	peer_reconnect_lock.Unlock()
+	t.Cleanup(func() {
+		peer_reconnect_lock.Lock()
+		delete(peer_reconnects, unwanted)
+		delete(peer_reconnects, wanted)
+		peer_reconnect_lock.Unlock()
+	})
+
+	peer_reconnect_probe(unwanted)
+	peer_reconnect_probe(wanted)
+	if !rate_limit_peer_request.allow(unwanted) {
+		t.Error("THE POINT: a probe of a peer nothing wants broadcast an address request for it")
+	}
+	if rate_limit_peer_request.allow(wanted) {
+		t.Error("a probe of a peer this host dialled asked the mesh for nothing")
+	}
+}
+
+// TestPeerReconnectProbeRecoversAConnectedPeer is #168's second half: a probe
+// that found the peer connected returned at once, clearing nothing, so a peer
+// silenced while its connection stayed up stayed silent and was probed every
+// ten seconds.
+func TestPeerReconnectProbeRecoversAConnectedPeer(t *testing.T) {
+	setup_peer_discovery_test(t)
+	reset_peer_reachability(t)
+
+	id, _ := test_host(t)
+	peers_lock.Lock()
+	peers[id] = Peer{ID: id, state: peer_state_connected}
+	peers_lock.Unlock()
+	for i := 0; i < peer_silent_failure_threshold; i++ {
+		peer_mark_send_failed(id)
+	}
+	if !peer_is_silent(id) {
+		t.Fatal("control: the peer is not silent")
+	}
+
+	peer_reconnect_probe(id)
+	peer_reconnect_lock.Lock()
+	_, scheduled := peer_reconnects[id]
+	delete(peer_reconnects, id)
+	peer_reconnect_lock.Unlock()
+	if peer_is_silent(id) {
+		t.Error("THE POINT: a probe that found the peer connected left it silent")
+	}
+	if scheduled {
+		t.Error("a probe that found the peer connected left it enrolled, to be probed again in ten seconds")
+	}
+}
+
+// TestPeerWritesSurviveADatabaseFault is #171: the peer cache's writes used
+// DB.exec, which panics on any SQLite error, on goroutines with no recover - a
+// full disk or a lock held past the busy timeout ended the whole server for a
+// database the code treats as a rebuildable cache.
+func TestPeerWritesSurviveADatabaseFault(t *testing.T) {
+	setup_peer_discovery_test(t)
+	pdb := db_open("db/peers.db")
+	pdb.exec("drop table peers")
+	pdb.exec("drop table records")
+	pdb.exec("drop table if exists names")
+
+	id, _ := test_host(t)
+	peer_names_lock.Lock()
+	peer_names[id] = []PeerName{{Name: "faulted.example", Updated: now()}}
+	peer_names_lock.Unlock()
+	t.Cleanup(func() {
+		peer_names_lock.Lock()
+		delete(peer_names, id)
+		peer_names_lock.Unlock()
+	})
+	for name, write := range map[string]func(){
+		"peer_discovered_address": func() { peer_discovered_address(id, "/ip4/192.0.2.70/tcp/1443/p2p/"+id) },
+		"peer_addresses_failed":   func() { peer_addresses_failed(id) },
+		"peer_address_drop":       func() { peer_address_drop(id, "/ip4/192.0.2.70/tcp/1443") },
+		"peers_prune":             func() { peers_prune() },
+		"peer_names_save":         func() { peer_names_save(id) },
+		"peer_names_sweep":        func() { peer_names_sweep(now()) },
+		"peer_record_save":        func() { peer_record_save(id, []byte("record"), 1) },
+		"peer_records_sweep":      func() { peer_records_sweep(now()) },
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("THE POINT: %s panicked on a peers.db fault, which ends the process on a goroutine with no recover: %v", name, r)
+				}
+			}()
+			write()
+		}()
+	}
+}
+
+// TestInboundNeighbourStaysUnproven is #2112: a successful connect stamped
+// Success on whatever connection to the peer came first, an inbound one's
+// remote address included, so any node that dialled in and relayed one
+// announcement was proven and escaped the unproven ceiling admission is held
+// to. Only an address this host dialled and reached is stamped.
+func TestInboundNeighbourStaysUnproven(t *testing.T) {
+	setup_peer_discovery_test(t)
+	host := func() p2p_host.Host {
+		h, err := p2p.New(p2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+		if err != nil {
+			t.Fatalf("test host: %v", err)
+		}
+		t.Cleanup(func() { h.Close() })
+		return h
+	}
+	near, inbound, outbound := host(), host(), host()
+	saved := net_me
+	net_me = near
+	t.Cleanup(func() { net_me = saved })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := inbound.Connect(ctx, p2p_peer.AddrInfo{ID: near.ID(), Addrs: near.Addrs()}); err != nil {
+		t.Fatalf("connect in: %v", err)
+	}
+	if err := near.Connect(ctx, p2p_peer.AddrInfo{ID: outbound.ID(), Addrs: outbound.Addrs()}); err != nil {
+		t.Fatalf("connect out: %v", err)
+	}
+	peers_lock.Lock()
+	for _, h := range []p2p_host.Host{inbound, outbound} {
+		peers[h.ID().String()] = Peer{ID: h.ID().String(), state: peer_state_connected}
+	}
+	peers_lock.Unlock()
+
+	proven := func(id string) bool {
+		peers_lock.Lock()
+		defer peers_lock.Unlock()
+		for _, a := range peers[id].addresses {
+			if a.Success > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	peer_refresh_connected_address(inbound.ID().String())
+	peer_refresh_connected_address(outbound.ID().String())
+	if proven(inbound.ID().String()) {
+		t.Error("THE POINT: a neighbour that only dialled in was recorded as proven")
+	}
+	if !proven(outbound.ID().String()) {
+		t.Error("control: a peer this host dialled and reached was not recorded as proven")
+	}
+}
+
+// TestPeerConnectLeavesAPrunedPeerOut is #2113: a peer pruned while
+// peer_connect dialled it was put back as an empty Peer, with no addresses,
+// counting against the registry with nothing to dial.
+func TestPeerConnectLeavesAPrunedPeerOut(t *testing.T) {
+	setup_peer_discovery_test(t)
+	id, _ := test_host(t)
+	peers_lock.Lock()
+	peers[id] = Peer{ID: id, addresses: []PeerAddress{{Address: "/ip4/192.0.2.7/tcp/1443/p2p/" + id}}}
+	peers_lock.Unlock()
+	dialling := make(chan struct{})
+	release := make(chan struct{})
+	saved := peer_dial
+	peer_dial = func(string, []string) bool {
+		close(dialling)
+		<-release
+		return false
+	}
+	t.Cleanup(func() { peer_dial = saved })
+
+	done := make(chan struct{})
+	go func() {
+		peer_connect(id)
+		close(done)
+	}()
+	<-dialling
+	peers_lock.Lock()
+	delete(peers, id) // pruned mid-dial
+	peers_lock.Unlock()
+	close(release)
+	<-done
+
+	peers_lock.Lock()
+	p, held := peers[id]
+	peers_lock.Unlock()
+	if held {
+		t.Errorf("THE POINT: a peer pruned while it was dialled was put back: %+v", p)
 	}
 }

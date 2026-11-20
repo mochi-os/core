@@ -334,9 +334,12 @@ func TestDeliveredSelfLoopPassDrops(t *testing.T) {
 		t.Errorf("the row was handed to a worker: %d workers", workers)
 	}
 
-	// Control: a row of a message not delivered here goes to its worker.
+	// Control: a row of a message not delivered here goes to its worker, when
+	// it is one this server can deliver.
+	test_service(t, "s", "e", func(*Event) {})
+	local, _ := new_entity_keys(t)
 	other := uid()
-	delivered_test_add(t, other, net_id, recipient)
+	delivered_test_add(t, other, net_id, local)
 	self_loop_pass()
 	if workers, _ := worker_count(); workers == 0 {
 		t.Error("control: the undelivered row was not handed to a worker")

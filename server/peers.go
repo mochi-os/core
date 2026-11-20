@@ -12,6 +12,7 @@
 package main
 
 import (
+	"cmp"
 	"net"
 	"slices"
 	"strings"
@@ -36,9 +37,12 @@ const (
 
 type Peer struct {
 	ID        string
-	Updated   int64 // throttles peers.db saves to at most once per hour per peer
 	addresses []PeerAddress
 	state     peer_state
+	// dialled is whether the connection this host last held to the peer was one
+	// it dialled itself: a peer it had a reason to reach, so worth reconnecting
+	// to when that connection drops.
+	dialled bool
 }
 
 // PeerAddress tracks an address with usefulness evidence. Dialing hands every
@@ -47,6 +51,7 @@ type Peer struct {
 type PeerAddress struct {
 	Address string
 	Updated int64
+	Saved   int64 // last time this address's peers.db row was written; throttles the writes
 	Success int64 // last successful connection on this address; 0 = never proven
 	Failure int64 // failed dial rounds since the last success
 }
@@ -83,6 +88,17 @@ const (
 	// unproven prune days later. Peers already held are never refused.
 	peer_unproven_maximum = 1000
 	peer_unproven         = 3 * 86400 // never-successful addresses prune sooner
+	// peer_address_maximum bounds the length of an address a remote host
+	// supplies. A multiaddr parses at any length (a /dns name has no limit of
+	// its own); the longest real transport address, an IPv6 circuit through a
+	// relay with both peer ids, is under 200 characters.
+	peer_address_maximum = 512
+	// peer_save_interval throttles how often one address's peers.db row is
+	// rewritten when it is seen again.
+	peer_save_interval = 3600
+	// peers_dial_maximum is how many of the stored peers, the most recently seen
+	// first, are dialled at startup. The rest are loaded and dialled on demand.
+	peers_dial_maximum = 100
 )
 
 // peer_default_publisher_hardcoded is the fallback publisher peer ID
@@ -115,13 +131,20 @@ func peer_held(id string) bool {
 	return held
 }
 
-// peer_admit reports whether a relayed record naming this peer may be applied.
-// A peer already held always may - those are address updates for something this
-// host has a reason to know. A peer it has never held is admitted only while
-// the unproven population is under its ceiling.
+// peer_admit is the admission rule for every path by which another host can
+// introduce a peer id: an announcement, a relayed record, a pubsub neighbour, an
+// mDNS answer, an inbound stream. A peer already held always may - those are
+// updates for something this host has a reason to know. A peer it has never
+// held is admitted only while the unproven population is under its ceiling.
+// peer_discovered_work applies the same rule under the lock it inserts under.
 func peer_admit(id string) bool {
 	peers_lock.Lock()
 	defer peers_lock.Unlock()
+	return peer_admitted(id)
+}
+
+// peer_admitted is peer_admit for a caller holding peers_lock.
+func peer_admitted(id string) bool {
 	if _, held := peers[id]; held {
 		return true
 	}
@@ -441,45 +464,6 @@ func mesh_forgotten_reconnect(id string) {
 	net_me.Network().ClosePeer(pid)
 }
 
-// peer_addresses_normalise validates operator-supplied multiaddresses and
-// returns them with the /p2p/<id> suffix. An entry may omit the suffix; one
-// that carries it must name this peer. Returns the list and the first rejected
-// input.
-func peer_addresses_normalise(id string, addresses []string) ([]string, string) {
-	var out []string
-	for _, address := range addresses {
-		address = strings.TrimSpace(address)
-		if address == "" {
-			continue
-		}
-		ma, err := multiaddr.NewMultiaddr(address)
-		if err != nil {
-			return nil, address
-		}
-		if information, err := p2p_peer.AddrInfoFromP2pAddr(ma); err == nil {
-			if information.ID.String() != id {
-				return nil, address
-			}
-			out = append(out, address)
-			continue
-		}
-		with := address + "/p2p/" + id
-		if _, err := multiaddr.NewMultiaddr(with); err != nil {
-			return nil, address
-		}
-		out = append(out, with)
-	}
-	return out, ""
-}
-
-// peer_addresses_count returns how many addresses the registry holds
-// for a peer — zero for a peer we know only by id (or not at all).
-func peer_addresses_count(id string) int {
-	peers_lock.Lock()
-	defer peers_lock.Unlock()
-	return len(peers[id].addresses)
-}
-
 // peer_bootstrap_addresses returns the configured bootstrap addresses
 // for a peer — the entries eviction and pruning must never remove.
 func peer_bootstrap_addresses(id string) map[string]bool {
@@ -548,44 +532,59 @@ func peer_is_bootstrap(id string) bool {
 	return false
 }
 
-// Add some peers we already know about from the database, restoring
-// each address's success/failure evidence.
-func peers_add_from_db(limit int) {
-	var ps []peer_row
+// peers_add_from_db restores every stored peer into the registry, with each
+// address's evidence and the time its row was last written, and dials the
+// `dial` most recently seen. The rest are dialled on demand: peer_connect knows
+// only the registry, so a peer left on disk could not be reached at all until
+// it announced itself again. The table is bounded by the prune and the
+// admission ceiling.
+func peers_add_from_db(dial int) {
+	var rows []peer_row
 	db := db_open("db/peers.db")
-	err := db.scans(&ps, "select id from peers group by id order by updated desc limit ?", limit)
-	if err != nil {
+	if err := db.scans(&rows, "select id, address, updated, success, failure from peers order by updated"); err != nil {
 		warn("Database error loading peers: %v", err)
 		return
 	}
-	for _, p := range ps {
-		var as []peer_row
-		err := db.scans(&as, "select address, updated, success, failure from peers where id=?", p.ID)
-		if err != nil {
-			warn("Database error loading addresses for peer %q: %v", p.ID, err)
-			continue
-		}
-		t := now()
-		peers_lock.Lock()
-		entry, found := peers[p.ID]
+	seen := map[string]int64{}
+	peers_lock.Lock()
+	for _, row := range rows {
+		entry, found := peers[row.ID]
 		if !found {
-			entry = Peer{ID: p.ID}
+			entry = Peer{ID: row.ID}
 		}
-		for _, a := range as {
-			peer_address_insert(&entry, a.Address, t)
-			for i := range entry.addresses {
-				if entry.addresses[i].Address == a.Address {
-					entry.addresses[i].Success = a.Success
-					entry.addresses[i].Failure = a.Failure
-					break
-				}
+		peer_address_insert(&entry, row.Address, row.Updated)
+		for i := range entry.addresses {
+			if entry.addresses[i].Address == row.Address {
+				entry.addresses[i].Saved = row.Updated
+				entry.addresses[i].Success = row.Success
+				entry.addresses[i].Failure = row.Failure
+				break
 			}
 		}
-		addresses := peer_address_strings(entry.addresses)
-		peers[p.ID] = entry
-		peers_lock.Unlock()
-		debug("Adding database peer %q at %v", p.ID, addresses)
-		go peer_connect_retry(p.ID)
+		peers[row.ID] = entry
+		// Rows come oldest first, so a peer's last is its most recent, and the
+		// newest of its addresses survive the cap's eviction.
+		seen[row.ID] = row.Updated
+	}
+	peers_lock.Unlock()
+
+	// Most recently seen first: the peers this host was talking to last.
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b string) int {
+		if order := cmp.Compare(seen[b], seen[a]); order != 0 {
+			return order
+		}
+		return strings.Compare(a, b)
+	})
+	debug("Peers restored %d from the database; dialling %d", len(ids), min(len(ids), dial))
+	for i, id := range ids {
+		if i >= dial {
+			break
+		}
+		go peer_connect_retry(id)
 	}
 }
 
@@ -608,30 +607,41 @@ func peer_add_known(id string, addresses []string) {
 	if !found {
 		p = Peer{ID: id}
 	}
-	for _, addr := range addresses {
-		if !peer_address_acceptable(addr) {
+	for _, address := range addresses {
+		if !peer_address_valid(id, address) {
 			continue
 		}
-		peer_address_insert(&p, addr, t)
+		peer_address_insert(&p, address, t)
 	}
 	peers[id] = p
 }
 
-// peer_address_acceptable reports whether an address advertised by a remote host
-// is well-formed enough to keep and hand to the dialer.
+// peer_address_valid reports whether an address another host supplied for peer
+// id may be kept and handed to the dialer: it parses, is no longer than
+// peer_address_maximum, ends in a /p2p suffix naming id, and names no
+// unspecified IP. Without the suffix the dialer cannot use it, and refused it
+// with an operator warning at every dial; one naming another peer is address
+// poisoning.
 //
-// Only the parse and an unspecified address are refused. Loopback and private
-// ranges are NOT: the two local instances talk to each other over 127.0.0.1,
-// and peers on a LAN reach each other on RFC1918 addresses, so filtering those
-// would break ordinary operation to narrow an already-narrow exposure.
+// Loopback and private ranges are NOT refused: the two local instances talk to
+// each other over 127.0.0.1, and peers on a LAN reach each other on RFC1918
+// addresses, so filtering those would break ordinary operation to narrow an
+// already-narrow exposure.
 //
 // Deliberately NOT net_address_dialable, which drops loopback. That one filters
 // what this host publishes about itself, where a loopback address is useless to
 // every reader; this one filters what a remote host tells us, where it is how
 // the local pair finds each other.
-func peer_address_acceptable(address string) bool {
+func peer_address_valid(id, address string) bool {
+	if len(address) > peer_address_maximum {
+		return false
+	}
 	ma, err := multiaddr.NewMultiaddr(address)
 	if err != nil {
+		return false
+	}
+	information, err := p2p_peer.AddrInfoFromP2pAddr(ma)
+	if err != nil || information.ID.String() != id {
 		return false
 	}
 	for _, protocol := range []int{multiaddr.P_IP4, multiaddr.P_IP6} {
@@ -647,40 +657,90 @@ func peer_address_acceptable(address string) bool {
 	return true
 }
 
-// New or existing peer discovered or re-discovered at unknown address.
+// peer_discovered registers a connected peer at the addresses libp2p holds for
+// it, under the admission rule. The queue is woken only when that added the
+// peer or an address: this runs for the relaying neighbour of every pubsub
+// message, almost always one already known at those addresses, and each wake is
+// a queue pass and a claim from every open Sender.
 func peer_discovered(id string) {
 	p, err := p2p_peer.Decode(id)
-	if err != nil {
+	if err != nil || net_me == nil {
 		return
 	}
 
+	changed := false
 	for _, a := range net_me.Peerstore().Addrs(p) {
-		peer_discovered_work(id, a.String()+"/p2p/"+id)
+		if peer_discovered_work(id, a.String()+"/p2p/"+id) {
+			changed = true
+		}
 	}
-
-	go queue_check_peer(id)
+	if changed {
+		go queue_check_peer(id)
+	}
 }
 
-// New or existing peer discovered or re-discovered at known address.
+// peer_observed registers a peer at the address its inbound connection came
+// from, under the admission rule. Callers have seen it act as a Mochi server on
+// the connection.
+func peer_observed(id string, conn p2p_network.Conn) {
+	address := conn.RemoteMultiaddr()
+	if !peer_returnable(address) {
+		return
+	}
+	peer_discovered_address(id, address.String()+"/p2p/"+id)
+}
+
+// peer_returnable reports whether the remote address of a connection may be
+// dialled back. A WebSocket's far end is a client socket, never a listener - the
+// 443 bridge's connections among them - so it may not, and recording it only
+// takes one of the peer's address slots.
+func peer_returnable(address multiaddr.Multiaddr) bool {
+	for _, protocol := range []int{multiaddr.P_WS, multiaddr.P_WSS} {
+		if _, err := address.ValueForProtocol(protocol); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// peer_discovered_address registers a peer at one address under the admission
+// rule, waking the queue only when that added the peer or the address.
 func peer_discovered_address(id string, address string) {
-	peer_discovered_work(id, address)
-	go queue_check_peer(id)
+	if peer_discovered_work(id, address) {
+		go queue_check_peer(id)
+	}
 }
 
-// Do the work for the above two functions.
-func peer_discovered_work(id string, address string) {
+// peer_discovered_work merges one discovered address and reports whether it
+// added the peer or the address. A peer not yet held is taken on only under
+// peer_admit's rule, decided under the lock the insert takes, so concurrent
+// discoveries cannot overshoot the ceiling. The row is written when the address
+// is new to this host or its last write is peer_save_interval old: the throttle
+// is per address, so every address of a peer discovered with several reaches
+// peers.db and keeps its row clear of the prune.
+func peer_discovered_work(id string, address string) bool {
 	t := now()
-	save := false
 
 	peers_lock.Lock()
 	p, found := peers[id]
 	if !found {
+		if !peer_admitted(id) {
+			peers_lock.Unlock()
+			debug("Peer %q refused: already holding %d unproven peers", id, peer_unproven_maximum)
+			return false
+		}
 		p = Peer{ID: id}
 	}
-	peer_address_insert(&p, address, t)
-	if !found || p.Updated < t-int64(3600) {
-		save = true
-		p.Updated = t
+	added := peer_address_insert(&p, address, t)
+	save := false
+	for i := range p.addresses {
+		if p.addresses[i].Address == address {
+			if p.addresses[i].Saved < t-peer_save_interval {
+				p.addresses[i].Saved = t
+				save = true
+			}
+			break
+		}
 	}
 	peers[id] = p
 	peers_lock.Unlock()
@@ -691,8 +751,9 @@ func peer_discovered_work(id string, address string) {
 		// Upsert, not replace: a replace would wipe the row's
 		// success/failure evidence.
 		db := db_open("db/peers.db")
-		db.exec("insert into peers ( id, address, updated ) values ( ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated", id, address, t)
+		db.exec_bg("peer discovered", "insert into peers ( id, address, updated ) values ( ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated", id, address, t)
 	}
+	return !found || added
 }
 
 // Waiters blocked in peer_await_addresses, keyed by peer id. Signalled
@@ -767,7 +828,7 @@ func peer_addresses_failed(id string) {
 	peers_lock.Unlock()
 
 	db := db_open("db/peers.db")
-	db.exec("update peers set failure=failure+1 where id=?", id)
+	db.exec_bg("peer addresses failed", "update peers set failure=failure+1 where id=?", id)
 }
 
 // peer_address_drop removes one stale address from id, in memory and peers.db.
@@ -789,7 +850,7 @@ func peer_address_drop(id, bare string) {
 	peers_lock.Unlock()
 
 	db := db_open("db/peers.db")
-	db.exec("delete from peers where id=? and ( address=? or address like ? )", id, bare, bare+"/p2p/%")
+	db.exec_bg("peer address drop", "delete from peers where id=? and ( address=? or address like ? )", id, bare, bare+"/p2p/%")
 }
 
 // Clean up stale peers.
@@ -803,6 +864,7 @@ func peers_manager() {
 		peer_names_sweep(expiry)
 		peer_records_sweep(expiry)
 		peer_relays_sweep()
+		peer_greetings_sweep()
 	}
 }
 
@@ -816,7 +878,7 @@ func peers_prune() {
 
 	// Prune stale addresses from the database
 	db := db_open("db/peers.db")
-	db.exec("delete from peers where updated<? or ( success=0 and updated<? )", expiry, unproven)
+	db.exec_bg("peers prune", "delete from peers where updated<? or ( success=0 and updated<? )", expiry, unproven)
 
 	// Prune stale addresses from memory
 	peers_lock.Lock()

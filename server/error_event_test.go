@@ -52,9 +52,8 @@ func TestErrorCodeForNack(t *testing.T) {
 	}{
 		{fail_unknown_user, error_code_message_unknown, "unknown", true},
 		{fail_unsupported, error_code_message_rejected, "unsupported", true},
-		{fail_expired, error_code_message_rejected, "expired", true},
-		{fail_signature_invalid, error_code_message_rejected, "signature", true},
-		{fail_dedup, "", "", false},
+		{fail_transient, "", "", false},
+		{fail_unproven, "", "", false},
 		{"", "", "", false},
 		{"not_a_reason", "", "", false},
 	}

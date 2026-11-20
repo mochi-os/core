@@ -1,9 +1,11 @@
 // Mochi server: circuit-relay participation.
 //
 // Serve: a server AutoNAT has found publicly reachable auto-enables its relay
-// service; the `relay` setting is the operator opt-out. Discover: AutoRelay
-// candidates come from net_relay_candidates - bootstrap relays plus peers whose
-// plain (unsigned) publish carries a `relay` flag, not security-sensitive.
+// service; the `relay` setting is the operator opt-out. It serves only peers
+// that have completed a /mochi/2 hello with this host. Discover: AutoRelay
+// candidates come from net_relay_candidates - the configured (bootstrap)
+// relays, and peers whose publish carries a `relay` flag only to make up for
+// configured relays that are unreachable, full or not relaying.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -21,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 	relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
@@ -39,6 +42,26 @@ const peer_relay_maximum_age = 3600
 // relay should not be a bottleneck.
 const relay_reservations_default = 2048
 
+const (
+	// relay_wanted is how many relays AutoRelay holds reservations on, and how
+	// many candidates it waits for before reserving: its default number of
+	// relays, set explicitly because net_relay_candidates offers no more than
+	// that while the configured relays have room.
+	relay_wanted = 2
+
+	// relay_candidates_maximum is how many candidates AutoRelay buffers and
+	// asks the source for.
+	relay_candidates_maximum = 20
+
+	// relay_probe_timeout bounds a relay admission probe.
+	relay_probe_timeout = 5 * time.Second
+
+	// peer_greetings_maximum bounds the record of peers that completed a
+	// /mochi/2 hello with this host; past it the oldest is dropped. A dropped
+	// peer is probed again when it next asks the relay for anything.
+	peer_greetings_maximum = 10000
+)
+
 var (
 	relay_service      *relay.Relay
 	relay_service_lock = &sync.Mutex{}
@@ -52,6 +75,14 @@ var (
 	relay_reservations atomic.Int64 // reservations the relay service currently holds (gauge)
 	relay_circuits     atomic.Int64 // relayed connections currently open (gauge)
 	relay_rejected     atomic.Int64 // reservation requests refused since startup (cumulative)
+
+	// peer_greetings maps a peer to the last time it completed a /mochi/2
+	// hello with this host, either way round: the evidence the relay admits
+	// on. Its own record rather than membership of peers, which ids named by
+	// announcements and mDNS answers, and any libp2p client that opens a
+	// stream, can join.
+	peer_greetings      = map[string]int64{}
+	peer_greetings_lock = &sync.Mutex{}
 )
 
 // relay_metrics implements libp2p's relay MetricsTracer, surfacing live relay
@@ -203,19 +234,109 @@ func relay_load_changed() {
 	}
 }
 
-// relay_access admits only peers this host already knows. libp2p installs no
-// ACL by default, so without this every circuit-v2 client on the internet can
-// reserve a slot and tunnel third-party traffic over the operator's bandwidth.
-// The unbounded per-circuit limit above is written for Mochi-to-Mochi file
-// sharing; this is what makes that the only traffic it applies to.
+// relay_access admits only peers that have shown themselves Mochi servers, by
+// completing a /mochi/2 hello with this host. libp2p installs no ACL by
+// default, so without this every circuit-v2 client on the internet can reserve
+// a slot and tunnel third-party traffic over the operator's bandwidth. The
+// unbounded per-circuit limit above is written for Mochi-to-Mochi file
+// sharing; this is what makes that the only traffic it applies to. Membership
+// of peers is no such evidence: any libp2p node that opens a stream joins it.
 type relay_access struct{}
 
 func (relay_access) AllowReserve(id p2p_peer.ID, address multiaddr.Multiaddr) bool {
-	return peer_held(id.String())
+	return relay_admitted(id)
 }
 
 func (relay_access) AllowConnect(source p2p_peer.ID, address multiaddr.Multiaddr, destination p2p_peer.ID) bool {
-	return peer_held(source.String()) && peer_held(destination.String())
+	return relay_admitted(source) && relay_admitted(destination)
+}
+
+// relay_admitted reports whether the relay may serve a peer: one that has
+// completed a hello with this host, or that completes one now, over the
+// connection it holds to this host to ask. A server that reserves on a relay,
+// or dials through one, has no other reason to have spoken /mochi/2 with it
+// first.
+func relay_admitted(id p2p_peer.ID) bool {
+	return peer_greeted(id.String()) || relay_probe(id)
+}
+
+// relay_probe asks a connected peer for a /mochi/2 hello: a messages stream
+// opened over its connection, its hello read, caps written to complete the
+// handshake, and the stream closed with nothing sent. Never dials. Reports
+// whether the peer answered as a Mochi server.
+func relay_probe(id p2p_peer.ID) bool {
+	if net_me == nil || !rate_limit_relay_probe.allow(id.String()) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(net_context, relay_probe_timeout)
+	defer cancel()
+	stream, err := net_me.NewStream(p2p_network.WithNoDial(ctx, "relay admission probe"), id, protocol_messages)
+	if err != nil {
+		debug("Relay probe of %q refused: %v", id, err)
+		return false
+	}
+	_ = stream.SetDeadline(time.Now().Add(relay_probe_timeout))
+	hello, err := hello_read(stream, 2)
+	if err != nil {
+		stream.Reset()
+		debug("Relay probe of %q found no Mochi server: %v", id, err)
+		return false
+	}
+	challenge, err := hello_challenge()
+	if err != nil {
+		stream.Reset()
+		return false
+	}
+	if err := caps_write(stream, codec_intersect(receiver_codecs(), hello.Codecs), features_intersect(receiver_features(), hello.Features), challenge); err != nil {
+		stream.Reset()
+		return false
+	}
+	stream.Close()
+	peer_greet(id.String())
+	return true
+}
+
+// peer_greet records that a peer completed a /mochi/2 hello with this host.
+// At the bound the oldest record goes.
+func peer_greet(id string) {
+	if id == "" || id == net_id {
+		return
+	}
+	t := now()
+	peer_greetings_lock.Lock()
+	defer peer_greetings_lock.Unlock()
+	if _, found := peer_greetings[id]; !found && len(peer_greetings) >= peer_greetings_maximum {
+		oldest, at := "", int64(0)
+		for other, seen := range peer_greetings {
+			if oldest == "" || seen < at {
+				oldest, at = other, seen
+			}
+		}
+		delete(peer_greetings, oldest)
+	}
+	peer_greetings[id] = t
+}
+
+// peer_greeted reports whether a peer completed a /mochi/2 hello with this host
+// within peer_expiry.
+func peer_greeted(id string) bool {
+	peer_greetings_lock.Lock()
+	defer peer_greetings_lock.Unlock()
+	seen, found := peer_greetings[id]
+	return found && seen >= now()-peer_expiry
+}
+
+// peer_greetings_sweep drops greetings older than peer_expiry. Called from
+// the daily maintenance pass.
+func peer_greetings_sweep() {
+	cutoff := now() - peer_expiry
+	peer_greetings_lock.Lock()
+	for id, seen := range peer_greetings {
+		if seen < cutoff {
+			delete(peer_greetings, id)
+		}
+	}
+	peer_greetings_lock.Unlock()
 }
 
 func relay_service_update() {
@@ -405,10 +526,37 @@ func relay_latency_bucket(latency time.Duration) int {
 	return int(latency / (50 * time.Millisecond))
 }
 
-// net_relay_candidates is the AutoRelay candidate source: bootstrap relays plus
-// peers that recently advertised they relay, minus known-unreachable ones,
-// ordered by load tier then latency. Full relays sort last rather than dropping
-// out.
+// relay_reachable reports whether a relay is not known to be unreachable: this
+// host is connected to it, or holds an address for it that has not failed a
+// dial since it last connected, or knows none to have tried.
+func relay_reachable(id string) bool {
+	if net_me != nil {
+		if pid, err := p2p_peer.Decode(id); err == nil && net_me.Network().Connectedness(pid) == p2p_network.Connected {
+			return true
+		}
+	}
+	peers_lock.Lock()
+	defer peers_lock.Unlock()
+	addresses := peers[id].addresses
+	if len(addresses) == 0 {
+		return true
+	}
+	for _, a := range addresses {
+		if a.Failure == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// net_relay_candidates is the AutoRelay candidate source. AutoRelay reserves on
+// candidates picked at random from what it is given, so while at least
+// relay_wanted of the configured relays are reachable and announcing a relay
+// with room, those are all it is given; a relay that merely announces itself
+// could otherwise land both reservations and decide whether this server can be
+// reached at all. Only to make up the shortfall are peers that
+// announced a relay flag added, best first - lowest load tier, then nearest
+// latency bucket - and after them the configured relays left out.
 func net_relay_candidates(ctx context.Context, num int) <-chan p2p_peer.AddrInfo {
 	out := make(chan p2p_peer.AddrInfo, num)
 	go func() {
@@ -419,47 +567,78 @@ func net_relay_candidates(ctx context.Context, num int) <-chan p2p_peer.AddrInfo
 			tier   int
 			bucket int
 		}
-		var cands []candidate
 		seen := map[string]bool{}
-		add := func(id string, addresses []string) {
-			if id == "" || id == net_id || seen[id] || peer_is_silent(id) {
-				return
+		make_candidate := func(id string, addresses []string) (candidate, bool) {
+			if id == "" || id == net_id || seen[id] {
+				return candidate{}, false
 			}
 			ai := relay_addrinfo(id, addresses)
 			if len(ai.Addrs) == 0 {
-				return
+				return candidate{}, false
 			}
 			seen[id] = true
-			cands = append(cands, candidate{
+			return candidate{
 				ai:     ai,
 				tier:   relay_load_tier(relay_candidate_load(id)),
 				bucket: relay_latency_bucket(relay_candidate_latency(id)),
+			}, true
+		}
+		// Shuffle first so relays that tie on (load tier, latency bucket) land
+		// in random order — light jitter that stops every peer piling onto the
+		// same one. Then prefer the lowest load tier, then the nearest latency
+		// bucket.
+		order := func(list []candidate) {
+			rand.Shuffle(len(list), func(i, j int) { list[i], list[j] = list[j], list[i] })
+			sort.SliceStable(list, func(i, j int) bool {
+				if list[i].tier != list[j].tier {
+					return list[i].tier < list[j].tier
+				}
+				return list[i].bucket < list[j].bucket
 			})
 		}
 
-		for _, bp := range peers_bootstrap {
-			add(bp.ID, peer_address_strings(bp.addresses))
-		}
+		// Configured relays that announce a relay with room (below the full
+		// tier) and are not known unreachable; the rest - full, unreachable, or
+		// running no relay this host has heard of - wait behind the announced
+		// ones.
+		fresh := map[string]bool{}
 		for _, id := range peer_relays_fresh() {
+			fresh[id] = true
+		}
+		var configured, announced, others []candidate
+		for _, bp := range peers_bootstrap {
+			c, ok := make_candidate(bp.ID, peer_address_strings(bp.addresses))
+			if !ok {
+				continue
+			}
+			if fresh[bp.ID] && c.tier < relay_load_tier(100) && relay_reachable(bp.ID) {
+				configured = append(configured, c)
+			} else {
+				others = append(others, c)
+			}
+		}
+		for id := range fresh {
+			if peer_is_silent(id) {
+				continue
+			}
 			peers_lock.Lock()
 			addresses := peer_address_strings(peers[id].addresses)
 			peers_lock.Unlock()
-			add(id, addresses)
+			if c, ok := make_candidate(id, addresses); ok {
+				announced = append(announced, c)
+			}
 		}
 
-		// Shuffle first so relays that tie on (load tier, latency bucket)
-		// land in random order — light jitter that stops every peer piling
-		// onto the same one. Then prefer the lowest load tier, then the
-		// nearest latency bucket.
-		rand.Shuffle(len(cands), func(i, j int) { cands[i], cands[j] = cands[j], cands[i] })
-		sort.SliceStable(cands, func(i, j int) bool {
-			if cands[i].tier != cands[j].tier {
-				return cands[i].tier < cands[j].tier
-			}
-			return cands[i].bucket < cands[j].bucket
-		})
+		order(configured)
+		candidates := configured
+		if shortfall := relay_wanted - len(configured); shortfall > 0 {
+			order(announced)
+			order(others)
+			extras := append(announced, others...)
+			candidates = append(candidates, extras[:min(shortfall, len(extras))]...)
+		}
 
-		for i, c := range cands {
+		for i, c := range candidates {
 			if i >= num {
 				return
 			}

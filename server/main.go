@@ -206,6 +206,9 @@ func main_serve(ready func()) int {
 	starlark_configure()
 	cache_configure()
 	db_start()
+	// Before anything can claim a row: those a previous run left sending have
+	// no holder now.
+	queue_restore()
 	if err := domains_load_certs(); err != nil {
 		warn("Failed to load domain certificates: %v", err)
 	}

@@ -28,7 +28,212 @@ const (
 	cbor_maximum_elements = 10000             // Max array elements
 	content_maximum_key   = 256               // Max content key length
 	content_maximum_value = 100 * 1024 * 1024 // 100MB maximum content value length
+
+	// cbor_maximum_items bounds the data items in one decoded value: a frame, a
+	// pubsub announcement or a stream segment. The caps above bound each array
+	// and map but not their product, and an item costs some sixty bytes of heap
+	// for each byte it takes on the wire, so a 16 MB frame of nested empty maps
+	// decoded to a gigabyte. Sized to the largest real payloads, a wiki's full
+	// dump among them, which the per-array cap keeps under it.
+	cbor_maximum_items = 1000000
 )
+
+// cbor_walk follows one CBOR data item through its bytes as they arrive: where
+// it ends, and how many data items it holds. Every head is read once however
+// the item is split across reads, so a caller can hand it a growing buffer
+// without the rescan of the whole prefix that cbor.Decoder makes on each read.
+type cbor_walk struct {
+	offset int     // the next head, counted from the item's first byte
+	open   []int64 // items still owed to each open array, map or tag; cbor_walk_indefinite until its break
+	items  int     // data items read
+}
+
+const cbor_walk_indefinite = -1
+
+var (
+	cbor_walk_malformed = errors.New("cbor: malformed data item")
+	cbor_walk_items     = fmt.Errorf("cbor: more than %d data items", cbor_maximum_items)
+	cbor_walk_depth     = errors.New("cbor: nested too deeply")
+)
+
+// step walks data, the item's bytes so far from its first, as far as whole
+// heads go. It returns the item's length once the item is complete, and zero
+// while it needs more bytes. Only the item budget and a nesting bound much
+// looser than the decoder's are enforced here; the decode that follows applies
+// the rest.
+func (w *cbor_walk) step(data []byte) (int, error) {
+	for w.offset < len(data) {
+		major, information := data[w.offset]>>5, data[w.offset]&0x1f
+		length := 1
+		var argument uint64
+		switch {
+		case information < 24:
+			argument = uint64(information)
+		case information < 28:
+			length += 1 << (information - 24)
+			if len(data)-w.offset < length {
+				return 0, nil
+			}
+			for _, b := range data[w.offset+1 : w.offset+length] {
+				argument = argument<<8 | uint64(b)
+			}
+		case information == 31 && major == 7:
+			// A break ends the innermost indefinite array, map or string.
+			top := len(w.open) - 1
+			if top < 0 || w.open[top] != cbor_walk_indefinite {
+				return 0, cbor_walk_malformed
+			}
+			w.offset++
+			w.open = w.open[:top]
+			if w.complete() {
+				return w.offset, nil
+			}
+			continue
+		case information == 31 && major >= 2 && major <= 5:
+		default:
+			return 0, cbor_walk_malformed
+		}
+		// A string is taken whole or not at all, so its head is not counted twice.
+		if (major == 2 || major == 3) && information != 31 {
+			if argument > uint64(len(data)-w.offset-length) {
+				return 0, nil
+			}
+			length += int(argument)
+		}
+		w.items++
+		// An array or map owes at least one item per element, so one declaring
+		// more than the budget cannot fit in it.
+		if w.items > cbor_maximum_items || ((major == 4 || major == 5) && information != 31 && argument > cbor_maximum_items) {
+			return 0, cbor_walk_items
+		}
+		w.offset += length
+		switch {
+		case information == 31:
+			w.open = append(w.open, cbor_walk_indefinite)
+		case major == 4 && argument > 0:
+			w.open = append(w.open, int64(argument))
+		case major == 5 && argument > 0:
+			w.open = append(w.open, 2*int64(argument))
+		case major == 6:
+			w.open = append(w.open, 1)
+		default:
+			if w.complete() {
+				return w.offset, nil
+			}
+			continue
+		}
+		// Tags count as a level here and only sometimes in the decoder.
+		if len(w.open) > 2*cbor_maximum_depth {
+			return 0, cbor_walk_depth
+		}
+	}
+	return 0, nil
+}
+
+// complete counts an item just ended against the containers holding it,
+// closing each it fills, and reports whether the outermost item has ended.
+func (w *cbor_walk) complete() bool {
+	for len(w.open) > 0 {
+		top := len(w.open) - 1
+		if w.open[top] == cbor_walk_indefinite {
+			return false
+		}
+		w.open[top]--
+		if w.open[top] > 0 {
+			return false
+		}
+		w.open = w.open[:top]
+	}
+	return true
+}
+
+// cbor_items refuses a whole value whose data items run past
+// cbor_maximum_items, before anything of it is decoded. Linear in its bytes, and
+// allocates nothing but the walk's stack.
+func cbor_items(data []byte) error {
+	var w cbor_walk
+	n, err := w.step(data)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+// cbor_check reports whether this host would decode a whole value: within the
+// item budget and well formed under cbor_decode_mode's caps.
+func cbor_check(data []byte) error {
+	if err := cbor_items(data); err != nil {
+		return err
+	}
+	return cbor_decode_mode.Wellformed(data)
+}
+
+// cbor_segments reads a stream's CBOR segments one whole data item at a time,
+// walking each as its bytes arrive, so a segment over its size or the item
+// budget is refused before any of it is decoded.
+type cbor_segments struct {
+	reader    io.Reader
+	buffer    []byte // read and not yet returned: the next segment onwards
+	remaining int64  // bytes the stream may still read through it
+}
+
+// next returns the next whole segment, of at most size bytes. The slice is the
+// caller's: later reads never write over it.
+func (c *cbor_segments) next(size int64) ([]byte, error) {
+	var walk cbor_walk
+	for {
+		if len(c.buffer) > 0 {
+			n, err := walk.step(c.buffer)
+			if err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				segment := c.buffer[:n:n]
+				c.buffer = c.buffer[n:]
+				return segment, nil
+			}
+		}
+		want := size - int64(len(c.buffer))
+		if want <= 0 {
+			return nil, fmt.Errorf("cbor: segment over %d bytes", size)
+		}
+		if want > c.remaining {
+			want = c.remaining
+		}
+		if want <= 0 {
+			if len(c.buffer) == 0 {
+				return nil, io.EOF
+			}
+			return nil, io.ErrUnexpectedEOF
+		}
+		// Grown into a fresh array, never compacted in place, so no segment
+		// already returned is written over.
+		if cap(c.buffer)-len(c.buffer) < 512 {
+			grown := make([]byte, len(c.buffer), 2*cap(c.buffer)+512)
+			copy(grown, c.buffer)
+			c.buffer = grown
+		}
+		space := c.buffer[len(c.buffer):cap(c.buffer)]
+		if int64(len(space)) > want {
+			space = space[:want]
+		}
+		n, err := c.reader.Read(space)
+		c.buffer = c.buffer[:len(c.buffer)+n]
+		c.remaining -= int64(n)
+		if n == 0 && err != nil {
+			if errors.Is(err, io.EOF) {
+				if len(c.buffer) == 0 {
+					return nil, io.EOF
+				}
+				return nil, io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+}
 
 var cbor_decode_mode cbor.DecMode
 
@@ -44,19 +249,19 @@ func init() {
 }
 
 type Stream struct {
-	id      int64
-	reader  io.ReadCloser
-	writer  io.WriteCloser
-	decoder *cbor.Decoder
-	encoder *cbor.Encoder
-	remote  string // Remote address (for incoming streams)
-	timeout struct {
+	id       int64
+	reader   io.ReadCloser
+	writer   io.WriteCloser
+	segments *cbor_segments
+	encoder  *cbor.Encoder
+	remote   string // Remote address (for incoming streams)
+	timeout  struct {
 		read  int
 		write int
 	}
-	// maximum_bytes overrides the cumulative LimitReader cap on the CBOR decoder
-	// (zero = cbor_maximum_size). Must be set BEFORE the first read: the decoder
-	// and its LimitReader are constructed lazily.
+	// maximum_bytes overrides the cumulative cap on the bytes segments are read
+	// from (zero = cbor_maximum_size). Must be set BEFORE the first read: the
+	// segment reader is constructed lazily.
 	maximum_bytes int64
 	// abandoned records that a write failed against the REMOTE end rather than the
 	// local source, so the dispatcher logs instead of warn-emailing. Set only
@@ -365,12 +570,10 @@ func (s *Stream) ended() bool {
 	if s.reader == nil {
 		return true
 	}
-	probe := make([]byte, 1)
-	if s.decoder != nil {
-		if n, _ := s.decoder.Buffered().Read(probe); n > 0 {
-			return false
-		}
+	if s.segments != nil && len(s.segments.buffer) > 0 {
+		return false
 	}
+	probe := make([]byte, 1)
 	r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error })
 	if !ok {
 		return false
@@ -434,6 +637,12 @@ func (s *Stream) read(v any) error {
 // and shorter than the stream's own: a script may shorten a read, never
 // lengthen it.
 func (s *Stream) read_within(v any, limit time.Duration) error {
+	return s.read_segment(v, limit, 0)
+}
+
+// read_segment is read_within with this one segment held to size bytes, when
+// size is positive, below what the stream may still read.
+func (s *Stream) read_segment(v any, limit time.Duration, size int64) error {
 	if s == nil || s.reader == nil {
 		return fmt.Errorf("stream not open for reading")
 	}
@@ -452,10 +661,16 @@ func (s *Stream) read_within(v any, limit time.Duration) error {
 		defer r.SetReadDeadline(time.Time{})
 	}
 
-	if s.decoder == nil {
-		s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, s.cbor_limit()))
+	if s.segments == nil {
+		s.segments = &cbor_segments{reader: s.reader, remaining: s.cbor_limit()}
 	}
-	err := s.decoder.Decode(v)
+	if size <= 0 {
+		size = s.segments.remaining + int64(len(s.segments.buffer))
+	}
+	segment, err := s.segments.next(size)
+	if err == nil {
+		err = cbor_decode_mode.Unmarshal(segment, v)
+	}
 	if err != nil {
 		// %w so callers can errors.Is the EOF class (a far end that
 		// closed without answering) apart from decode corruption.
@@ -467,10 +682,9 @@ func (s *Stream) read_within(v any, limit time.Duration) error {
 	return nil
 }
 
-// cbor_limit returns the cumulative byte limit applied to the CBOR decoder via
-// io.LimitReader. The default caps a stream's lifetime reads at 100 MB, which
-// breaks bulk DB transfer; those streams set s.maximum_bytes before the first
-// read.
+// cbor_limit returns the cumulative byte limit on what segments are read from.
+// The default caps a stream's lifetime reads at 100 MB, which breaks bulk DB
+// transfer; those streams set s.maximum_bytes before the first read.
 func (s *Stream) cbor_limit() int64 {
 	if s.maximum_bytes > 0 {
 		return s.maximum_bytes
@@ -501,17 +715,16 @@ func (s *Stream) read_content() (map[string]any, error) {
 	return content, nil
 }
 
-// Get a reader for raw data after CBOR reads (includes any buffered data from
-// decoder). Every read through it waits the stream's read timeout for its
-// bytes, no longer (idle), so no caller can forget to: a far end that stalls
-// part way through a body ends the read rather than holding its caller for as
-// long as it keeps the stream open, and one that keeps sending at any speed is
-// never cut off.
+// Get a reader for raw data after CBOR reads (includes any data the segment
+// reader read past the last segment). Every read through it waits the stream's
+// read timeout for its bytes, no longer (idle), so no caller can forget to: a
+// far end that stalls part way through a body ends the read rather than holding
+// its caller for as long as it keeps the stream open, and one that keeps
+// sending at any speed is never cut off.
 func (s *Stream) raw_reader() io.Reader {
 	var reader io.Reader = s.reader
-	if s.decoder != nil {
-		// Decoder's Buffered() returns any data read but not yet decoded
-		reader = io.MultiReader(s.decoder.Buffered(), s.reader)
+	if s.segments != nil && len(s.segments.buffer) > 0 {
+		reader = io.MultiReader(bytes.NewReader(s.segments.buffer), s.reader)
 	}
 	s.answered.Store(true)
 	return &stream_idle_reader{stream: s, reader: reader}
@@ -845,7 +1058,7 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl.MakeInt64(n), nil
 }
 
-// s.write(values...) -> None: Write one or more encoded segments to the stream
+// s.write(values...) -> bool: Write one or more encoded segments to the stream; False when a write failed
 func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	for _, a := range args {
 		err := s.write(sl_decode(a))
@@ -856,7 +1069,7 @@ func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.True, nil
 }
 
-// s.write_raw(data) -> None: Send raw bytes without CBOR encoding
+// s.write.raw(data) -> None: Send raw bytes without CBOR encoding
 func (s *Stream) sl_write_raw(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <data: bytes>")

@@ -17,6 +17,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
+	p2p_rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 )
 
 // quiet_reply is a reply target that does nothing. The dispatch tests below
@@ -252,7 +255,7 @@ func TestReceiverIdleTimeoutExceedsPingInterval(t *testing.T) {
 // remote one kept it.
 func TestSelfLoopTransientIsRetryable(t *testing.T) {
 	retried := []string{fail_transient}
-	dropped := []string{fail_dedup, fail_signature_invalid, fail_unsupported, fail_unknown_user, fail_expired}
+	dropped := []string{fail_unsupported, fail_unknown_user}
 
 	for _, reason := range retried {
 		if !fail_retryable(reason) {
@@ -334,4 +337,22 @@ func TestDispatchIsConcurrentAcrossApps(t *testing.T) {
 		delete(app_workers, key)
 	}
 	app_workers_lock.Unlock()
+}
+
+// TestNetLimitsHoldAPeerToItsMessagesStreams: libp2p refuses a peer's messages
+// streams past the few the receiver keeps, before a goroutine is spent. Its
+// default of 64 per peer let a handful of identities hold every slot of the
+// protocol, shutting every other server out.
+func TestNetLimitsHoldAPeerToItsMessagesStreams(t *testing.T) {
+	limiter := p2p_rcmgr.NewFixedLimiter(net_limits())
+	messages := limiter.GetProtocolPeerLimits(protocol_messages)
+	if got := messages.GetStreamLimit(p2p_network.DirInbound); got != receiver_streams_maximum+1 {
+		t.Errorf("THE POINT: a peer may open %d inbound messages streams, want %d", got, receiver_streams_maximum+1)
+	}
+	if got := messages.GetStreamLimit(p2p_network.DirOutbound); got < 8 {
+		t.Errorf("this host may open only %d messages streams to a peer", got)
+	}
+	if got := limiter.GetProtocolPeerLimits(protocol_stream).GetStreamLimit(p2p_network.DirInbound); got <= receiver_streams_maximum+1 {
+		t.Errorf("control: app streams are held to %d per peer as well", got)
+	}
 }

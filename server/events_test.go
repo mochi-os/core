@@ -7,9 +7,9 @@
 //
 // A discarded handler error reads as "the handler ran": the caller acks and
 // advances the broadcast watermark, and the retry then arrives below it as a
-// duplicate. Propagating the error is only half - the dedup mark is set before
-// dispatch, so the retry is coalesced away unless the worker forgets the id
-// (message_seen_clear).
+// duplicate. Propagating the error is only half - the dedup record is taken
+// before dispatch, so the retry is coalesced away unless the worker's failure
+// leaves the record due a retry (message_end).
 
 package main
 
@@ -114,51 +114,52 @@ func TestRunHandlerSucceedsQuietly(t *testing.T) {
 // place the receiver acks it without running the handler and the sender
 // deletes its queue row — silent loss, the same outcome the fix removed.
 func TestWorkerFailClearsDedupForRetryableReason(t *testing.T) {
+	dedup_isolate(t)
 	const id = "message-retryable"
-	if message_seen_mark(id) {
+	if state, _ := message_begin(id, "peer", nil); state != message_new {
 		t.Fatalf("id %q was already marked seen before the test", id)
 	}
 
 	wf := &worker_frame{
-		frame: &Frame{Type: frame_type_message, ID: id},
-		reply: local_reply{message: id},
+		frame:  &Frame{Type: frame_type_message, ID: id},
+		reply:  local_reply{message: id},
+		marked: true,
 	}
 	worker_fail(wf, fail_transient)
 
-	if message_seen(id) {
-		t.Error("worker_fail left the dedup mark set for a transient failure; the sender's retry will be coalesced away as a duplicate and the message lost")
+	if state, _ := message_begin(id, "peer", nil); state != message_new {
+		t.Errorf("after a transient failure the retry was answered %d, not run; it will be coalesced away as a duplicate and the message lost", state)
 	}
 }
 
 // TestWorkerFailKeepsDedupForDropReason: the mirror. A reason the sender
 // treats as final must leave the mark, so a stray redelivery of a message
-// the receiver has deliberately given up on is still dropped.
+// the receiver has deliberately given up on is answered the same.
 func TestWorkerFailKeepsDedupForDropReason(t *testing.T) {
+	dedup_isolate(t)
 	const id = "message-dropped"
-	if message_seen_mark(id) {
+	if state, _ := message_begin(id, "peer", nil); state != message_new {
 		t.Fatalf("id %q was already marked seen before the test", id)
 	}
 
 	wf := &worker_frame{
-		frame: &Frame{Type: frame_type_message, ID: id},
-		reply: local_reply{message: id},
+		frame:  &Frame{Type: frame_type_message, ID: id},
+		reply:  local_reply{message: id},
+		marked: true,
 	}
 	worker_fail(wf, fail_unsupported)
 
-	if !message_seen(id) {
-		t.Error("worker_fail cleared the dedup mark for a drop reason; a redelivery would be applied after the receiver had rejected it")
+	if state, reason := message_begin(id, "peer", nil); state != message_refused || reason != fail_unsupported {
+		t.Errorf("a redelivery after a drop was answered %d %q, want the drop again; it would be applied after the receiver had rejected it", state, reason)
 	}
 }
 
-// TestFailRetryableMatchesSenderDisposition pins fail_retryable against the
-// vocabulary Sender.resolve_fail and queue_reply.fail actually use. The
-// three must agree: a reason the sender re-queues but the receiver counts
-// as final leaves the mark set and loses the retry.
+// TestFailRetryableMatchesSenderDisposition pins fail_retryable, the one
+// table Sender.resolve_fail, queue_reply.fail and the dedup record all read: a
+// reason the sender re-queues but the receiver counts as final leaves the mark
+// set and loses the retry.
 func TestFailRetryableMatchesSenderDisposition(t *testing.T) {
-	drops := []string{
-		fail_unsupported, fail_unknown_user, fail_expired,
-		fail_dedup, fail_signature_invalid,
-	}
+	drops := []string{fail_unsupported, fail_unknown_user}
 	for _, reason := range drops {
 		if fail_retryable(reason) {
 			t.Errorf("fail_retryable(%q) = true, want false — the sender drops this", reason)
@@ -166,7 +167,7 @@ func TestFailRetryableMatchesSenderDisposition(t *testing.T) {
 	}
 
 	retries := []string{
-		fail_transient, fail_handler_panic, fail_rate_limited,
+		fail_transient, fail_handler_panic, fail_unproven,
 		fail_buffer_full, fail_unclaimed, "", "reason-from-a-newer-peer",
 	}
 	for _, reason := range retries {
@@ -220,5 +221,36 @@ func TestEventHeaderLocal(t *testing.T) {
 	net_id = ""
 	if event_header_local(t, "") {
 		t.Errorf("empty net_id with empty peer: local = true, want false")
+	}
+}
+
+// TestRouteTakesTheDispatchersResolution is #163: every dispatcher resolves a
+// frame's target with target_resolve, and Event.route then looked it up a
+// second time with a copy of its own. A caller that resolved the target hands
+// route the entity and its owner, and route does not look again.
+func TestRouteTakesTheDispatchersResolution(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	ran := make(chan *Event, 1)
+	test_service(t, "resolvedapp", "arrive", func(e *Event) { ran <- e })
+	// Resolved by the dispatcher; users.db does not know it.
+	user := &User{UID: "resolved-user"}
+	target := test_entity_id('q')
+	e := &Event{id: event_id(), to: target, user: user, service: "resolvedapp", event: "arrive"}
+	if err := e.route(); err != nil {
+		t.Fatalf("THE POINT: route looked up a target its caller had resolved: %v", err)
+	}
+	select {
+	case got := <-ran:
+		if got.user != user || got.to != target {
+			t.Errorf("the handler ran for user %v, target %q; want the dispatcher's", got.user, got.to)
+		}
+	default:
+		t.Error("the handler did not run")
+	}
+	// Control: unresolved, the same target is refused for good.
+	unresolved := &Event{id: event_id(), to: target, service: "resolvedapp", event: "arrive"}
+	if reason := worker_failure_reason(unresolved.route()); reason != fail_unknown_user {
+		t.Errorf("control: an unresolvable target was answered %q, want %q", reason, fail_unknown_user)
 	}
 }

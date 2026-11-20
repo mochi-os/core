@@ -102,25 +102,21 @@ func TestErrorEventCarriesNoUnreadFields(t *testing.T) {
 }
 
 // TestDedupStillMarksSeenMessages (#83) pins the pair production relies on:
-// message_seen_mark marks, and message_seen then reports it.
+// message_seen_mark marks, and message_state then reports it.
 func TestDedupStillMarksSeenMessages(t *testing.T) {
 	const id = "dead-code-test-dedup-id"
-	defer func() {
-		seen_messages_lock.Lock()
-		delete(seen_messages, id)
-		seen_messages_lock.Unlock()
-	}()
+	dedup_isolate(t)
 
-	if message_seen(id) {
+	if state, _ := message_state(id); state != message_new {
 		t.Fatalf("%q was already seen before the test marked it", id)
 	}
-	if message_seen_mark(id) {
+	if message_seen_mark(id, "peer") {
 		t.Error("message_seen_mark reported a first sighting as a duplicate")
 	}
-	if !message_seen(id) {
-		t.Error("message_seen does not report an id message_seen_mark just marked; the read-only fast path in dispatch_message would stop deduplicating")
+	if state, _ := message_state(id); state != message_applied {
+		t.Errorf("message_state reports %d for an id message_seen_mark just marked, want applied; the read-only check in dispatch_message would stop deduplicating", state)
 	}
-	if !message_seen_mark(id) {
+	if !message_seen_mark(id, "peer") {
 		t.Error("message_seen_mark did not report the second sighting as a duplicate")
 	}
 }

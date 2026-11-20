@@ -46,7 +46,10 @@ func (c *refuse_capture) install(t *testing.T) {
 			}
 		}
 	}
-	t.Cleanup(func() { queue_error_dispatch = previous })
+	t.Cleanup(func() {
+		queue_errors_wait()
+		queue_error_dispatch = previous
+	})
 }
 
 // hold makes the message's error handler wait until the returned release.
@@ -303,9 +306,17 @@ func TestSenderDropsMessageNoReceiverDecodes(t *testing.T) {
 func refuse_service(t *testing.T, id string) chan string {
 	t.Helper()
 	delivered := make(chan string, 16)
+	test_service(t, id, "arrive", func(e *Event) { delivered <- e.message })
+	return delivered
+}
+
+// test_service registers an internal app handling service id, whose anonymous
+// event runs handler, so a frame or open for it is admitted (event_admit).
+func test_service(t *testing.T, id, event string, handler func(*Event)) {
+	t.Helper()
 	a := app(id)
 	a.service(id)
-	a.event_anonymous("arrive", func(e *Event) { delivered <- e.message })
+	a.event_anonymous(event, handler)
 	t.Cleanup(func() {
 		apps_lock.Lock()
 		delete(apps, id)
@@ -314,7 +325,11 @@ func refuse_service(t *testing.T, id string) chan string {
 		resolution_invalidate()
 	})
 	resolution_invalidate()
-	return delivered
+}
+
+// test_answer is a stream handler that answers a request with its own number.
+func test_answer(e *Event) {
+	e.stream.write(map[string]any{"answer": e.content["n"]})
 }
 
 // A receiver that cannot decode a message names it in a fail{unsupported},
@@ -444,6 +459,7 @@ func (r *refuse_input) cut(f *Frame) *refuse_input {
 func (r *refuse_input) read() ([]*Frame, int32) {
 	reset := new(atomic.Int32)
 	receiver := &Receiver{
+		peer:      "12D3KooWRefuseInput",
 		stream:    &fake_stream{buf: &r.buffer, reset_count: reset},
 		replies:   make(chan *Frame, 4*messages_undecodable_maximum),
 		claimed:   map[string]bool{},
@@ -486,6 +502,13 @@ func TestReceiverRefuseBounds(t *testing.T) {
 		}
 		if len(replies) != 2 || !refuse_is(replies[0], frame_type_fail, "bad-1", fail_unsupported) || !refuse_is(replies[1], frame_type_pong, "after", "") {
 			t.Errorf("replies %+v, want fail{unsupported} naming bad-1, then the pong for the ping behind it", replies)
+		}
+	})
+	t.Run("message over the item budget answered", func(t *testing.T) {
+		body, _ := cbor_flood(t)
+		replies, reset := (&refuse_input{t: t}).caps().raw(body).frame(&Frame{Type: frame_type_ping, ID: "after"}).read()
+		if reset != 0 || len(replies) != 2 || !refuse_is(replies[0], frame_type_fail, "flood", fail_unsupported) {
+			t.Errorf("a message over the item budget: %d resets, replies %+v; want fail{unsupported} and the stream read on", reset, replies)
 		}
 	})
 	t.Run("cut frame resets", func(t *testing.T) {
@@ -552,39 +575,69 @@ func (r *refuse_input) buffer_reader() *bytes.Reader {
 	return bytes.NewReader(r.buffer.Bytes())
 }
 
-// A refused message counts as a message for the stream's budgets, as handle
-// counts one: it backs a prove, and returns the claim its sender used. A
-// sender at either cap whose message is refused may then send one more.
-func TestReceiverRefusedMessageCountsAsAMessage(t *testing.T) {
+// A refused message backs a prove by the rule every message does - the first to
+// an entity the stream proved - since its sender counts it so; it was handed to
+// no handler, so it returns no claim.
+func TestReceiverRefusedMessageBacksItsProof(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
 	messages_net_id(t)
+	proved, _ := new_entity_keys(t)
+
 	in := &refuse_input{t: t, challenge: []byte("0123456789abcdef0123456789abcdef")}
+	in.caps()
+	in.frame(&Frame{Type: frame_type_prove, To: proved})
+	for i := 1; i < messages_proves_maximum; i++ {
+		in.frame(&Frame{Type: frame_type_prove})
+	}
+	backed := refuse_undecodable("backed")
+	backed.To = proved
+	in.frame(backed)
+	in.frame(&Frame{Type: frame_type_prove})
+
+	replies, reset := in.read()
+	refused, proof := false, false
+	for _, f := range replies {
+		if refuse_is(f, frame_type_fail, "backed", fail_unsupported) {
+			refused = true
+		}
+		if f.Type == frame_type_claim && f.From == proved {
+			proof = true
+		}
+	}
+	if !refused || !proof {
+		t.Fatalf("control: refused=%v proved=%v; the message must be refused and its target proven for it to back anything", refused, proof)
+	}
+	if reset != 0 {
+		t.Errorf("stream reset %d times: the refused message did not back the proof of its target, so the sender's next prove went over a budget it had back", reset)
+	}
+
+	// The same message to an entity this stream never proved backs nothing.
+	in = &refuse_input{t: t, challenge: []byte("0123456789abcdef0123456789abcdef")}
 	in.caps()
 	for i := 0; i < messages_proves_maximum; i++ {
 		in.frame(&Frame{Type: frame_type_prove})
 	}
+	in.frame(refuse_undecodable("unbacked"))
+	in.frame(&Frame{Type: frame_type_prove})
+	if _, reset := in.read(); reset != 1 {
+		t.Errorf("stream reset %d times: a message to no proven entity backed a prove", reset)
+	}
+
+	// Nor does it return a claim.
+	in = &refuse_input{t: t, challenge: []byte("0123456789abcdef0123456789abcdef")}
+	in.caps()
 	var claim *Frame
 	for i := 0; i < messages_claims_maximum; i++ {
 		claim = messages_claim(t, in.challenge)
 		in.frame(claim)
 	}
-	backed := refuse_undecodable("backed")
-	backed.From = claim.From
-	in.frame(backed)
-	in.frame(&Frame{Type: frame_type_prove})
+	junk := refuse_undecodable("junk")
+	junk.From = claim.From
+	in.frame(junk)
 	in.frame(messages_claim(t, in.challenge))
-
-	replies, reset := in.read()
-	refused := false
-	for _, f := range replies {
-		if refuse_is(f, frame_type_fail, "backed", fail_unsupported) {
-			refused = true
-		}
-	}
-	if !refused {
-		t.Fatal("control: the undecodable message was not refused, so it backed nothing")
-	}
-	if reset != 0 {
-		t.Errorf("stream reset %d times: the refused message was not counted, so the sender's next prove or claim went over a budget it had back", reset)
+	if _, reset := in.read(); reset != 1 {
+		t.Errorf("stream reset %d times: an undeliverable message from a claimed entity returned its claim", reset)
 	}
 }
 

@@ -102,7 +102,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 27
+	schema_version = 28
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -419,6 +419,8 @@ func db_create(names ...string) {
 		queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 		queue.exec("create index if not exists queue_target on queue (target)")
 		queue.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
+		// The hourly cleanup reads aged rows a page at a time along it.
+		queue.exec("create index if not exists queue_created on queue (created)")
 		// journal_inflight bridges send->ack for the per-peer journal delivery
 		// cursor (#28): one row per shipped journal op, resolved when the
 		// transport ACK lands so journal_delivery can advance. Co-located with
@@ -1865,6 +1867,8 @@ func db_upgrade() {
 			db_upgrade_26()
 		case 27:
 			db_upgrade_27()
+		case 28:
+			db_upgrade_28()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2247,7 +2251,12 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 		return false, err
 	}
 	defer r.Close()
-	return r.Next(), nil
+	if r.Next() {
+		return true, nil
+	}
+	// Next reports false for an error met reading the first row as well as for
+	// no row: only Err tells them apart, and a failed read is not "absent".
+	return false, r.Err()
 }
 
 // integer returns the first column as an integer, or 0 on error
@@ -3869,6 +3878,22 @@ func db_upgrade_27() {
 		users.exec("alter table tokens add column password text not null default ''")
 	}
 	users.exec("create index if not exists tokens_password on tokens(password)")
+}
+
+// db_upgrade_28 indexes queue.db's rows by when they were queued, which the
+// hourly cleanup pages its aged rows along instead of reading every row past
+// its content. A queue.db with no queue table is laid at the latest shape by
+// db_create.
+func db_upgrade_28() {
+	queue := db_open("db/queue.db")
+	found, err := queue.exists("select 1 from sqlite_master where type='table' and name='queue'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 28: queue table lookup: %v", err))
+	}
+	if !found {
+		return
+	}
+	queue.exec("create index if not exists queue_created on queue (created)")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

@@ -229,3 +229,32 @@ func TestWorldInboundFloodIsLimited(t *testing.T) {
 		t.Errorf("%d rows stored from three fresh peers, want the limiter's 2", n)
 	}
 }
+
+// TestWorldInvalidNamesTheField: a refused push answered only "invalid
+// status", so a world server whose name ran past 64 characters was told the
+// push failed and logged that the Mochi server was unreachable. The refusal
+// names the field, for the world server to name the setting.
+func TestWorldInvalidNamesTheField(t *testing.T) {
+	named := func(name string) string {
+		b, _ := json.Marshal([]world_service{{Service: "air", Players: 1, Name: name}})
+		return string(b)
+	}
+	for _, c := range []struct {
+		field                                string
+		id, name, address, version, services string
+	}{
+		{"", world_test_id, "World", "https://example.com:4433", "3", world_test_services(1)},
+		{"id", "ABC", "World", "https://example.com:4433", "3", world_test_services(1)},
+		{"name", world_test_id, strings.Repeat("w", world_name_most+1), "https://example.com:4433", "3", world_test_services(1)},
+		{"address", world_test_id, "World", "ftp://example.com", "3", world_test_services(1)},
+		{"version", world_test_id, "World", "https://example.com:4433", "three", world_test_services(1)},
+		{"services", world_test_id, "World", "https://example.com:4433", "3", "[]"},
+		{"service", world_test_id, "World", "https://example.com:4433", "3", `[{"service":"a b","players":1}]`},
+		{"players", world_test_id, "World", "https://example.com:4433", "3", world_test_services(-1)},
+		{"label", world_test_id, "World", "https://example.com:4433", "3", named(strings.Repeat("n", world_name_most+1))},
+	} {
+		if _, field := world_invalid(c.id, c.name, c.address, c.version, c.services); field != c.field {
+			t.Errorf("refused %q, want %q", field, c.field)
+		}
+	}
+}

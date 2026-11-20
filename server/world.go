@@ -151,28 +151,43 @@ func world_address_valid(address string) bool {
 // alike — the strings render on every server's join page, so bounds are not
 // negotiable. Returns the parsed services on success.
 func world_validate(id, name, address, version, services string) ([]world_service, bool) {
-	if !valid(id, "id") || !valid(name, "display") || len([]rune(name)) > world_name_most {
-		return nil, false
+	list, field := world_invalid(id, name, address, version, services)
+	return list, field == ""
+}
+
+// world_invalid is world_validate naming the field it refused, "" when it
+// refused none, so a world server's operator is told what to change rather
+// than that the push failed: "id", "name", "address", "version", "services",
+// or within a service "service", "players" or "label" (its display name).
+func world_invalid(id, name, address, version, services string) ([]world_service, string) {
+	if !valid(id, "id") {
+		return nil, "id"
+	}
+	if !valid(name, "display") || len([]rune(name)) > world_name_most {
+		return nil, "name"
 	}
 	if !world_address_valid(address) {
-		return nil, false
+		return nil, "address"
 	}
 	if !valid(version, "integer") {
-		return nil, false
+		return nil, "version"
 	}
 	var list []world_service
 	if json.Unmarshal([]byte(services), &list) != nil || len(list) == 0 || len(list) > world_services_most {
-		return nil, false
+		return nil, "services"
 	}
 	for _, s := range list {
-		if !valid(s.Service, "constant") || s.Players < 0 || s.Players > 100000 {
-			return nil, false
+		if !valid(s.Service, "constant") {
+			return nil, "service"
+		}
+		if s.Players < 0 || s.Players > 100000 {
+			return nil, "players"
 		}
 		if s.Name != "" && (!valid(s.Name, "display") || len([]rune(s.Name)) > world_name_most) {
-			return nil, false
+			return nil, "label"
 		}
 	}
-	return list, true
+	return list, ""
 }
 
 // world_store upserts one listing row.
@@ -220,9 +235,9 @@ func world_status_handler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid services"}) // i18n-ok: as above
 		return
 	}
-	list, ok := world_validate(input.World.ID, input.World.Name, input.World.Address, i64toa(input.World.Version), string(services))
-	if !ok || len(list) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"}) // i18n-ok: as above
+	list, field := world_invalid(input.World.ID, input.World.Name, input.World.Address, i64toa(input.World.Version), string(services))
+	if field != "" || len(list) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status", "field": field}) // i18n-ok: as above
 		return
 	}
 

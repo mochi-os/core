@@ -21,9 +21,12 @@ systemctl daemon-reload
 
 # enable as well as start: WantedBy=multi-user.target only takes effect once the
 # .wants symlink exists, so without this the server does not come back after a
-# reboot. Skipped on abort-upgrade and friends, where the unit state is already
-# whatever the previous install left.
+# reboot. reenable, not enable: earlier packages shipped the unit in
+# /etc/systemd/system, and the link enable made there still names that path,
+# which this upgrade removed; enable would leave the dangling link alone, and
+# the server would not start at the next boot. Skipped on abort-upgrade and
+# friends, where the unit state is already whatever the previous install left.
 if [ "$1" = configure ]; then
-    systemctl enable mochi-server >/dev/null 2>&1 || true
+    systemctl reenable mochi-server >/dev/null 2>&1 || true
 fi
 systemctl start mochi-server

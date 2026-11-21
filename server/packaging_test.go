@@ -445,8 +445,11 @@ func TestPkgPreservesTheInstalledConfiguration(t *testing.T) {
 	if strings.Contains(builder, "/private/etc/mochi/mochi.conf\"") {
 		t.Errorf("the payload still carries the live configuration file")
 	}
-	if !strings.Contains(builder, "/private/etc/mochi/mochi.conf.default\"") {
+	if !strings.Contains(builder, `cp "$SOURCE/$(basename "$CONFIGURATION")" "$(payload "$CONFIGURATION").default"`) {
 		t.Errorf("the payload does not carry the default beside the live file")
+	}
+	if !strings.Contains(packaging_read(t, "build", "pkg", "manifest"), "\nconfiguration=/etc/mochi/mochi.conf\n") {
+		t.Errorf("the package manifest does not name the live configuration file")
 	}
 	script := packaging_read(t, "build", "pkg", "scripts", "postinstall")
 	start := strings.Index(script, "if [ ! -f /etc/mochi/mochi.conf ]")

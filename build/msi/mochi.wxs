@@ -110,7 +110,15 @@
                 <CreateFolder />
                 <RegistryValue Root="HKLM" Key="Software\Mochi" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
             </Component>
-            <Component Id="ConfigFile" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
+            <!-- The operator edits this file, and a major upgrade removes the old
+                 product before installing the new one, unattended self-updates
+                 included. Permanent keeps that removal from deleting mochi.conf;
+                 the install then finds it, and Windows Installer never
+                 replaces an unversioned file modified since it was created, so
+                 an edited file survives and an untouched one takes the new
+                 default. An uninstall leaves it behind, as configuration should
+                 be. NeverOverwrite would be dropped by wixl without a word. -->
+            <Component Id="ConfigFile" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes" Permanent="yes">
                 <File Id="MochiConf"
                       Name="mochi.conf"
                       Source="$(var.SourceDir)/mochi.conf"

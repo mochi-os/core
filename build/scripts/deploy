@@ -10,13 +10,34 @@
 # to redeploy an identical version on `/release same`) are passed as arguments.
 set -euo pipefail
 
+if [ $# -lt 1 ]; then
+	echo "usage: deploy <version> [apt flags...]" >&2
+	exit 2
+fi
+version="$1"
+shift
 flags="$*"
+
+# verify <host>: the installed version is the one just released and the
+# service is running. apt installs the exact version above, so a suite that
+# does not hold it fails the install; this catches what is left, such as a
+# package that installed but whose service did not come back.
+verify() {
+	local host="$1" installed
+	installed=$(ssh "root@$host" "dpkg-query -W -f='\${Version}' mochi-server")
+	echo "$host mochi-server $installed"
+	if [ "$installed" != "$version" ]; then
+		echo "deploy: $host has mochi-server $installed installed, not the released $version" >&2
+		exit 1
+	fi
+	ssh "root@$host" "systemctl is-active mochi-server"
+}
 
 deploy() {
 	local host="$1" role="$2"
 	echo "=== Deploying mochi-server to $host ($role) ==="
-	ssh "root@$host" "apt update && apt install -y $flags mochi-server"
-	ssh "root@$host" "dpkg-query -W -f='$host mochi-server \${Version}\n' mochi-server; systemctl is-active mochi-server"
+	ssh "root@$host" "apt update && apt install -y $flags mochi-server=$version"
+	verify "$host"
 }
 
 deploy yuzu.mochi-os.org primary

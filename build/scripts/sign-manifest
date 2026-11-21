@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Copyright © 2026 Mochisoft OÜ
+# SPDX-License-Identifier: AGPL-3.0-only
+# This file is part of Mochi, licensed under the GNU AGPL v3 with the
+# Mochi Application Interface Exception - see license.txt and license-exception.md.
+
+# sign-manifest <private key> <versions.json>...
+#
+# Writes each manifest's detached ed25519 signature, base64, to <manifest>.sig,
+# the form the server and the Android client verify. Each signature is checked
+# against the public key the server pins (server/update.go) before it replaces
+# the old one, so a missing or wrong key, an openssl without -rawin or a failed
+# write stops the release here instead of publishing a manifest every server
+# would refuse. The core, world and Android Makefiles all sign through this.
+set -euo pipefail
+
+if [ $# -lt 2 ]; then
+	echo "usage: sign-manifest <private key> <manifest>..." >&2
+	exit 2
+fi
+key="$1"
+shift
+
+source="$(cd "$(dirname "$0")/../../server" && pwd)/update.go"
+pinned=$(sed -n 's/^const update_manifest_public_key = "\([A-Za-z0-9+/=]*\)"$/\1/p' "$source")
+if [ -z "$pinned" ]; then
+	echo "sign-manifest: no pinned public key in $source" >&2
+	exit 1
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# The pinned key is the raw 32 bytes; openssl reads a public key as DER, which
+# for ed25519 is this fixed 12-byte header followed by those bytes.
+{ printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; printf '%s' "$pinned" | base64 -d; } > "$work/pinned.der"
+
+for manifest in "$@"; do
+	openssl pkeyutl -sign -rawin -inkey "$key" -in "$manifest" -out "$work/signature"
+	if ! openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$work/pinned.der" \
+		-in "$manifest" -sigfile "$work/signature" >/dev/null; then
+		echo "sign-manifest: $manifest: the signature does not verify against the key the server pins" >&2
+		exit 1
+	fi
+	base64 -w0 "$work/signature" > "$work/encoded"
+	mv "$work/encoded" "$manifest.sig"
+	echo "signed $manifest"
+done

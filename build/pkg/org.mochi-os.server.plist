@@ -22,6 +22,10 @@
 	     string here, leaving the data files world-readable. -->
 	<key>Umask</key>
 	<integer>63</integer>
+	<!-- The server logs to standard output, which launchd discards unless
+	     it is given a path. -->
+	<key>StandardOutPath</key>
+	<string>/var/log/mochi-server.log</string>
 	<key>StandardErrorPath</key>
 	<string>/var/log/mochi-server.log</string>
 </dict>

@@ -326,7 +326,7 @@ rpm-x86_64: $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(
 	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_x86_64)/SOURCES/mochictl.bash
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_x86_64)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_x86_64)/SOURCES/
-	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_x86_64)/SOURCES/
+	cp install/usr/lib/systemd/system/mochi-server.service $(rpmbuild_x86_64)/SOURCES/
 	rpmbuild -bb --define "_topdir $(rpmbuild_x86_64)" --define "_version $(version)" --target x86_64 build/rpm/mochi-server.spec
 	cp $(rpmbuild_x86_64)/RPMS/x86_64/mochi-server-$(version)-1.x86_64.rpm $(rpm_x86_64)
 	rm -rf $(rpmbuild_x86_64)
@@ -345,7 +345,7 @@ rpm-aarch64: $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/
 	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_aarch64)/SOURCES/mochictl.bash
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_aarch64)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_aarch64)/SOURCES/
-	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_aarch64)/SOURCES/
+	cp install/usr/lib/systemd/system/mochi-server.service $(rpmbuild_aarch64)/SOURCES/
 	rpmbuild -bb --define "_topdir $(rpmbuild_aarch64)" --define "_version $(version)" --target aarch64 build/rpm/mochi-server.spec
 	cp $(rpmbuild_aarch64)/RPMS/aarch64/mochi-server-$(version)-1.aarch64.rpm $(rpm_aarch64)
 	rm -rf $(rpmbuild_aarch64)
@@ -364,7 +364,7 @@ rpm-armv7hl: $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/moch
 	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_armv7hl)/SOURCES/mochictl.bash
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_armv7hl)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_armv7hl)/SOURCES/
-	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_armv7hl)/SOURCES/
+	cp install/usr/lib/systemd/system/mochi-server.service $(rpmbuild_armv7hl)/SOURCES/
 	rpmbuild -bb --define "_topdir $(rpmbuild_armv7hl)" --define "_version $(version)" --target armv7hl build/rpm/mochi-server.spec
 	cp $(rpmbuild_armv7hl)/RPMS/armv7hl/mochi-server-$(version)-1.armv7hl.rpm $(rpm_armv7hl)
 	rm -rf $(rpmbuild_armv7hl)
@@ -411,10 +411,10 @@ mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
 # macOS .pkg installers
 # Requires: bomutils (/opt/bomutils), xar
 pkg-amd64: $(bin)/mochi-server-darwin-amd64 $(bin)/mochictl-darwin-amd64
-	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64) $(bin)/mochictl-darwin-amd64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg build/pkg $(version) amd64 $(pkg_amd64) $(bin)/mochi-server-darwin-amd64 $(bin)/mochictl-darwin-amd64
 
 pkg-arm64: $(bin)/mochi-server-darwin-arm64 $(bin)/mochictl-darwin-arm64
-	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64) $(bin)/mochictl-darwin-arm64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg build/pkg $(version) arm64 $(pkg_arm64) $(bin)/mochi-server-darwin-arm64 $(bin)/mochictl-darwin-arm64
 
 pkg: pkg-amd64 pkg-arm64
 
@@ -453,11 +453,18 @@ docker-stage: $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64 
 docker-local: docker-stage
 	docker build -t $(docker_image):dev .
 
+# Scanner versions, in one place: the scan targets below use them, and the
+# Security workflow runs those targets rather than its own commands, so a CI
+# scan and a local one cannot differ. The Trivy image is pinned by digest as
+# well as version, so a replaced tag cannot change what runs. Bump them here.
+govulncheck = golang.org/x/vuln/cmd/govulncheck@v1.8.0
+trivy = aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e
+
 # Reachability-aware vulnerability scan: builds the call graph, so a finding
-# here is a real exposure. Mirrors the govulncheck job in
-# .github/workflows/security.yml.
+# here is a real exposure. The govulncheck job in .github/workflows/security.yml
+# runs this target.
 vulnerability-scan:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run $(govulncheck) ./...
 
 # Advisory scan of the module graph. Complements vulnerability-scan: no
 # reachability analysis, but it sees every module and catches advisories the
@@ -469,7 +476,7 @@ dependency-scan:
 	docker run --rm -v $(CURDIR):/src:ro \
 	    -v $(HOME)/.cache/trivy:/root/.cache/trivy \
 	    -v $(CURDIR)/.trivyignore:/.trivyignore:ro \
-	    aquasec/trivy:latest fs \
+	    $(trivy) fs \
 	    --scanners vuln --severity HIGH,CRITICAL \
 	    --exit-code 1 --no-progress --timeout 10m \
 	    --skip-dirs /src/third_party \
@@ -490,16 +497,20 @@ base-digest:
 # Trivy against the locally-built image; fails on any HIGH or CRITICAL. A manual
 # pre-release check, deliberately not wired into `make release` - Trivy flags
 # transitive deps that do not affect us. First run downloads a ~50 MB database.
+# The image is saved to a file and scanned from it: mounting the Docker socket
+# instead would hand the scanner root on this machine, which runs this nightly
+# and holds the release keys.
 docker-scan: docker-local
+	@scan=$$(mktemp -d); trap 'rm -rf "$$scan"' EXIT; \
+	docker save -o "$$scan/image.tar" $(docker_image):dev && \
 	docker run --rm \
-	    -v /var/run/docker.sock:/var/run/docker.sock \
+	    -v "$$scan":/scan:ro \
 	    -v $(HOME)/.cache/trivy:/root/.cache/trivy \
 	    -v $(CURDIR)/.trivyignore:/.trivyignore:ro \
-	    aquasec/trivy:latest image \
+	    $(trivy) image --input /scan/image.tar \
 	    --severity HIGH,CRITICAL --exit-code 1 --no-progress \
 	    --timeout 15m \
-	    --ignorefile /.trivyignore \
-	    $(docker_image):dev
+	    --ignorefile /.trivyignore
 
 # Multi-arch build + push to GHCR, tagged X.Y.Z, X.Y, latest and production
 # (matching the versions.json track names). Requires a multi-arch buildx builder
@@ -653,15 +664,10 @@ release-publish-platforms:
 release-publish-sign:
 	# Sign every versions.json with the release key: the server verifies this
 	# detached ed25519 signature against a pinned public key before trusting the
-	# manifest. Done after every manifest is written and before the single rsync,
-	# so none is ever published unsigned. -rawin needs openssl 3.0+.
-	@for platform in apt rpm windows macos docker android; do \
-	    openssl pkeyutl -sign -rawin -inkey local/update-signing.key \
-	        -in ../packages/$$platform/versions.json \
-	        | base64 -w0 > ../packages/$$platform/versions.json.sig \
-	        && echo "signed $$platform/versions.json" \
-	        || exit 1; \
-	done
+	# manifest. Done after every manifest is written and before the rsync, so
+	# none is ever published unsigned; the script checks each signature against
+	# that pinned key before it replaces the old one.
+	./build/scripts/sign-manifest local/update-signing.key $(foreach platform,apt rpm windows macos docker android,../packages/$(platform)/versions.json)
 
 # Publish to yuzu by name, not the packages.mochi-os.org alias, so the target
 # is deterministic. Two passes: rsync creates the stable-name symlinks in its
@@ -682,7 +688,7 @@ release-publish-rsync:
 # track names the apt suite installed from. Pass apt flags via
 # `make deploy DEPLOY_FLAGS=--reinstall` to redeploy an identical version.
 deploy:
-	./build/scripts/deploy -t $(suite) $(DEPLOY_FLAGS)
+	./build/scripts/deploy $(version) -t $(suite) $(DEPLOY_FLAGS)
 
 format:
 	go fmt server/*.go

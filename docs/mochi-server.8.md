@@ -133,8 +133,10 @@ file. Sensitive keys (anything whose name contains *password*, *secret*,
 */var/cache/mochi/*
 :   Cache directory. Safe to delete; will be recreated.
 
-*/etc/systemd/system/mochi-server.service*
-:   systemd unit shipped by the deb/rpm packages.
+*/usr/lib/systemd/system/mochi-server.service*
+:   systemd unit shipped by the deb/rpm packages. Override it with a drop-in
+    under */etc/systemd/system/mochi-server.service.d/*, which an upgrade
+    leaves alone.
 
 */usr/sbin/mochi-server*
 :   Server binary (deb/rpm). Inside the Docker image: same path.

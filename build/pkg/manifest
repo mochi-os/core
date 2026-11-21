@@ -1,0 +1,7 @@
+# The macOS package core/build/scripts/build-pkg builds from this directory.
+identifier=org.mochi-os.server
+title=Mochi Server
+programs=mochi-server mochictl
+uninstaller=mochi-uninstall
+configuration=/etc/mochi/mochi.conf
+directories=/var/cache/mochi /var/lib/mochi

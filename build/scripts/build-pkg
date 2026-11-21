@@ -1,23 +1,72 @@
 #!/bin/bash
-# Build a macOS .pkg installer from Linux or macOS
-# Usage: build-pkg <binary> <version> <arch> <output.pkg> [mochictl]
+# Build a macOS .pkg installer from Linux or macOS, for the Mochi server and
+# the Mochi world server alike.
+# Usage: build-pkg <source> <version> <arch> <output.pkg> <program>...
+#
+# <source> is the product's package directory (core/build/pkg,
+# world/build/pkg). It holds the install scripts under scripts/, the launchd
+# daemon <identifier>.plist, the uninstaller, the default configuration, and a
+# manifest of key=value lines naming them:
+#
+#   identifier     package id, which is also the daemon's launchd label
+#   title          the name the Installer shows
+#   programs       the binaries installed in /usr/local/sbin, in the order
+#                  their paths follow <output.pkg>
+#   uninstaller    a script in <source>, installed in /usr/local/sbin
+#   configuration  the live configuration file; <source> holds it under its
+#                  base name, and it ships as <configuration>.default
+#   directories    state directories created empty, owned by the scripts
+#
 # Requires on Linux: mkbom/ls4mkbom (bomutils), xar
 # Requires on macOS: xcrun (Xcode command line tools), xar
 
 set -euo pipefail
 
-BINARY="$1"
+if [ "$#" -lt 5 ]; then
+	echo "Usage: build-pkg <source> <version> <arch> <output.pkg> <program>..." >&2
+	exit 1
+fi
+
+SOURCE="$1"
 VERSION="$2"
 ARCH="$3"
 OUTPUT="$4"
-MOCHICTL="${5:-}"
-SCRIPT_DIR="$(dirname "$0")"
-BUILD_DIR="$(mktemp -d)"
-ROOT_DIR="$BUILD_DIR/root"
-SCRIPTS_DIR="$BUILD_DIR/scripts"
-COMP_DIR="$BUILD_DIR/comp"
-PRODUCT_DIR="$BUILD_DIR/product"
-PKG_ID="org.mochi-os.server"
+shift 4
+
+IDENTIFIER=""
+TITLE=""
+PROGRAMS=""
+UNINSTALLER=""
+CONFIGURATION=""
+DIRECTORIES=""
+while IFS= read -r line || [ -n "$line" ]; do
+	case "$line" in
+		"" | "#"*) continue ;;
+	esac
+	value="${line#*=}"
+	case "$line" in
+		identifier=*) IDENTIFIER="$value" ;;
+		title=*) TITLE="$value" ;;
+		programs=*) PROGRAMS="$value" ;;
+		uninstaller=*) UNINSTALLER="$value" ;;
+		configuration=*) CONFIGURATION="$value" ;;
+		directories=*) DIRECTORIES="$value" ;;
+		*) echo "build-pkg: unknown line in $SOURCE/manifest: $line" >&2; exit 1 ;;
+	esac
+done < "$SOURCE/manifest"
+for key in identifier title programs uninstaller configuration directories; do
+	variable=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+	if [ -z "${!variable}" ]; then
+		echo "build-pkg: $SOURCE/manifest sets no $key" >&2
+		exit 1
+	fi
+done
+
+read -r -a names <<< "$PROGRAMS"
+if [ "$#" -ne "${#names[@]}" ]; then
+	echo "build-pkg: $SOURCE/manifest names ${#names[@]} programs ($PROGRAMS), and $# were given" >&2
+	exit 1
+fi
 
 # Map Go arch to macOS hostArchitectures value. Without this attribute the
 # installer assumes x86_64 and demands Rosetta 2 on Apple Silicon — even
@@ -28,36 +77,55 @@ case "$ARCH" in
 	*) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
-trap "rm -rf $BUILD_DIR" EXIT
+# The payload's modes are the modes of the files staged here.
+umask 022
 
-# Create payload directory structure.
+# A failed build must not leave an earlier package where this one was asked
+# for, so the output is removed first and the new one moved in only at the end.
+rm -f "$OUTPUT"
+
+BUILD_DIR="$(mktemp -d)"
+ROOT_DIR="$BUILD_DIR/root"
+SCRIPTS_DIR="$BUILD_DIR/scripts"
+COMP_DIR="$BUILD_DIR/comp"
+PRODUCT_DIR="$BUILD_DIR/product"
+
+trap 'rm -rf "$BUILD_DIR"' EXIT
+
 # /etc and /var are symlinks to /private/etc and /private/var on macOS, so payload
 # entries must use the /private/... path or the installer fails extraction with
 # "An error occurred while extracting files from the package".
-mkdir -p "$ROOT_DIR/usr/local/sbin"
-mkdir -p "$ROOT_DIR/private/etc/mochi"
-mkdir -p "$ROOT_DIR/Library/LaunchDaemons"
-mkdir -p "$ROOT_DIR/private/var/cache/mochi"
-mkdir -p "$ROOT_DIR/private/var/lib/mochi"
+payload() {
+	case "$1" in
+		/etc/* | /var/*) echo "$ROOT_DIR/private$1" ;;
+		*) echo "$ROOT_DIR$1" ;;
+	esac
+}
 
-cp "$BINARY" "$ROOT_DIR/usr/local/sbin/mochi-server"
-chmod 755 "$ROOT_DIR/usr/local/sbin/mochi-server"
-# mochictl drives the admin UDS (supported on macOS via LOCAL_PEERCRED).
-if [ -n "$MOCHICTL" ]; then
-	cp "$MOCHICTL" "$ROOT_DIR/usr/local/sbin/mochictl"
-	chmod 755 "$ROOT_DIR/usr/local/sbin/mochictl"
-fi
-# Uninstaller: a .pkg has no uninstall hook, so ship `sudo mochi-uninstall`.
-cp "$SCRIPT_DIR/../pkg/mochi-uninstall" "$ROOT_DIR/usr/local/sbin/mochi-uninstall"
-chmod 755 "$ROOT_DIR/usr/local/sbin/mochi-uninstall"
+# Create payload directory structure.
+mkdir -p "$ROOT_DIR/usr/local/sbin"
+mkdir -p "$(dirname "$(payload "$CONFIGURATION")")"
+mkdir -p "$ROOT_DIR/Library/LaunchDaemons"
+for directory in $DIRECTORIES; do
+	mkdir -p "$(payload "$directory")"
+done
+
+for name in "${names[@]}"; do
+	cp "$1" "$ROOT_DIR/usr/local/sbin/$name"
+	chmod 755 "$ROOT_DIR/usr/local/sbin/$name"
+	shift
+done
+# Uninstaller: a .pkg has no uninstall hook, so ship `sudo <uninstaller>`.
+cp "$SOURCE/$UNINSTALLER" "$ROOT_DIR/usr/local/sbin/$UNINSTALLER"
+chmod 755 "$ROOT_DIR/usr/local/sbin/$UNINSTALLER"
 # The default configuration ships beside the live file; postinstall copies it
 # into place only on a first install, so an upgrade never overwrites the
 # operator's settings. A .pkg has no notion of a configuration file.
-cp "$SCRIPT_DIR/../pkg/mochi.conf" "$ROOT_DIR/private/etc/mochi/mochi.conf.default"
-cp "$SCRIPT_DIR/../pkg/org.mochi-os.server.plist" "$ROOT_DIR/Library/LaunchDaemons/"
+cp "$SOURCE/$(basename "$CONFIGURATION")" "$(payload "$CONFIGURATION").default"
+cp "$SOURCE/$IDENTIFIER.plist" "$ROOT_DIR/Library/LaunchDaemons/"
 
 # Copy install scripts
-cp -a "$SCRIPT_DIR/../pkg/scripts" "$SCRIPTS_DIR"
+cp -a "$SOURCE/scripts" "$SCRIPTS_DIR"
 
 # Build the component package
 mkdir -p "$COMP_DIR"
@@ -87,7 +155,7 @@ NUM_FILES=$(find "$ROOT_DIR" -type f | wc -l)
 # Create PackageInfo
 cat > "$COMP_DIR/PackageInfo" << EOF
 <?xml version="1.0" encoding="utf-8"?>
-<pkg-info format-version="2" identifier="$PKG_ID" version="$VERSION" install-location="/" auth="root" overwrite-permissions="false">
+<pkg-info format-version="2" identifier="$IDENTIFIER" version="$VERSION" install-location="/" auth="root" overwrite-permissions="false">
     <payload installKBytes="$PAYLOAD_SIZE" numberOfFiles="$NUM_FILES"/>
     <scripts>
         <preinstall file="preinstall"/>
@@ -97,29 +165,30 @@ cat > "$COMP_DIR/PackageInfo" << EOF
 EOF
 
 # Build product archive (required for macOS GUI Installer)
-mkdir -p "$PRODUCT_DIR/$PKG_ID.pkg"
-cp "$COMP_DIR/Bom" "$COMP_DIR/Payload" "$COMP_DIR/Scripts" "$COMP_DIR/PackageInfo" "$PRODUCT_DIR/$PKG_ID.pkg/"
+mkdir -p "$PRODUCT_DIR/$IDENTIFIER.pkg"
+cp "$COMP_DIR/Bom" "$COMP_DIR/Payload" "$COMP_DIR/Scripts" "$COMP_DIR/PackageInfo" "$PRODUCT_DIR/$IDENTIFIER.pkg/"
 
 # Create Distribution file
 cat > "$PRODUCT_DIR/Distribution" << EOF
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-    <title>Mochi Server</title>
+    <title>$TITLE</title>
     <options customize="never" require-scripts="false" hostArchitectures="$HOST_ARCH"/>
     <choices-outline>
         <line choice="default">
-            <line choice="$PKG_ID"/>
+            <line choice="$IDENTIFIER"/>
         </line>
     </choices-outline>
     <choice id="default"/>
-    <choice id="$PKG_ID" visible="false">
-        <pkg-ref id="$PKG_ID"/>
+    <choice id="$IDENTIFIER" visible="false">
+        <pkg-ref id="$IDENTIFIER"/>
     </choice>
-    <pkg-ref id="$PKG_ID" version="$VERSION" onConclusion="none">#$PKG_ID.pkg</pkg-ref>
+    <pkg-ref id="$IDENTIFIER" version="$VERSION" onConclusion="none">#$IDENTIFIER.pkg</pkg-ref>
 </installer-gui-script>
 EOF
 
 # Build the .pkg using xar
-(cd "$PRODUCT_DIR" && xar --compression none -cf "$OUTPUT" .)
+(cd "$PRODUCT_DIR" && xar --compression none -cf "$BUILD_DIR/package.pkg" .)
+mv "$BUILD_DIR/package.pkg" "$OUTPUT"
 
 echo "Built: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
